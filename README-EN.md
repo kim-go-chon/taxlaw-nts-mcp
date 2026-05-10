@@ -82,7 +82,7 @@ npm install -g taxlaw-nts-mcp
 
 ## Environment
 
-No API key is required. You can optionally override the User-Agent used for NTS requests.
+No API key is required. The default User-Agent is `taxlaw-nts-mcp/<version> (+https://github.com/kim-go-chon/taxlaw-nts-mcp)` so the client identifies itself transparently. Only override it with a browser-like UA if NTS blocks the default.
 
 ```bash
 TAXLAW_USER_AGENT="Mozilla/5.0 ..."
@@ -97,8 +97,24 @@ Empty search/detail results return `[NOT_FOUND]` with `isError: true`. External 
 ```bash
 npm run build
 npm run watch
+npm test
 npm pack --dry-run
 ```
+
+## Terms of Use & Legal Notice
+
+This is an **unofficial** client for the NTS Tax Law Information System (`https://taxlaw.nts.go.kr`), intended for personal study, research, and professional tax/legal work assistance. This project is not affiliated with the Korean National Tax Service. Users are solely responsible for complying with the NTS terms of service and applicable law.
+
+- **Compliance**
+  - Review the NTS [terms of service](https://taxlaw.nts.go.kr) and `robots.txt` before use.
+  - The default User-Agent identifies this client. Do not modify it to disguise or hide the client identity.
+  - Avoid bulk scraping and tight polling loops. Publication enrichment is already capped at 4 concurrent requests.
+  - Do not redistribute or commercialize the retrieved data without permission. Copyrights for statutes, precedents, and interpretations belong to the issuing institutions.
+- **Limitations**
+  - Results reflect the NTS response at retrieval time. Authoritative legal/tax decisions require consulting original sources (MOLEG, NTS) and licensed practitioners.
+  - The tool emits guard messages discouraging LLM hallucination, but final judgement rests with the user.
+- **Disclaimer**
+  - Authors and contributors accept no liability for legal/tax misjudgement, NTS ToS violations, blocking actions, or data loss arising from use of this tool (see MIT License).
 
 ## License
 

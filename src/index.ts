@@ -5,9 +5,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.3.4"
+const VERSION = "0.3.5"
 
-const ErrorCodes = {
+export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
   INVALID_PARAM: "INVALID_PARAMETER",
   API_ERROR: "EXTERNAL_API_ERROR",
@@ -17,9 +17,9 @@ const ErrorCodes = {
 const FAILURE_GUARD =
   "⚠️ 이 도구는 신뢰 가능한 세법 데이터를 반환하지 못했습니다. LLM은 세법 정보, 문서, 판례를 추측하거나 생성하지 말고 오류/검색 실패와 재시도 필요성을 사용자에게 명시하세요."
 
-type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
+export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes]
 
-class TaxlawMcpError extends Error {
+export class TaxlawMcpError extends Error {
   constructor(
     message: string,
     readonly code: ErrorCode = ErrorCodes.API_ERROR,
@@ -678,7 +678,7 @@ function formatToolError(error: unknown, context: string): ToolResponse {
   return textResponse(`[${ErrorCodes.API_ERROR}] ${message}\n도구: ${context}\n\n${FAILURE_GUARD}`, true)
 }
 
-function truncate(text: string, max = 50000): string {
+export function truncate(text: string, max = 50000): string {
   if (text.length <= max) return text
   return `${text.slice(0, max)}\n\n[truncated to ${max.toLocaleString()} chars]`
 }
@@ -752,13 +752,13 @@ function integratedSort(raw: unknown): string {
   return field
 }
 
-function normalizeDetailId(id: string): string {
+export function normalizeDetailId(id: string): string {
   const trimmed = id.trim()
   const prefixed = trimmed.match(/^001_(\d+)$/)
   return prefixed ? prefixed[1] : trimmed
 }
 
-function normalizeTaxlawPath(value: unknown, fallback = "/index.do"): string {
+export function normalizeTaxlawPath(value: unknown, fallback = "/index.do"): string {
   const path = String(value || fallback).trim()
   if (!path || !path.startsWith("/") || path.startsWith("//") || path.includes("://")) {
     throw new TaxlawMcpError("path/refererPath must be a relative taxlaw.nts.go.kr path starting with /", ErrorCodes.INVALID_PARAM)
@@ -872,11 +872,13 @@ async function consume(response: Response): Promise<void> {
   try { await response.text() } catch { /* ignore */ }
 }
 
+const FETCH_TIMEOUT_MS = 15000
+
 async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Promise<Response> {
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 30000)
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
     try {
       const response = await fetch(url, { ...init, signal: controller.signal })
       clearTimeout(timeout)
@@ -902,12 +904,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function userAgent(): string {
-  return process.env.TAXLAW_USER_AGENT ||
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  const workerCount = Math.max(1, Math.min(concurrency, items.length))
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      results[i] = await fn(items[i], i)
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
 }
 
-function decodeHtml(text: string): string {
+function userAgent(): string {
+  return process.env.TAXLAW_USER_AGENT ||
+    `taxlaw-nts-mcp/${VERSION} (+https://github.com/kim-go-chon/taxlaw-nts-mcp)`
+}
+
+export function decodeHtml(text: string): string {
   return text
     .replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<")
@@ -919,7 +940,7 @@ function decodeHtml(text: string): string {
     .replace(/&amp;/g, "&")
 }
 
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   const prepared = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -937,7 +958,7 @@ function htmlToText(html: string): string {
     .join("\n")
 }
 
-function cleanText(value: unknown): string {
+export function cleanText(value: unknown): string {
   const raw = String(value ?? "")
   const withoutHighlights = raw.replace(/<!HS>|<!HE>/g, "")
   const text = /<[^>]+>/.test(withoutHighlights) ? htmlToText(withoutHighlights) : decodeHtml(withoutHighlights)
@@ -984,7 +1005,7 @@ function firstValue(row: AnyRecord, keys: string[]): unknown {
   return undefined
 }
 
-function normalizeDate(value: unknown): string {
+export function normalizeDate(value: unknown): string {
   const digits = String(value ?? "").replace(/\D/g, "")
   if (digits.length < 8) return "N/A"
   return `${digits.slice(0, 4)}.${digits.slice(4, 6)}.${digits.slice(6, 8)}`
@@ -1199,12 +1220,12 @@ async function searchDocumentGroup(
   return { group: group.kind, codes: group.codes, result: data.ASIPDI002PR01 }
 }
 
-function documentDateValue(item: TaxlawDcm): number {
+export function documentDateValue(item: TaxlawDcm): number {
   const digits = String(item.DCM_RGT_DTM_S || item.DCM_RGT_DTM || item.FRS_RGT_DTM || "").replace(/\D/g, "")
   return Number(digits.slice(0, 14) || 0)
 }
 
-function documentDedupKey(item: TaxlawDcm): string {
+export function documentDedupKey(item: TaxlawDcm): string {
   const code = String(item.NTST_DCM_CL_CD || "").padStart(2, "0")
   const tax = cleanText(item.NTST_TLAW_CL_NM)
   const title = cleanText(item.TTL)
@@ -1500,7 +1521,7 @@ async function callTaxlawAction(args: RawActionArgs): Promise<ToolResponse> {
   return textResponse(lines.join("\n"))
 }
 
-function isEmptyPayload(data: unknown): boolean {
+export function isEmptyPayload(data: unknown): boolean {
   if (data === null || data === undefined) return true
   if (Array.isArray(data)) return data.length === 0
   if (typeof data === "object") {
@@ -1848,7 +1869,7 @@ async function searchTaxlawPublications(args: PublicationSearchArgs): Promise<To
     ])
   }
 
-  const enrichedList = await Promise.all(list.map(enrichPublicationItem))
+  const enrichedList = await mapWithConcurrency(list, 4, enrichPublicationItem)
   const lines = [
     "국세법령정보시스템 발간책자 검색 결과",
     `출처: ${TAXLAW_BASE}/el/USEELA001M.do`,
@@ -1952,7 +1973,9 @@ async function main(): Promise<void> {
   await server.connect(transport)
 }
 
-main().catch((error) => {
-  console.error("Server error:", error)
-  process.exit(1)
-})
+if (process.env.TAXLAW_MCP_TEST_MODE !== "1") {
+  main().catch((error) => {
+    console.error("Server error:", error)
+    process.exit(1)
+  })
+}
