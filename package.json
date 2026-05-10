@@ -1,0 +1,57 @@
+{
+  "name": "taxlaw-nts-mcp",
+  "version": "0.3.4",
+  "description": "MCP server for Korea NTS Tax Law Information System searches.",
+  "type": "module",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "bin": {
+    "taxlaw-nts-mcp": "build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', 0o755)\"",
+    "watch": "tsc --watch",
+    "start": "node build/index.js",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "korean-tax-law",
+    "nts",
+    "taxlaw",
+    "국세청",
+    "세법",
+    "국세법령정보시스템"
+  ],
+  "license": "MIT",
+  "author": "kim-go-chon",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kim-go-chon/taxlaw-nts-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kim-go-chon/taxlaw-nts-mcp/issues"
+  },
+  "homepage": "https://github.com/kim-go-chon/taxlaw-nts-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "build",
+    "docs",
+    "README.md",
+    "README-EN.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
