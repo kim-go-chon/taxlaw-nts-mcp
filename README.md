@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`korean-law-mcp`가 법제처 Open API를 담당한다면, 이 서버는 법제처에서 바로 찾기 어려운 국세청 세법해석, 질의회신, 조세 불복 문서, 기본통칙, 별표/서식, 발간책자, 홈택스 상담사례를 보완 검색합니다.
+법제처에서 바로 찾기 어려운 국세청 세법해석, 질의회신, 조세 불복 문서, 기본통칙, 별표/서식, 발간책자, 홈택스 상담사례를 보완 검색합니다.
 
 전용 고수준 도구가 아직 없는 메뉴도 접근할 수 있도록, 확인된 사이트 메뉴/action 목록 조회와 `action.do` 원시 호출, 같은 사이트 HTML 텍스트 조회 도구를 함께 제공합니다.
 
