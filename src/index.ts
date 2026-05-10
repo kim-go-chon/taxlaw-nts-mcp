@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.3.5"
+const VERSION = "0.3.6"
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -1869,7 +1869,7 @@ async function searchTaxlawPublications(args: PublicationSearchArgs): Promise<To
     ])
   }
 
-  const enrichedList = await mapWithConcurrency(list, 4, enrichPublicationItem)
+  const enrichedList = await mapWithConcurrency(list, 8, enrichPublicationItem)
   const lines = [
     "국세법령정보시스템 발간책자 검색 결과",
     `출처: ${TAXLAW_BASE}/el/USEELA001M.do`,

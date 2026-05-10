@@ -108,7 +108,7 @@ This is an **unofficial** client for the NTS Tax Law Information System (`https:
 - **Compliance**
   - Review the NTS [terms of service](https://taxlaw.nts.go.kr) and `robots.txt` before use.
   - The default User-Agent identifies this client. Do not modify it to disguise or hide the client identity.
-  - Avoid bulk scraping and tight polling loops. Publication enrichment is already capped at 4 concurrent requests.
+  - Avoid bulk scraping and tight polling loops. Publication enrichment is already capped at 8 concurrent requests.
   - Do not redistribute or commercialize the retrieved data without permission. Copyrights for statutes, precedents, and interpretations belong to the issuing institutions.
 - **Limitations**
   - Results reflect the NTS response at retrieval time. Authoritative legal/tax decisions require consulting original sources (MOLEG, NTS) and licensed practitioners.

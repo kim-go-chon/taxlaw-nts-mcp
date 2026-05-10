@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.6] - 2026-05-10
+
+### Changed
+
+- Publication enrichment concurrency raised from 4 to 8 — preserves per-host politeness while roughly halving the wall-clock time of `search_taxlaw_publications` with `display=20+`. READMEs updated accordingly.
+
 ## [0.3.5] - 2026-05-10
 
 ### Added
