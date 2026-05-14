@@ -3,9 +3,26 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import {
+  classifyIndustryForArticle,
+  dbInfo as upjongDbInfo,
+  findByKsic,
+  findByKsicPrefix,
+  findByUpjong,
+  formatClassPath,
+  resolveClassName,
+  searchUpjongByKeyword,
+  CLASS_LEVEL_KR,
+  type ClassLevel,
+  type UpjongRecord,
+} from "./upjong.js"
+import { checkYearApplicability, formatYearCheck } from "./year-check.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.3.6"
+const VERSION = "0.5.0"
+
+const COMPANION_NOTICE =
+  "동반 호출 필수: 본 도구는 korean-law-mcp(법제처 Open API)와 항상 짝으로 사용하세요. 법령 본문·시행일·개정연혁 확인은 korean-law-mcp의 search_law + get_law_text가 1차 권위입니다. 본 MCP는 국세청 측 해석례·질의회신·기본통칙·서식·홈택스 상담사례를 보완합니다."
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -68,6 +85,40 @@ interface DocumentDetailArgs {
   id?: string
   docType?: string
   full?: boolean
+  // 사용자가 적용하려는 연도 (예: 2024). 본문 '관련규정/관련법령' 섹션을 파싱해
+  // 인용 법조문의 시점과 비교하고, 구법 기반이면 사문화 가능성 경고를 함께 반환한다.
+  targetYear?: number
+}
+
+interface UpjongLookupArgs {
+  code?: string
+}
+
+interface KsicLookupArgs {
+  code?: string
+}
+
+interface KsicPrefixArgs {
+  prefix?: string
+  limit?: number
+}
+
+interface IndustrySearchArgs {
+  keyword?: string
+  limit?: number
+  levels?: string[]
+}
+
+interface ResolveClassArgs {
+  name?: string
+  levels?: string[]
+}
+
+interface ClassifyArticleArgs {
+  industryName?: string
+  upjongCode?: string
+  excludeNames?: string[]
+  excludeLevels?: string[]
 }
 
 interface BasicRulingLawArgs {
@@ -430,7 +481,7 @@ const SITE_MENU_ACTIONS: SiteMenuAction[] = [
 const tools = [
   {
     name: "search_taxlaw_all",
-    description: "국세법령정보시스템 통합검색. 법제처 API에 없는 국세청 자료까지 보완 탐색: 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례. korean-law-mcp(법제처 DB)와 병용 권장 — 법조문 본문은 korean-law-mcp의 get_law_text가 정확하고, 본 도구의 statute 컬렉션은 메타·인용 위주.",
+    description: `국세법령정보시스템 통합검색. 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례. ${COMPANION_NOTICE} 법조문 본문은 korean-law-mcp의 get_law_text가 정확하고, 본 도구의 statute 컬렉션은 메타·인용 위주.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -457,7 +508,7 @@ const tools = [
   },
   {
     name: "search_taxlaw_documents",
-    description: "국세법령정보시스템 문서 검색. 세법해석례/질의회신(01-04)과 과세전적부·이의·심사·심판·판례·헌재(05-10)를 검색. 최신 조세심판원 결정례는 NTS가 강세이므로 본 도구 우선; 그래도 없으면 korean-law-mcp의 search_decisions로 병행 확인 권장.",
+    description: `국세법령정보시스템 문서 검색. 세법해석례/질의회신(01-04)과 과세전적부·이의·심사·심판·판례·헌재(05-10)를 검색. 최신 조세심판원 결정례는 NTS가 강세. ${COMPANION_NOTICE} 결과를 사용자에게 보여줄 때는 (1) 본 검색 + (2) korean-law-mcp의 search_decisions(domain=...)를 둘 다 호출해 양쪽 출처를 병기하세요.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -480,13 +531,14 @@ const tools = [
   },
   {
     name: "get_taxlaw_document_text",
-    description: "국세법령정보시스템 문서 상세 조회. search_taxlaw_documents/search_taxlaw_all 결과의 DOC_ID/id를 사용.",
+    description: `국세법령정보시스템 문서 상세 조회. search_taxlaw_documents/search_taxlaw_all 결과의 DOC_ID/id를 사용. ${COMPANION_NOTICE}\n⚠️ 사용자가 특정 연도(예: 2024년) 적용여부를 확인하려는 경우 반드시 targetYear를 지정하세요. 본문 '관련규정' 섹션을 파싱해 인용 법조문의 시점(법률번호·일자·개정단서)을 추출하고 targetYear와 비교하여, 구법조문 기반 예규이면 사문화 가능성을 함께 경고합니다. 그래도 현행 법령과의 최종 대조는 반드시 korean-law-mcp의 get_law_text로 직접 확인해야 합니다.`,
     inputSchema: {
       type: "object",
       properties: {
         id: { type: "string", description: "검색 결과의 DOC_ID 또는 DOCID. 예: 001_200000000000019482 또는 200000000000019482" },
         docType: { type: "string", enum: ["advance", "reply", "tax_standard", "written", "tax_pre_review", "objection", "review", "tribunal", "precedent", "constitutional", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10"], description: "알고 있는 경우 문서유형. 미입력 시 질의/판례 상세를 순차 시도" },
         full: { type: "boolean", default: false, description: "true면 HTML 원문 변환 텍스트를 더 길게 포함" },
+        targetYear: { type: "number", minimum: 1990, maximum: 2100, description: "사용자가 적용하려는 연도(예: 2024). 본문 관련규정 섹션을 파싱해 인용 법조문 시점과 비교하고, targetYear보다 앞선 시점의 구법조문 기반이면 경고를 함께 반환합니다." },
       },
       required: ["id"],
       additionalProperties: false,
@@ -644,6 +696,106 @@ const tools = [
       required: [],
       additionalProperties: false,
     },
+  },
+  {
+    name: "lookup_upjong_code",
+    description: "국세청 업종코드(6자리)를 받아 KSIC(통계청 표준산업분류)와의 매핑·대중소세세세 5단계 분류명·코드를 반환합니다. 사용자가 업종코드를 묻거나 법조문이 특정 업종을 가리킬 때 1차로 호출하세요. 추정 금지 — DB에 없는 코드는 not found로 반환됩니다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "업종코드. 예: 749942, 852000" },
+      },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "lookup_ksic_code",
+    description: "KSIC(통계청 표준산업분류) 코드를 받아 매핑된 국세청 업종코드 목록과 분류수준 정보를 반환합니다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "KSIC 코드. 예: 71600, 73100" },
+      },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "lookup_ksic_prefix",
+    description: "KSIC 코드 prefix로 매핑된 NTS 업종코드를 모두 반환합니다. prefix 길이에 따라 분류수준 자동 식별: 1자리 영문(B/C/M 등)=대분류, 2자리=중분류, 3자리=소분류, 4자리=세분류, 5자리=세세분류. 예: 681(부동산임대업), 4791(통신판매업), 7421(청소업). lookup_ksic_code(5자리 정확)와 다릅니다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prefix: { type: "string", description: "KSIC 코드 prefix. 예: B, 12, 681, 4791, 7421" },
+        limit: { type: "number", minimum: 1, maximum: 500, default: 200 },
+      },
+      required: ["prefix"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "search_industry_by_keyword",
+    description: "업종코드/KSIC DB를 분류명 키워드로 검색합니다. 띄어쓰기·괄호 차이를 무시한 정규화 매칭. levels로 검색 분류수준 한정 가능 (예: 제외 단서를 l3~l5에만 적용해 상위 레벨에 휘말리는 것 방지). 결과의 분류수준을 보고 법조문이 가리키는 수준을 판단할 수 있습니다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        keyword: { type: "string", description: "검색어. 예: '수의업', '기타 전문, 과학 및 기술 서비스업'" },
+        limit: { type: "number", minimum: 1, maximum: 100, default: 30 },
+        levels: {
+          type: "array",
+          items: { type: "string", enum: ["l1", "l2", "l3", "l4", "l5"] },
+          description: "검색 분류수준 한정. 미지정 시 l1~l5 모두. 예: ['l3','l4','l5']로 좁히면 상위 레벨 분류명 매칭 방지.",
+        },
+      },
+      required: ["keyword"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "resolve_industry_class",
+    description: "법조문에 등장한 산업명 한 줄을 받아 KSIC/업종코드의 어느 분류수준(대/중/소/세/세세)과 일치하는지 후보를 반환합니다. 예: '기타 전문, 과학 및 기술 서비스업' → KSIC 중분류 73 + 업종 중분류 85 둘 다. levels로 검색 분류수준 한정 가능. 법조문이 가리키는 분류 레벨을 식별하는 데 필수입니다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "법조문에 적힌 산업명. 예: '기타 전문, 과학 및 기술 서비스업'" },
+        levels: {
+          type: "array",
+          items: { type: "string", enum: ["l1", "l2", "l3", "l4", "l5"] },
+          description: "검색 분류수준 한정. 미지정 시 l1~l5 모두.",
+        },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "classify_industry_for_article",
+    description: "법조문(예: 조세특례제한법 시행령 제27조 제3항 16호, 조특법 §6③, §7①)이 가리키는 산업명·제외 단서와 평가하려는 업종코드를 받아, 해당 업종코드가 본 조항 적용 대상인지 판정합니다. 5단계 분류수준을 자동 식별해 비교하므로 LLM이 '대분류만 보고 잘못 매칭'하는 실수를 차단. verdict ∈ {match, excluded, out_of_scope, ambiguous}. ※ excludeLevels로 제외 단서 검색 분류수준 한정 가능 — 음식점업에서 '주점' 차감 시 l2 '음식점 및 주점업'에 휘말리는 것 방지.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        industryName: { type: "string", description: "법조문이 가리키는 산업명. 예: '기타 전문, 과학 및 기술 서비스업'" },
+        upjongCode: { type: "string", description: "평가할 업종코드. 예: 749942" },
+        excludeNames: {
+          type: "array",
+          items: { type: "string" },
+          description: "법조문 내 제외 단서. 예: ['수의업', '주점업']",
+        },
+        excludeLevels: {
+          type: "array",
+          items: { type: "string", enum: ["l1", "l2", "l3", "l4", "l5"] },
+          description: "제외 단서 검색 분류수준 한정. 권장: ['l3','l4','l5']. 미지정 시 l1~l5 모두.",
+        },
+      },
+      required: ["industryName", "upjongCode"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "upjong_db_info",
+    description: "내장된 업종코드↔KSIC 매핑 DB의 생성 시각, 원본 CSV 경로, 귀속연도, 레코드 수를 반환합니다. DB 신선도 확인용.",
+    inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
 ]
 
@@ -1346,7 +1498,7 @@ async function getTaxlawDocumentText(args: DocumentDetailArgs): Promise<ToolResp
       const detail = data.ASIQTB002PR01
       const dcm = detail.dcmDVO
       if (!dcm) continue
-      return textResponse(formatDocumentDetail(id, dcm, detail, args.full === true, referer))
+      return textResponse(formatDocumentDetail(id, dcm, detail, args.full === true, referer, args.targetYear))
     } catch (error) {
       lastError = error
     }
@@ -1364,7 +1516,7 @@ async function getTaxlawDocumentText(args: DocumentDetailArgs): Promise<ToolResp
   ])
 }
 
-function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailData["ASIQTB002PR01"], full: boolean, referer: string): string {
+function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailData["ASIQTB002PR01"], full: boolean, referer: string, targetYear?: number): string {
   const relatedLaws = (detail.dcmRltnStttList || [])
     .map((item) => cleanText(item.ntstTextNm))
     .filter(Boolean)
@@ -1406,6 +1558,17 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   }
   if (quotedPrecedents.length > 0) {
     lines.push("인용 판례:", ...quotedPrecedents.slice(0, 20).map((item) => `  - ${item}`), "")
+  }
+
+  // 연도 적용여부 검증 (관련규정 섹션 파싱). 본문이 없으면 답변 텍스트를 사용.
+  const sourceForYearCheck = [gist, answer, bodyText].filter(Boolean).join("\n\n")
+  if (sourceForYearCheck) {
+    const result = checkYearApplicability({ bodyText: sourceForYearCheck, targetYear })
+    lines.push("", ...formatYearCheck(result), "")
+    lines.push(
+      "동반 호출 필수: 위 검증은 본문 휴리스틱입니다. 인용 법조문의 현행 적용가능성은 반드시 korean-law-mcp의 search_law + get_law_text(law=..., jo=...)로 직접 대조 후 사용자에게 보고하세요.",
+      "",
+    )
   }
 
   return truncate(lines.join("\n"), full ? 50000 : 30000)
@@ -1898,6 +2061,236 @@ async function listTaxlawPublicationCategories(): Promise<ToolResponse> {
   return textResponse(lines.join("\n"))
 }
 
+function formatUpjongRecord(r: UpjongRecord): string[] {
+  const lines: string[] = []
+  lines.push(`업종코드: ${r.upjong}`)
+  if (r.note) lines.push(`세부설명: ${r.note}`)
+  lines.push("업종코드 측 분류:")
+  lines.push(...formatClassPath(r.up, "up"))
+  lines.push("표준산업분류(KSIC) 측 매핑:")
+  lines.push(...formatClassPath(r.ksic, "ksic"))
+  return lines
+}
+
+function lookupUpjongCodeTool(args: UpjongLookupArgs): ToolResponse {
+  const code = requireString("code", args.code)
+  const r = findByUpjong(code)
+  if (!r) {
+    return notFoundResponse(`업종코드 ${code}을 DB에서 찾을 수 없습니다.`, [
+      "코드를 다시 확인하거나 search_industry_by_keyword로 분류명으로 검색하세요.",
+      "현행 업종코드 고시(국세청)와 DB 귀속연도가 다를 수 있습니다. upjong_db_info로 DB 신선도를 확인하세요.",
+    ])
+  }
+  const info = upjongDbInfo()
+  const lines = [
+    `업종코드↔KSIC 매핑 조회 결과 (DB 귀속연도: ${info.year ?? "N/A"})`,
+    "출처: 국세청 '업종코드-표준산업분류 연계표'",
+    "",
+    ...formatUpjongRecord(r),
+    "",
+    "주의: 본 결과는 내장 DB(국세청 연계표)에서 직접 인용한 것입니다. 추가 업종코드 변동·신설은 국세청 홈택스 업종코드 조회로 교차확인하세요.",
+  ]
+  return textResponse(lines.join("\n"))
+}
+
+function lookupKsicCodeTool(args: KsicLookupArgs): ToolResponse {
+  const code = requireString("code", args.code)
+  const records = findByKsic(code)
+  if (records.length === 0) {
+    return notFoundResponse(`KSIC ${code}에 매핑된 업종코드가 DB에 없습니다.`, [
+      "KSIC 5자리 코드를 다시 확인하세요.",
+      "search_industry_by_keyword로 분류명 키워드로 검색해보세요.",
+    ])
+  }
+  const lines = [
+    `KSIC ${code}에 매핑된 국세청 업종코드 (${records.length}건)`,
+    "출처: 국세청 '업종코드-표준산업분류 연계표'",
+    "",
+  ]
+  for (const r of records) {
+    lines.push(...formatUpjongRecord(r), "")
+  }
+  return textResponse(truncate(lines.join("\n"), 30000))
+}
+
+function parseLevels(raw: unknown): ClassLevel[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const allowed: ClassLevel[] = ["l1", "l2", "l3", "l4", "l5"]
+  const out: ClassLevel[] = []
+  for (const v of raw) {
+    if (typeof v === "string" && (allowed as string[]).includes(v)) out.push(v as ClassLevel)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+function lookupKsicPrefixTool(args: KsicPrefixArgs): ToolResponse {
+  const prefix = requireString("prefix", args.prefix)
+  const limit = asPositiveInt(args.limit, 200, 500)
+  const matches = findByKsicPrefix(prefix, limit)
+  if (matches.length === 0) {
+    return notFoundResponse(`KSIC prefix '${prefix}'에 매칭된 업종코드가 없습니다.`, [
+      "1자리 영문(B/C/M…) 대분류, 2~5자리 숫자(중/소/세/세세분류) 형식.",
+      "search_industry_by_keyword로 분류명 검색을 병행하세요.",
+    ])
+  }
+  // 분류수준별 묶기
+  const byLevel = new Map<string, UpjongRecord[]>()
+  for (const m of matches) {
+    const key = m.matchedLevel
+    if (!byLevel.has(key)) byLevel.set(key, [])
+    byLevel.get(key)!.push(m.record)
+  }
+  const lines = [
+    `KSIC prefix 매칭 결과: '${prefix}' (${matches.length}건${matches.length >= limit ? " — 결과 잘림" : ""})`,
+    `매칭 분류수준: ${[...byLevel.keys()].join(", ")}`,
+    "",
+  ]
+  for (const m of matches.slice(0, 50)) {
+    const r = m.record
+    lines.push(
+      `  ${r.upjong} | KSIC ${r.ksic.code ?? "-"} | ${r.ksic.l5Name ?? r.ksic.l4Name ?? r.ksic.l3Name ?? ""} (NTS: ${r.up.l5Name ?? r.up.l4Name ?? ""})`,
+    )
+  }
+  if (matches.length > 50) lines.push(`  ... 외 ${matches.length - 50}건`)
+  return textResponse(truncate(lines.join("\n"), 30000))
+}
+
+function searchIndustryByKeywordTool(args: IndustrySearchArgs): ToolResponse {
+  const keyword = requireString("keyword", args.keyword)
+  const limit = asPositiveInt(args.limit, 30, 100)
+  const levels = parseLevels(args.levels) ?? ["l1", "l2", "l3", "l4", "l5"]
+  const records = searchUpjongByKeyword(keyword, limit, levels)
+  if (records.length === 0) {
+    return notFoundResponse(`업종코드 DB에서 '${keyword}' 결과가 없습니다.`, [
+      "검색어를 줄이거나 띄어쓰기/괄호를 다르게 시도하세요.",
+      "법조문 인용 산업명 그대로(예: '기타 전문, 과학 및 기술 서비스업')를 입력해도 정규화 매칭이 적용됩니다.",
+    ])
+  }
+  const lines = [
+    `업종코드 DB 키워드 검색 결과: '${keyword}' (${records.length}건 표시)`,
+    "",
+  ]
+  for (const r of records) {
+    lines.push(...formatUpjongRecord(r), "")
+  }
+  return textResponse(truncate(lines.join("\n"), 30000))
+}
+
+function resolveIndustryClassTool(args: ResolveClassArgs): ToolResponse {
+  const name = requireString("name", args.name)
+  const levels = parseLevels(args.levels)
+  const resolved = resolveClassName(name, levels)
+  if (resolved.candidates.length === 0) {
+    return notFoundResponse(`분류명 '${name}'에 일치하는 KSIC/업종코드 분류수준을 찾지 못했습니다.`, [
+      "법조문 인용 표기를 그대로 시도하거나, 띄어쓰기·괄호 변형을 시도하세요.",
+      "후보가 없으면 분류수준 식별 없이 사용자에게 추측 답변하지 말고, search_industry_by_keyword로 유사 키워드를 안내하세요.",
+    ])
+  }
+  const lines = [
+    `분류명 → KSIC/업종코드 분류수준 식별: '${name}'`,
+    "",
+    "후보 (해당 분류수준에서 정규화 일치):",
+  ]
+  for (const c of resolved.candidates) {
+    lines.push(
+      `  - ${c.side === "ksic" ? "KSIC" : "업종코드"} ${c.levelKr}` +
+        (c.code ? ` ${c.code}` : "") +
+        ` / 매칭 레코드 ${c.sampleRecords}건` +
+        (c.sampleUpjongCodes.length > 0 ? ` / 예시 업종코드: ${c.sampleUpjongCodes.join(", ")}` : ""),
+    )
+  }
+  lines.push(
+    "",
+    "활용: 법조문이 '대분류명/중분류명/소분류명' 중 어느 레벨을 가리키는지는 그 명칭이 해당 레벨에 존재하는지로 판단합니다. 같은 명칭이 여러 레벨에 등장하면 전후 문맥(괄호 내 제외 단서 등)으로 추가 확인하세요.",
+  )
+  return textResponse(lines.join("\n"))
+}
+
+function classifyIndustryForArticleTool(args: ClassifyArticleArgs): ToolResponse {
+  const industryName = requireString("industryName", args.industryName)
+  const upjongCode = requireString("upjongCode", args.upjongCode)
+  const excludeNames = Array.isArray(args.excludeNames)
+    ? args.excludeNames.filter((s): s is string => typeof s === "string" && s.length > 0)
+    : []
+  const excludeLevels = parseLevels(args.excludeLevels)
+  const result = classifyIndustryForArticle({ industryName, upjongCode, excludeNames, excludeLevels })
+  const lines = [
+    `법조문 산업명 ↔ 업종코드 판정`,
+    `법조문 산업명: ${industryName}`,
+    `제외 단서: ${excludeNames.length > 0 ? excludeNames.join(", ") : "(없음)"}`,
+    `평가 업종코드: ${upjongCode}`,
+    "",
+  ]
+  if (!result.found || !result.upjongRecord) {
+    lines.push("업종코드를 DB에서 찾을 수 없어 판정 불가.")
+    return textResponse(lines.join("\n"))
+  }
+  lines.push("업종코드 5단계 분류:")
+  lines.push(...formatClassPath(result.upjongRecord.up, "up"))
+  lines.push("표준산업분류(KSIC) 매핑:")
+  lines.push(...formatClassPath(result.upjongRecord.ksic, "ksic"))
+  lines.push("")
+  lines.push("법조문 산업명 분류수준 후보:")
+  if (result.industryResolution.candidates.length === 0) {
+    lines.push("  (DB에서 일치하는 분류명 없음 → 표기 다를 가능성 또는 KSIC 외부 명칭)")
+  } else {
+    for (const c of result.industryResolution.candidates) {
+      lines.push(
+        `  - ${c.side === "ksic" ? "KSIC" : "업종코드"} ${c.levelKr}` + (c.code ? ` ${c.code}` : "") + ` (매칭 ${c.sampleRecords}건)`,
+      )
+    }
+  }
+  if (excludeNames.length > 0) {
+    lines.push("")
+    lines.push("제외 단서 분류수준 후보:")
+    for (let i = 0; i < excludeNames.length; i++) {
+      const er = result.excludeResolutions[i]
+      lines.push(`  [${excludeNames[i]}]`)
+      if (er.candidates.length === 0) {
+        lines.push("    (DB에서 일치하는 분류명 없음)")
+      } else {
+        for (const c of er.candidates) {
+          lines.push(
+            `    - ${c.side === "ksic" ? "KSIC" : "업종코드"} ${c.levelKr}` + (c.code ? ` ${c.code}` : "") + ` (매칭 ${c.sampleRecords}건)`,
+          )
+        }
+      }
+    }
+  }
+  lines.push("")
+  lines.push(`매칭된 레벨: ${result.matchedLevel ? `${result.matchedLevel.side === "ksic" ? "KSIC" : "업종코드"} ${CLASS_LEVEL_KR[result.matchedLevel.level]} ${result.matchedLevel.code ?? ""}` : "없음"}`)
+  lines.push(`제외 적용 여부: ${result.excluded ? "예" : "아니오"}`)
+  if (result.excludedBy.length > 0) {
+    for (const e of result.excludedBy) {
+      lines.push(`  - 제외 '${e.name}' (${e.side === "ksic" ? "KSIC" : "업종코드"} ${CLASS_LEVEL_KR[e.level]} ${e.code ?? ""})`)
+    }
+  }
+  lines.push("")
+  lines.push(`판정(verdict): ${result.verdict}`)
+  lines.push("  match       = 법조문 산업명에 해당하고 제외 단서에 걸리지 않음")
+  lines.push("  excluded    = 법조문 산업명에 해당하나 제외 단서에 걸림")
+  lines.push("  out_of_scope= 본 업종코드는 법조문 산업명과 일치하는 분류 레벨이 없음")
+  lines.push("  ambiguous   = 산업명을 DB에서 식별 불가 (표기 차이 등)")
+  lines.push("")
+  lines.push("판정 근거:")
+  for (const r of result.reasoning) lines.push(`  - ${r}`)
+  lines.push("")
+  lines.push("동반 호출 필수: 본 판정은 KSIC 11차 연계표 기준입니다. 법조문 본문·부칙·시행일은 korean-law-mcp의 get_law_text로 직접 확인하고, 법조문 개정/부칙 관련 단서는 사용자에게 함께 보고하세요.")
+  return textResponse(lines.join("\n"))
+}
+
+function upjongDbInfoTool(): ToolResponse {
+  const info = upjongDbInfo()
+  const lines = [
+    "업종코드↔KSIC DB 정보",
+    `생성 시각: ${info.generatedAt}`,
+    `원본 CSV: ${info.source ?? "(none)"}`,
+    `귀속연도: ${info.year ?? "N/A"}`,
+    `레코드 수: ${info.count.toLocaleString()}`,
+  ]
+  return textResponse(lines.join("\n"))
+}
+
 async function handleToolCall(name: string, args: unknown): Promise<ToolResponse> {
   try {
     const input = (args || {}) as AnyRecord
@@ -1942,6 +2335,27 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "list_taxlaw_publication_categories") {
       return await listTaxlawPublicationCategories()
+    }
+    if (name === "lookup_upjong_code") {
+      return lookupUpjongCodeTool(input as UpjongLookupArgs)
+    }
+    if (name === "lookup_ksic_code") {
+      return lookupKsicCodeTool(input as KsicLookupArgs)
+    }
+    if (name === "lookup_ksic_prefix") {
+      return lookupKsicPrefixTool(input as KsicPrefixArgs)
+    }
+    if (name === "search_industry_by_keyword") {
+      return searchIndustryByKeywordTool(input as IndustrySearchArgs)
+    }
+    if (name === "resolve_industry_class") {
+      return resolveIndustryClassTool(input as ResolveClassArgs)
+    }
+    if (name === "classify_industry_for_article") {
+      return classifyIndustryForArticleTool(input as ClassifyArticleArgs)
+    }
+    if (name === "upjong_db_info") {
+      return upjongDbInfoTool()
     }
     return textResponse(`[${ErrorCodes.INVALID_PARAM}] Unknown tool: ${name}`, true)
   } catch (error) {

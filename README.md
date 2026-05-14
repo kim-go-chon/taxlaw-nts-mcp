@@ -22,11 +22,12 @@
 
 ## 제공 도구
 
+### 국세법령정보시스템 검색·조회
 | Tool | 용도 |
 | --- | --- |
 | `search_taxlaw_all` | 국세법령정보시스템 통합검색. 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례를 함께 검색 |
 | `search_taxlaw_documents` | 세법해석례/질의회신과 과세전적부, 이의, 심사, 심판, 판례, 헌재 문서 검색 |
-| `get_taxlaw_document_text` | 검색 결과의 `DOC_ID`/`DOCID`로 문서 상세 본문 조회 |
+| `get_taxlaw_document_text` | 검색 결과의 `DOC_ID`/`DOCID`로 문서 상세 본문 조회. **`targetYear` 옵션**으로 인용 법조문 시점 자동 검증 |
 | `get_taxlaw_hometax_counsel_text` | 통합검색 홈택스 상담사례 결과의 `REQ_STD_ID`로 상세 본문 조회 |
 | `list_taxlaw_site_menus` | 국세법령정보시스템 주요 메뉴와 확인된 `action.do` 호출 정보 조회 |
 | `call_taxlaw_action` | 메뉴에서 확인한 `actionId`/`paramData`로 `action.do` 원시 JSON 조회 |
@@ -39,6 +40,29 @@
 | `search_taxlaw_publications` | 국세청 발간책자 검색. 가능한 경우 상세 API의 파일 ID와 다운로드 힌트까지 표시 |
 | `list_taxlaw_publication_categories` | 발간책자 분야 코드 조회 |
 
+### 업종코드 ↔ KSIC 매핑 (0.4.0+)
+국세청 「업종코드-표준산업분류 연계표」를 빌드 시 JSON으로 변환해 내장. 분류수준 자동 식별로 LLM이 "대분류만 보고 잘못 매칭"하는 실수를 차단합니다.
+
+| Tool | 용도 |
+| --- | --- |
+| `lookup_upjong_code` | 6자리 업종코드 → 5단계 분류(대/중/소/세/세세) + KSIC 매핑 |
+| `lookup_ksic_code` | KSIC 5자리 정확 일치 → 매핑된 업종코드 |
+| `lookup_ksic_prefix` (0.5.0) | KSIC prefix 매칭. 영문 1자리(B/C/M…)=대분류, 2~5자리=중~세세분류 |
+| `search_industry_by_keyword` | 분류명 키워드 검색. **`levels` 옵션**으로 검색 분류수준 한정 |
+| `resolve_industry_class` | 산업명 → KSIC/업종 분류수준 후보. **`levels` 옵션** |
+| `classify_industry_for_article` | 법조문 산업명·제외 단서·업종코드 → verdict ∈ {match, excluded, out_of_scope, ambiguous}. **`excludeLevels` 옵션** |
+| `upjong_db_info` | 내장 DB 신선도(귀속연도·생성시각·레코드 수) |
+
+#### 사용 예 — 조특법 시행령 §27③ 16호 판정 (749942 vs 852000)
+```js
+classify_industry_for_article({
+  industryName: "기타 전문, 과학 및 기술 서비스업",
+  upjongCode:   "749942",     // 중분류 74 "전문 서비스업"
+  excludeNames: ["수의업"]
+})
+// → verdict: out_of_scope (16호가 가리키는 KSIC 중분류 73과 일치하지 않음)
+```
+
 ## 전체 메뉴 접근
 
 먼저 `list_taxlaw_site_menus`로 메뉴 키, URL, 확인된 `actionId`, 기본 `paramData`를 확인합니다. 전용 도구가 있는 메뉴는 해당 고수준 도구를 쓰고, 없는 메뉴는 `call_taxlaw_action`에 `actionId`, `defaultParamData`, `refererPath`를 넘겨 원시 응답을 조회합니다. 세목별요약정보·세법개정건의처럼 정적 HTML로 제공되는 자료는 `get_taxlaw_page_text`에 `/html/U_0101.html`, `/cm/USECMJ001M.do` 같은 경로를 넘겨 조회합니다. 세무일정은 `list_taxlaw_site_menus(query="세무일정")`에서 확인한 `ASECMC001MR01` action에 `year`, `month`를 넘겨 조회할 수 있습니다.
@@ -46,12 +70,36 @@
 ## 빠른 시작
 
 ```bash
+git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
+cd taxlaw-nts-mcp
 npm install
-npm run build
-npm start
+npm run build      # tsc + 데이터 복사 (CSV 변환은 별도, 아래 참조)
+npm test           # 57개 단위 테스트
+npm start          # MCP STDIO 서버 실행
 ```
 
-MCP 클라이언트에서 로컬 소스 경로로 실행하려면:
+### 업종코드↔KSIC 매핑 DB 준비 (선택)
+업종코드 도구를 사용하려면 국세청 「업종코드-표준산업분류 연계표.csv」를 직접 받아 환경변수로 지정 후 **한 번** 빌드하세요. CSV는 [국세청 홈택스](https://hometax.go.kr) 또는 NTS 홈페이지의 공개 자료입니다.
+
+```bash
+# Linux/macOS — CSV 변환은 별도 명령
+UPJONG_CSV=/path/to/업종코드-표준산업분류\ 연계표.csv npm run build:data
+npm run build      # 그 다음 tsc + 데이터 복사
+
+# Windows PowerShell
+$env:UPJONG_CSV = "C:\path\to\업종코드-표준산업분류 연계표.csv"
+npm run build:data
+npm run build
+```
+
+`build:data`는 `src/data/upjong-ksic.json`을 생성하고, `build`는 TS 컴파일 + JSON을 `build/data/`로 복사합니다. `npm run build`만 실행하면 데이터를 다시 만들지 않으므로 한 번 만든 DB가 유지됩니다.
+
+CSV 미지정 시 `build:data`는 빈 DB를 생성하며, MCP는 동작하지만 업종코드 도구는 0건을 반환합니다. 빈 DB로 빌드된 상태에서 후속 작업으로 CSV를 지정해 `npm run build:data && npm run build`만 다시 실행해도 됩니다.
+
+## 설치 — MCP 클라이언트별 안내
+
+### Claude Code (Claude Desktop의 MCP 설정)
+`claude_desktop_config.json` 또는 프로젝트별 `.mcp.json`에 등록:
 
 ```json
 {
@@ -64,20 +112,48 @@ MCP 클라이언트에서 로컬 소스 경로로 실행하려면:
 }
 ```
 
-npm에 배포한 뒤에는 전역 설치 후 더 짧게 등록할 수 있습니다.
+### Codex (OpenAI Codex CLI)
+`~/.codex/config.toml`에 등록:
+
+```toml
+[mcp_servers.taxlaw-nts]
+command = "node"
+args = ["/absolute/path/to/taxlaw-nts-mcp/build/index.js"]
+default_tools_approval_mode = "approve"
+```
+
+Windows 사용자는 백슬래시 경로 + node.exe 절대경로 권장:
+
+```toml
+[mcp_servers.taxlaw-nts]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\Users\사용자명\.codex\mcp\taxlaw-nts-mcp\build\index.js']
+default_tools_approval_mode = "approve"
+```
+
+### 업데이트 절차 (양쪽 공통)
+```bash
+cd /path/to/taxlaw-nts-mcp
+git pull
+npm install
+npm run build      # CSV가 등록되어 있으면 데이터도 함께 재빌드
+```
+MCP 클라이언트(Claude Code, Codex)를 재시작하면 새 버전이 활성화됩니다.
+
+### npm 전역 설치 (선택)
+npm 레지스트리에 배포된 경우 더 짧게 등록 가능합니다.
 
 ```bash
 npm install -g taxlaw-nts-mcp
 ```
 
 ```json
-{
-  "mcpServers": {
-    "taxlaw-nts": {
-      "command": "taxlaw-nts-mcp"
-    }
-  }
-}
+{ "mcpServers": { "taxlaw-nts": { "command": "taxlaw-nts-mcp" } } }
+```
+
+```toml
+[mcp_servers.taxlaw-nts]
+command = "taxlaw-nts-mcp"
 ```
 
 ## 환경 변수
@@ -100,6 +176,12 @@ npm run watch
 npm test
 npm pack --dry-run
 ```
+
+## 데이터 출처 · 저작권 안내
+
+- **국세법령정보시스템 응답**: 본 MCP가 실시간 호출로 받아오는 모든 본문은 국세법령정보시스템(`https://taxlaw.nts.go.kr`)의 공개 자료입니다. 저작권은 각 발행기관(국세청·법원·헌법재판소·기재부 등)에 있습니다.
+- **업종코드↔KSIC 매핑 DB**: 빌드 시 사용자가 직접 제공한 「업종코드-표준산업분류 연계표.csv」(국세청 홈택스 공개 자료)를 JSON으로 변환한 결과입니다. 본 저장소에는 변환 결과(`src/data/upjong-ksic.json`)를 포함하지 않으며(`/.gitignore`로 제외), 빌드 산출물 `build/data/`도 npm 패키지 외에는 포함하지 않습니다.
+- **인용 시**: "출처: 국세청 「업종코드-표준산업분류 연계표」" 형태로 출처를 함께 표기하세요.
 
 ## 이용약관·법적 고지
 

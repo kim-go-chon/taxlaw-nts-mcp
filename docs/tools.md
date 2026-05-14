@@ -1,8 +1,16 @@
 # Tool Reference
 
-## Companion Role
+## Companion Role (필수 동반 호출)
 
-Use this MCP beside `korean-law-mcp`, not as a replacement. `korean-law-mcp` covers MOLEG/law.go.kr statutes, precedents, interpretations, tax tribunal, treaties, and citation verification. This MCP fills NTS Tax Law Information System gaps: tax interpretations/Q&A, basic rulings, NTS forms/annexes, publications, and Hometax counseling examples.
+이 MCP는 `korean-law-mcp`와 **항상 짝으로 사용**해야 합니다. 한쪽만 호출하면 누락이 발생합니다.
+
+- `korean-law-mcp`: MOLEG/law.go.kr 법조문, 시행일, 부칙, 개정연혁, 판례, 해석례, 조세심판, 조약, 인용 검증의 1차 권위.
+- `taxlaw-nts-mcp`(본 MCP): 국세청 측 세법해석례, 질의회신, 기본통칙, 별표·서식, 발간책자, 홈택스 상담사례, 그리고 **국세청 업종코드↔KSIC 매핑 DB(내장)**.
+
+호출 의무:
+1. 법령·세법 관련 모든 질문에서 두 MCP를 모두 호출하고 양쪽 출처 ID를 병기.
+2. 본 MCP가 반환한 질의회신/해석례를 사용자에게 제시할 때는 **반드시** `get_taxlaw_document_text(..., targetYear=YYYY)`로 호출해 인용 법조문 시점과 적용연도를 비교. 구법 기반이면 `korean-law-mcp`로 현행 문구와 대조하고 사문화 가능성을 함께 보고.
+3. 업종코드·산업 분류 질문은 본 MCP의 `lookup_upjong_code` / `resolve_industry_class` / `classify_industry_for_article`로 1차 응답. 추정 금지.
 
 ### Source-of-truth split (verified end-to-end)
 
@@ -41,7 +49,76 @@ Common `docType` values: `interpretations`, `disputes`, `advance`, `reply`, `tax
 
 Retrieve a document detail by `DOC_ID` or `DOCID` from `search_taxlaw_documents` or `search_taxlaw_all`.
 
-Key arguments: `id`, `docType`, `full`.
+Key arguments: `id`, `docType`, `full`, **`targetYear`**.
+
+`targetYear`(예: 2024)를 지정하면 본문 **'관련규정/관련법령' 섹션**을 자동 파싱하여:
+- 인용된 법조문의 법률번호·일자(YYYY.MM.DD)·개정 단서("개정 전", "구법", "삭제", "신설" 등)를 추출
+- `targetYear`보다 앞선 시점의 인용만 있으면 `classification = before_target`로 분류하고 **구법조문 기반 예규** 가능성 경고
+- 항상 `korean-law-mcp` `get_law_text(jo=...)`로 현행 조문과 직접 대조할 것을 안내
+
+⚠️ 이 검증은 본문 휴리스틱 파싱이며, 최종 적용가능성은 반드시 `korean-law-mcp`로 직접 대조 후 보고하세요.
+
+## 업종코드 ↔ KSIC DB 도구
+
+본 MCP는 국세청 '업종코드-표준산업분류 연계표' CSV를 빌드 시 JSON으로 변환해 내장합니다 (`build/data/upjong-ksic.json`, 약 1,784건, 귀속연도는 `upjong_db_info`로 확인).
+
+### `lookup_upjong_code`
+6자리 업종코드 → KSIC 매핑 및 대/중/소/세/세세 5단계 분류명·코드. 사용자가 업종코드를 묻거나 법조문이 특정 업종을 가리킬 때 1차 호출.
+
+### `lookup_ksic_code`
+KSIC 5자리 정확 일치 → 매핑된 업종코드 목록.
+
+### `lookup_ksic_prefix`
+KSIC 코드 prefix로 매칭. prefix 길이에 따라 분류수준 자동 식별:
+- 1자리 영문(B/C/M…) = 대분류
+- 2자리 = 중분류
+- 3자리 = 소분류 (예: 681 부동산임대업)
+- 4자리 = 세분류 (예: 4791 통신판매업, 6811 부동산 임대업)
+- 5자리 = 세세분류
+
+조특법 §6 3항 5호 "통신판매업"(KSIC 4791), §6 2조 1항 4호 "부동산 임대업"(KSIC 6811) 등 prefix 패턴이 자주 필요합니다.
+
+### `search_industry_by_keyword`
+분류명 키워드 검색(띄어쓰기·괄호 무시 정규화 매칭).
+- `levels` 옵션으로 검색 분류수준 한정 가능. 예: `levels=["l3","l4","l5"]`.
+- 사례: "주점" 키워드 검색 시 levels 미지정이면 l2 '음식점 및 주점업'에도 매칭되어 모든 음식점이 결과에 포함. levels=["l3","l4","l5"]로 좁히면 실제 주점업만.
+
+### `resolve_industry_class`
+법조문 인용 산업명 한 줄 → KSIC/업종코드의 어느 분류수준(대/중/소/세/세세)인지 후보 반환.
+같은 명칭이 여러 레벨에 등장하면 모두 보여 줍니다(예: "기타 전문, 과학 및 기술 서비스업" → KSIC 중분류 73 + 업종 중분류 85 둘 다).
+
+### `classify_industry_for_article` (핵심)
+법조문 산업명·제외 단서·평가 업종코드 → verdict ∈ {match, excluded, out_of_scope, ambiguous}.
+
+분류수준을 자동 식별하기 때문에 LLM이 "대분류명만 보고 매칭"하는 실수를 차단합니다.
+
+`excludeLevels` 옵션으로 제외 단서 검색 분류수준 한정 가능. 권장: `excludeLevels=["l3","l4","l5"]`. 7호 음식점업에서 '주점' 차감 시 l2 '음식점 및 주점업'에 휘말리는 것 방지.
+
+예 (조세특례제한법 시행령 27조 3항 16호):
+```
+classify_industry_for_article({
+  industryName: "기타 전문, 과학 및 기술 서비스업",
+  upjongCode:   "749942",
+  excludeNames: ["수의업"]
+})
+→ verdict: out_of_scope
+  (749942는 업종 중분류 74 '전문 서비스업'이며 16호가 가리키는 중분류와 일치하지 않음)
+```
+
+```
+classify_industry_for_article({
+  industryName: "기타 전문, 과학 및 기술 서비스업",
+  upjongCode:   "852000",
+  excludeNames: ["수의업"]
+})
+→ verdict: excluded
+  (852000은 중분류 85에 해당하나 소분류 852가 수의업이므로 제외)
+```
+
+⚠️ **법조문 인용 시 반드시 부칙·시행일을 `korean-law-mcp` `get_law_text`로 별도 확인**하세요. 본 도구는 분류 매핑만 책임지며, 시행일/개정 단서 해석은 책임지지 않습니다.
+
+### `upjong_db_info`
+내장 DB의 생성 시각, 원본 CSV 경로, 귀속연도, 레코드 수 (신선도 확인용).
 
 ## `get_taxlaw_hometax_counsel_text`
 
