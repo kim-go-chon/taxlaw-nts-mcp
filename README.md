@@ -73,28 +73,27 @@ classify_industry_for_article({
 git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
 cd taxlaw-nts-mcp
 npm install
-npm run build      # tsc + 데이터 복사 (CSV 변환은 별도, 아래 참조)
-npm test           # 57개 단위 테스트
+npm run build      # tsc + 내장 DB(JSON) 복사
+npm test           # 57개 단위 테스트 (선택)
 npm start          # MCP STDIO 서버 실행
 ```
 
-### 업종코드↔KSIC 매핑 DB 준비 (선택)
-업종코드 도구를 사용하려면 국세청 「업종코드-표준산업분류 연계표.csv」를 직접 받아 환경변수로 지정 후 **한 번** 빌드하세요. CSV는 [국세청 홈택스](https://hometax.go.kr) 또는 NTS 홈페이지의 공개 자료입니다.
+설치 후 **추가 다운로드 없이 모든 도구가 즉시 동작**합니다. 업종코드↔KSIC 매핑 DB(`src/data/upjong-ksic.json`, 약 1.5MB, 1,784 레코드, 귀속연도 2024)는 저장소에 포함되어 있습니다.
+
+### 매핑 DB를 최신 데이터로 교체하려면 (선택)
+국세청이 「업종코드-표준산업분류 연계표」를 갱신했을 때만 필요합니다. 본인이 받은 최신 CSV를 환경변수로 지정해 재빌드하면 됩니다.
 
 ```bash
-# Linux/macOS — CSV 변환은 별도 명령
+# Linux/macOS
 UPJONG_CSV=/path/to/업종코드-표준산업분류\ 연계표.csv npm run build:data
-npm run build      # 그 다음 tsc + 데이터 복사
 
 # Windows PowerShell
 $env:UPJONG_CSV = "C:\path\to\업종코드-표준산업분류 연계표.csv"
 npm run build:data
+
+# 그 다음 (두 OS 공통)
 npm run build
 ```
-
-`build:data`는 `src/data/upjong-ksic.json`을 생성하고, `build`는 TS 컴파일 + JSON을 `build/data/`로 복사합니다. `npm run build`만 실행하면 데이터를 다시 만들지 않으므로 한 번 만든 DB가 유지됩니다.
-
-CSV 미지정 시 `build:data`는 빈 DB를 생성하며, MCP는 동작하지만 업종코드 도구는 0건을 반환합니다. 빈 DB로 빌드된 상태에서 후속 작업으로 CSV를 지정해 `npm run build:data && npm run build`만 다시 실행해도 됩니다.
 
 ## 설치 — MCP 클라이언트별 안내
 
@@ -180,7 +179,7 @@ npm pack --dry-run
 ## 데이터 출처 · 저작권 안내
 
 - **국세법령정보시스템 응답**: 본 MCP가 실시간 호출로 받아오는 모든 본문은 국세법령정보시스템(`https://taxlaw.nts.go.kr`)의 공개 자료입니다. 저작권은 각 발행기관(국세청·법원·헌법재판소·기재부 등)에 있습니다.
-- **업종코드↔KSIC 매핑 DB**: 빌드 시 사용자가 직접 제공한 「업종코드-표준산업분류 연계표.csv」(국세청 홈택스 공개 자료)를 JSON으로 변환한 결과입니다. 본 저장소에는 변환 결과(`src/data/upjong-ksic.json`)를 포함하지 않으며(`/.gitignore`로 제외), 빌드 산출물 `build/data/`도 npm 패키지 외에는 포함하지 않습니다.
+- **업종코드↔KSIC 매핑 DB**: 본 저장소는 「업종코드-표준산업분류 연계표」(국세청 홈택스 공개 자료)를 JSON으로 변환한 결과(`src/data/upjong-ksic.json`, 귀속연도 2024)를 포함합니다. 사용자가 추가로 다운로드할 필요 없이 즉시 사용 가능합니다. 최신 데이터로 교체하려면 본인이 받은 CSV를 `UPJONG_CSV` 환경변수로 지정해 `npm run build:data && npm run build`를 다시 실행하세요.
 - **인용 시**: "출처: 국세청 「업종코드-표준산업분류 연계표」" 형태로 출처를 함께 표기하세요.
 
 ## 이용약관·법적 고지

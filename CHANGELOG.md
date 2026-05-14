@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1] - 2026-05-14
+
+### Changed
+- `src/data/upjong-ksic.json`(귀속연도 2024, 1,784 레코드)을 저장소에 포함. 사용자가 추가 CSV 다운로드·환경변수 설정 없이 `git clone + npm install + npm run build`만으로 모든 업종코드 도구 즉시 동작.
+- `.gitignore`에서 `src/data/upjong-ksic.json` 제외 처리 해제.
+- README의 설치 안내 단순화 — CSV 다운로드는 선택적(최신화 시에만).
+
 ## [0.5.0] - 2026-05-14
 
 ### Added
