@@ -22,11 +22,12 @@ This server only displays items returned by the NTS Tax Law Information System. 
 
 ## Tools
 
+### NTS Tax Law Information System search/retrieval
 | Tool | Purpose |
 | --- | --- |
 | `search_taxlaw_all` | Integrated NTS search across annexes/forms, tax statutes, interpretations/Q&A, cases, publications, and Hometax counseling |
 | `search_taxlaw_documents` | Search interpretations/Q&A and dispute documents |
-| `get_taxlaw_document_text` | Retrieve document detail text by `DOC_ID`/`DOCID` |
+| `get_taxlaw_document_text` | Retrieve document detail text by `DOC_ID`/`DOCID`. **`targetYear` option**: auto-verifies cited statute dates and warns if the document is based on superseded provisions |
 | `get_taxlaw_hometax_counsel_text` | Retrieve Hometax counseling detail text by `REQ_STD_ID` |
 | `list_taxlaw_site_menus` | List major NTS menus plus observed `action.do` call metadata |
 | `call_taxlaw_action` | Call a raw NTS `action.do` action with `actionId` and `paramData` |
@@ -39,6 +40,29 @@ This server only displays items returned by the NTS Tax Law Information System. 
 | `search_taxlaw_publications` | Search NTS publications |
 | `list_taxlaw_publication_categories` | List publication category codes |
 
+### Industry-code ↔ KSIC mapping (0.5.x)
+The official NTS "Industry code ↔ Standard Industrial Classification (KSIC) mapping" is bundled as JSON (~1.5MB, 1,784 records, FY 2024). Tools auto-identify which classification level (l1 대분류 / l2 중분류 / l3 소분류 / l4 세분류 / l5 세세분류) a statute clause refers to, preventing the common LLM mistake of "matching on top-level name only".
+
+| Tool | Purpose |
+| --- | --- |
+| `lookup_upjong_code` | 6-digit industry code → 5-level classification path + KSIC mapping |
+| `lookup_ksic_code` | Exact 5-digit KSIC code → mapped industry codes |
+| `lookup_ksic_prefix` | KSIC prefix match. 1-letter (B/C/M…) = l1, 2-5 digits = l2~l5. e.g. `681` (real-estate rental), `4791` (mail-order retail), `7421` (cleaning) |
+| `search_industry_by_keyword` | Keyword search over class names (whitespace/punctuation normalized). **`levels` option** narrows search to specific levels |
+| `resolve_industry_class` | Map a clause-quoted industry name to its KSIC/NTS classification levels. **`levels` option** |
+| `classify_industry_for_article` | Given (statute industry name, exclusion clues, industry code under evaluation) → verdict ∈ {match, excluded, out_of_scope, ambiguous}. **`excludeLevels` option** narrows exclusion match levels to prevent over-exclusion |
+| `upjong_db_info` | Bundled DB freshness (generation time, FY, record count) |
+
+#### Example — Korean Restriction Special Tax Act Decree §27③ item 16
+```js
+classify_industry_for_article({
+  industryName: "기타 전문, 과학 및 기술 서비스업",     // Korean: "Other professional, scientific, and technical services"
+  upjongCode:   "749942",                                  // NTS l2 = 74 "Professional services"
+  excludeNames: ["수의업"]                                  // Korean: veterinary services
+})
+// → verdict: out_of_scope (749942 is NTS l2=74, while item 16 refers to KSIC l2=73)
+```
+
 ## Full Menu Access
 
 Use `list_taxlaw_site_menus` first to find the menu key, URL, observed `actionId`, and default `paramData`. Prefer a high-level tool when one is listed. For remaining menu-backed data, pass the observed `actionId`, `defaultParamData`, and `refererPath` to `call_taxlaw_action`. Static HTML resources, such as tax-summary pages under `/html/U_0101.html` and tax-law suggestion guidance at `/cm/USECMJ001M.do`, can be read with `get_taxlaw_page_text`. Tax calendar data is available through the `ASECMC001MR01` action listed by `list_taxlaw_site_menus(query="세무일정")`.
@@ -46,12 +70,35 @@ Use `list_taxlaw_site_menus` first to find the menu key, URL, observed `actionId
 ## Quick Start
 
 ```bash
+git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
+cd taxlaw-nts-mcp
 npm install
-npm run build
-npm start
+npm run build      # tsc + bundle DB copy
+npm test           # 57 unit tests (optional)
+npm start          # MCP STDIO server
 ```
 
-Local MCP client configuration:
+After install, **all tools work immediately — no extra downloads or environment variables required**. The industry-code ↔ KSIC mapping DB is bundled (`src/data/upjong-ksic.json`).
+
+### Refresh the mapping DB (optional)
+Only needed when the NTS releases an updated CSV. Point `UPJONG_CSV` at your downloaded file:
+
+```bash
+# Linux/macOS
+UPJONG_CSV=/path/to/your-mapping.csv npm run build:data
+
+# Windows PowerShell
+$env:UPJONG_CSV = "C:\path\to\your-mapping.csv"
+npm run build:data
+
+# Then on either OS
+npm run build
+```
+
+## Install — per MCP client
+
+### Claude Code (Claude Desktop MCP)
+Add to `claude_desktop_config.json` or project-local `.mcp.json`:
 
 ```json
 {
@@ -64,20 +111,48 @@ Local MCP client configuration:
 }
 ```
 
-After npm publishing:
+### Codex (OpenAI Codex CLI)
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.taxlaw-nts]
+command = "node"
+args = ["/absolute/path/to/taxlaw-nts-mcp/build/index.js"]
+default_tools_approval_mode = "approve"
+```
+
+Windows users: use absolute node.exe path:
+
+```toml
+[mcp_servers.taxlaw-nts]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\Users\<you>\.codex\mcp\taxlaw-nts-mcp\build\index.js']
+default_tools_approval_mode = "approve"
+```
+
+### Update procedure
+```bash
+cd /path/to/taxlaw-nts-mcp
+git pull
+npm install
+npm run build
+```
+Restart the MCP client (Claude Code / Codex) to pick up the new build.
+
+### npm global install (optional)
+Once published to npm:
 
 ```bash
 npm install -g taxlaw-nts-mcp
 ```
 
 ```json
-{
-  "mcpServers": {
-    "taxlaw-nts": {
-      "command": "taxlaw-nts-mcp"
-    }
-  }
-}
+{ "mcpServers": { "taxlaw-nts": { "command": "taxlaw-nts-mcp" } } }
+```
+
+```toml
+[mcp_servers.taxlaw-nts]
+command = "taxlaw-nts-mcp"
 ```
 
 ## Environment

@@ -288,7 +288,7 @@ export function classifyIndustryForArticle(input: ArticleClassificationInput): A
 
   if (!matchedLevel) {
     reasoning.push(
-      `'${input.industryName}'은 업종코드 ${input.upjongCode}의 어떤 분류 레벨과도 일치하지 않습니다. 16호 산업명이 다른 산업을 가리키거나, 본 업종코드는 적용 범위 밖일 수 있습니다.`,
+      `'${input.industryName}'은 업종코드 ${input.upjongCode}의 어떤 분류 레벨과도 일치하지 않습니다. 법조문 산업명이 다른 분류를 가리키거나, 본 업종코드는 적용 범위 밖일 수 있습니다.`,
     )
   }
 

@@ -19,7 +19,7 @@ import {
 import { checkYearApplicability, formatYearCheck } from "./year-check.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.5.1"
+const VERSION = "0.5.2"
 
 const COMPANION_NOTICE =
   "동반 호출 필수: 본 도구는 korean-law-mcp(법제처 Open API)와 항상 짝으로 사용하세요. 법령 본문·시행일·개정연혁 확인은 korean-law-mcp의 search_law + get_law_text가 1차 권위입니다. 본 MCP는 국세청 측 해석례·질의회신·기본통칙·서식·홈택스 상담사례를 보완합니다."

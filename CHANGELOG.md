@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.2] - 2026-05-14
+
+### Fixed
+- CI: `Run unit tests` 단계가 `node --test test/utils.test.js`만 돌려 0.5.x 신규 테스트 23 케이스(upjong/year-check)를 검증하지 않던 문제 → `npm test`로 변경.
+- `classifyIndustryForArticle` reasoning 메시지에 잔존하던 "16호 산업명이…" 하드코딩 표현 → 호 중립적 문구로 일반화.
+
+### Docs
+- README-EN을 0.5.x 도구셋으로 갱신: 업종코드↔KSIC 매핑 7개 도구, `targetYear` 옵션, Codex/Claude Code 설치 절차, 업데이트 절차.
+
 ## [0.5.1] - 2026-05-14
 
 ### Changed
