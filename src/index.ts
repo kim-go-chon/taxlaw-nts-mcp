@@ -19,10 +19,53 @@ import {
 import { checkYearApplicability, formatYearCheck } from "./year-check.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.5.2"
+const VERSION = "0.6.0"
 
 const COMPANION_NOTICE =
   "동반 호출 필수: 본 도구는 korean-law-mcp(법제처 Open API)와 항상 짝으로 사용하세요. 법령 본문·시행일·개정연혁 확인은 korean-law-mcp의 search_law + get_law_text가 1차 권위입니다. 본 MCP는 국세청 측 해석례·질의회신·기본통칙·서식·홈택스 상담사례를 보완합니다."
+
+const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 자료를 검색·조회한다.
+세법·법령 질의에서 korean-law-mcp(법제처 Open API)와 항상 짝으로 호출한다.
+
+[필수 응답 구조 — 5단]
+사용자에게 보낼 답변은 아래 5단을 순서대로 출력. 섹션 간 내용 섞기 금지.
+단순 사실 1~2문장 단답형 질문은 생략 가능.
+
+## 결론 (요지)
+- 사용자 이해와 어긋나면 맨 앞에서 명시
+- 핵심 판정·조치를 1~2문장으로
+
+## 매트릭스 (케이스별 처리)
+- 분기 기준(소득구성·신고유형·거래유형 등)을 표(table)로 정리
+- 각 행에 결론 + 근거 법령 함께 표기
+
+## 법령 래퍼 (Citation) — 출처별 분리
+(1) 법률 — korean-law-mcp.get_law_text 결과 (예: 소득세법 §27)
+(2) 시행령/시행규칙 — MST·시행일 명시
+(3) 기본통칙 — list/get_taxlaw_basic_ruling 또는 본문 인용
+(4) 국세청 해석례 / 심판례 / 판례 — 문서번호·일자·핵심 인용문
+
+## AI 보충 해석 (⚠ 검증되지 않음)
+- LLM 자체 지식·실무 팁은 위 1~3섹션과 섞지 말고 별도 단락
+- ⚠ 경고 표시 필수
+
+## 인용/피드백 prompt 2줄
+- "인용 본문을 더 부착해드릴까요? '예' 답변 시 본문 부착"
+- "1~5점 + 한 줄 코멘트"
+
+[출처 격리] (1)~(4)는 검증된 출처. 섹션 내용을 다른 섹션과 섞지 말 것.
+[빈 결과 처리] 빈 섹션도 헤더 유지 + "검색 결과 없음" 표기. 추측·생성 금지.
+
+[표준 워크플로]
+1. 키워드 추출
+2. korean-law-mcp.search_law + get_law_text로 법률·시행령 조회 (1차 권위)
+3. 본 MCP의 search_taxlaw_all 또는 search_taxlaw_documents로 해석례·통칙·발간책자 보완
+4. 해석례 인용 시 get_taxlaw_document_text(targetYear=YYYY)로 연도 검증 필수
+5. 5단 포맷으로 응답 작성
+
+[중복 처리] 두 MCP 양쪽에서 회수된 동일 사건은 문서번호(공백·하이픈 제거)/생산일자/제목으로 합치고 양쪽 출처 ID 병기.
+
+[연도 검증] 사용자가 특정 연도(예: 2025년 귀속) 적용 여부를 확인하려는 경우 get_taxlaw_document_text에 targetYear 필수. 구법조문 기반 예규는 ⚠ 사문화 가능성 경고 동봉.`
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -2365,7 +2408,7 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
 
 const server = new Server(
   { name: "taxlaw-nts", version: VERSION },
-  { capabilities: { tools: {} } },
+  { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
 )
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))

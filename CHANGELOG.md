@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0] - 2026-05-18
+
+### Added
+- `Server` 생성자에 `instructions` 옵션 주입. MCP `InitializeResult.instructions`로 전달되어 클라이언트(Claude Code 등)가 system-reminder 형태로 LLM에 자동 노출. 5단 응답 포맷(결론 → 매트릭스 → 법령 래퍼 → AI 보충 → 인용/피드백 prompt)을 LLM이 항상 따르도록 강제.
+- 응답 포맷 핵심 규칙:
+  - **출처 격리** — 법률/시행령/통칙/해석례 4단을 섹션별 분리, AI 보충은 별도 ⚠ 단락
+  - **연도 검증 의무** — 해석례 인용 시 `get_taxlaw_document_text(targetYear=YYYY)` 호출 명시
+  - **중복 처리** — korean-law-mcp와 양쪽에서 회수된 동일 사건은 문서번호/일자/제목으로 합치고 양쪽 출처 ID 병기
+
+### Changed
+- 버전 0.6.0.
+- 기존 `COMPANION_NOTICE`(각 도구 description에 박힌 동반호출 안내)는 그대로 유지. 도구 호출 시점의 즉시 신호로 유효하며 instructions와 상호 보완.
+
 ## [0.5.2] - 2026-05-14
 
 ### Fixed
