@@ -145,3 +145,87 @@ export function formatLawArticleRef(ref: LawArticleRef): string {
   const parts = [ref.lawName, ref.article, ref.paragraph, ref.item].filter(Boolean)
   return parts.join(" ")
 }
+
+// 본문에 인용된 기본통칙(예: "기본통칙 27-12", "27-55…10", "법인세법 기본통칙 19-19…11")을 추출.
+// 옛 번호("N-N")와 현행 번호("N-N…M") 형식을 구분해 LLM이 옛 번호 인용을 그대로 옮기는 환각을 차단한다.
+
+export interface BasicRulingRef {
+  // 원본 표기 (예: "소득세법 기본통칙 27-12")
+  raw: string
+  // 세목명. 인접 6자 이내에 세법명이 발견되면 채움. 없으면 null.
+  taxLaw: string | null
+  // 첫 번째 숫자 (예: "27")
+  major: string
+  // 두 번째 숫자 (예: "12")
+  minor: string
+  // … 뒤 숫자 (예: "10"). 옛 번호 형식이면 null.
+  sub: string | null
+  // "current": N-N…M (현행 형식) / "legacy_candidate": N-N (옛 번호 후보)
+  format: "current" | "legacy_candidate"
+}
+
+// 통칙 번호 패턴.
+//   - "통칙" / "기본통칙" / "기본 통칙" 키워드가 앞에 있을 때만 통칙으로 인정 (조-호 표기와 구분).
+//   - 숫자 사이의 구분자: 하이픈("-"), 가로획 빼기("‐"/"−"/"–"/"—"), 점 두/세 개("‥"/"..."), HORIZONTAL ELLIPSIS("…").
+//   - 옛 형식: N-N (예: 27-12). 현행 형식: N-N…M (예: 27-55…10).
+const RULING_KEYWORD = /(?:기본\s?통칙|통칙)/
+const RULING_PATTERN = new RegExp(
+  `${RULING_KEYWORD.source}\\s*(\\d+)\\s*[-\\u2010-\\u2015]\\s*(\\d+)(?:\\s*(?:[\\u2025\\u2026]|\\.\\.\\.?)\\s*(\\d+))?`,
+  "g",
+)
+
+// 세법명을 통칙 번호 앞 6자 안에서 발견하면 taxLaw로 채움.
+const TAX_LAW_HEAD = /(소득세법|법인세법|부가가치세법|상속세\s?및\s?증여세법|상증세법|상증법|국세기본법|국세징수법|조세특례제한법|조특법|지방세법|관세법|개별소비세법|주세법|종합부동산세법|교육세법|농어촌특별세법|조세범\s?처벌법)/
+
+function normalizeTaxLawName(raw: string): string {
+  const collapsed = raw.replace(/\s+/g, "")
+  const alias: Record<string, string> = {
+    "상증세법": "상속세 및 증여세법",
+    "상증법": "상속세 및 증여세법",
+    "조특법": "조세특례제한법",
+    "상속세및증여세법": "상속세 및 증여세법",
+    "조세범처벌법": "조세범 처벌법",
+  }
+  return alias[collapsed] || raw.replace(/\s+/g, " ")
+}
+
+export function extractBasicRulingRefs(text: string): BasicRulingRef[] {
+  if (!text) return []
+  const out: BasicRulingRef[] = []
+  const seen = new Set<string>()
+
+  let m: RegExpExecArray | null
+  RULING_PATTERN.lastIndex = 0
+  while ((m = RULING_PATTERN.exec(text))) {
+    const major = m[1]
+    const minor = m[2]
+    const sub = m[3] || null
+    const start = m.index
+    const raw = m[0]
+
+    // 통칙 키워드 직전 30자 이내에서 세법명 추출 (가장 가까운 것).
+    const head = text.slice(Math.max(0, start - 30), start)
+    const taxMatch = head.match(/.*(소득세법|법인세법|부가가치세법|상속세\s?및\s?증여세법|상증세법|상증법|국세기본법|국세징수법|조세특례제한법|조특법|지방세법|관세법|개별소비세법|주세법|종합부동산세법|교육세법|농어촌특별세법|조세범\s?처벌법)/)
+    const taxLaw = taxMatch ? normalizeTaxLawName(taxMatch[1]) : null
+
+    const key = `${taxLaw || ""}|${major}-${minor}-${sub || ""}`
+    if (seen.has(key)) continue
+    seen.add(key)
+
+    out.push({
+      raw,
+      taxLaw,
+      major,
+      minor,
+      sub,
+      format: sub ? "current" : "legacy_candidate",
+    })
+  }
+
+  return out
+}
+
+export function formatBasicRulingRef(ref: BasicRulingRef): string {
+  const num = ref.sub ? `${ref.major}-${ref.minor}…${ref.sub}` : `${ref.major}-${ref.minor}`
+  return ref.taxLaw ? `${ref.taxLaw} 기본통칙 ${num}` : `기본통칙 ${num}`
+}

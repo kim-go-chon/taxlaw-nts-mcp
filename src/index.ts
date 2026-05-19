@@ -17,7 +17,7 @@ import {
   type UpjongRecord,
 } from "./upjong.js"
 import { checkYearApplicability, formatYearCheck } from "./year-check.js"
-import { extractLawArticleRefs } from "./citation-extract.js"
+import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef, type BasicRulingRef } from "./citation-extract.js"
 import { assessDoctrineValidity, formatAssessment, type DoctrineMeta } from "./doctrine-assess.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
@@ -67,7 +67,16 @@ const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 
 
 [중복 처리] 두 MCP 양쪽에서 회수된 동일 사건은 문서번호(공백·하이픈 제거)/생산일자/제목으로 합치고 양쪽 출처 ID 병기.
 
-[연도 검증] 사용자가 특정 연도(예: 2025년 귀속) 적용 여부를 확인하려는 경우 get_taxlaw_document_text에 targetYear 필수. 구법조문 기반 예규는 ⚠ 사문화 가능성 경고 동봉.`
+[연도 검증] 사용자가 특정 연도(예: 2025년 귀속) 적용 여부를 확인하려는 경우 get_taxlaw_document_text에 targetYear 필수. 구법조문 기반 예규는 ⚠ 사문화 가능성 경고 동봉.
+
+[기본통칙 인용 검증 — 환각·누락 방지 강제 절차]
+질의회신·해석례 본문에 인용된 "기본통칙 N-N" 표기는 옛 번호일 가능성이 높다(통칙 번호 체계가 "N-N…M" 형식으로 재편됨). 그대로 답변에 옮기지 말 것. 다음 절차를 반드시 수행:
+1. get_taxlaw_document_text 응답의 "⚠ 통칙 인용 검증 필요" 안내를 무시하지 말 것. 안내가 있으면 답변 작성 전에 아래 2~4단계 실행.
+2. list_taxlaw_basic_ruling_laws(query="해당 세법")로 lawId 확보.
+3. get_taxlaw_basic_ruling_text(lawId, query="주제 키워드")로 현행 본문/번호 1차 확인. 단건이 아닌 주제 키워드로 호출하여 인접 번호대(예: 27-55…5~13)를 일괄 수집할 것 — 관련 통칙 군집 누락 방지.
+4. 옛 번호("N-N")는 절대 답변에 노출 금지. 본문에 옛 번호가 있으면 (a) 현행 번호로 정정하거나, (b) "본문 인용 — 현행 번호 미확인" 형태로 ⚠ 표기.
+
+위 절차는 통칙 도구가 호출 가능한 경우에 한해 자동 적용. 통칙 도구 응답이 NOT_FOUND이면 답변에서 통칙 인용 자체를 제거하거나 "현행 번호 미확인" ⚠ 표기 유지.`
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -1641,6 +1650,37 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
       "동반 호출 필수: 위 검증은 본문 휴리스틱입니다. 인용 법조문의 현행 적용가능성은 반드시 korean-law-mcp의 search_law + get_law_text(law=..., jo=...)로 직접 대조 후 사용자에게 보고하세요.",
       "",
     )
+  }
+
+  // 기본통칙 인용 검증 — 본문에 "기본통칙 N-N" 또는 "N-N…M"가 있으면 LLM에게 직접 조회를 강제.
+  // 옛 번호 형식("N-N")이 검출되면 답변에 그대로 옮기지 말도록 ⚠ 강제 경고.
+  const sourceForRulingCheck = [gist, answer, bodyText].filter(Boolean).join("\n\n")
+  if (sourceForRulingCheck) {
+    const rulingRefs = extractBasicRulingRefs(sourceForRulingCheck)
+    if (rulingRefs.length > 0) {
+      const legacy = rulingRefs.filter((r) => r.format === "legacy_candidate")
+      const current = rulingRefs.filter((r) => r.format === "current")
+      lines.push("── 기본통칙 인용 검증 ──")
+      if (legacy.length > 0) {
+        lines.push(
+          `⚠ 옛 번호 형식("N-N") 통칙 인용 ${legacy.length}건 검출 — 현행 번호 체계는 "N-N…M". 답변에 그대로 옮기지 말 것:`,
+        )
+        for (const ref of legacy) {
+          lines.push(`  - ${formatBasicRulingRef(ref)} → 현행 번호 미확인. get_taxlaw_basic_ruling_text 호출 필수`)
+        }
+      }
+      if (current.length > 0) {
+        lines.push(`현행 형식 통칙 인용 ${current.length}건:`)
+        for (const ref of current) {
+          lines.push(`  - ${formatBasicRulingRef(ref)}`)
+        }
+      }
+      lines.push("강제 절차:")
+      lines.push("  1) list_taxlaw_basic_ruling_laws(query=세법명)로 lawId 확보")
+      lines.push("  2) get_taxlaw_basic_ruling_text(lawId, query=주제어)로 현행 본문/번호 직접 확인")
+      lines.push("  3) 단건이 아닌 주제어로 호출 → 인접 번호대 일괄 수집 (관련 통칙 군집 누락 방지)")
+      lines.push("")
+    }
   }
 
   return truncate(lines.join("\n"), full ? 50000 : 30000)
