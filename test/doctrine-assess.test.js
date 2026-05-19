@@ -123,3 +123,74 @@ test("formatAssessment: scorecard contains final verdict and next-action queue",
   assert.match(text, /권장 후속 호출 큐/)
   assert.match(text, /korean-law-mcp/)
 })
+
+// ─── v0.9.0 신규 신호 ─────────────────────────────────────────
+
+test("v0.9.0: 옛 부가세법 시행령 §35 인용 → restructured_location 신호 + superseded_or_repealed 격상", () => {
+  const body = [
+    "가. 관련 조세 법령",
+    "○ 부가가치세법시행령 제35조 제1호 (인적용역의 범위)",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2003.10.14",
+  })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2003.10.14" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  assert.ok(a.restructureHits.length >= 1, "restructureHits 1건 이상")
+  assert.equal(a.restructureHits[0].oldRef, "시행령.제35조제1호")
+  assert.equal(a.restructureHits[0].newRef, "시행령.제42조제1호")
+  assert.ok(a.signals.some((s) => s.kind === "restructured_location"), "restructured_location 신호 부착")
+  assert.equal(a.finalValidity, "superseded_or_repealed")
+})
+
+test("v0.9.0: 최근 심판례 + 시점 단서 없음 → recent_doctrine_inferred 신호", () => {
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 제26조 제1항 제15호",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2024.03.27",
+  })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2024.03.27" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  assert.equal(yc.classification, "target_or_later_inferred")
+  assert.ok(a.signals.some((s) => s.kind === "recent_doctrine_inferred"), "recent_doctrine_inferred 신호 부착")
+  assert.equal(a.finalValidity, "needs_current_check")
+})
+
+test("v0.9.0: citations_no_dates → citations_no_dates 신호 + unverified", () => {
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2018.05.10", // 8년차 → not recent
+  })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2018.05.10" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  assert.equal(yc.classification, "citations_no_dates")
+  assert.ok(a.signals.some((s) => s.kind === "citations_no_dates"), "citations_no_dates 신호 부착")
+  assert.equal(a.finalValidity, "unverified")
+})

@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.9.0] - 2026-05-19
+
+### Added — 사문화 채점 정확도 3대 개선
+
+**#1. 세법 구조개편 이력 사전 (`statute-restructures.json` + `restructure-map.ts`)**
+- 신규 데이터 `src/data/statute-restructures.json` — 세법 전부개정으로 인한 옛 조 번호 → 현행 조 번호 매핑. 1차 범위: **부가가치세법 2013.7.1 전부개정** (법 §12 → §26, 시행령 §35 → §42, 시행규칙 §11의3 → §29 등 약 20개 매핑).
+- 신규 모듈 `src/restructure-map.ts` — `lookupRestructure(lawName, articleRef)` / `detectPreRestructureCitations(citations)` / `formatRestructureHits(hits)` export. 가장 구체적인 키(조+항+호)부터 fallback 룩업.
+- `assess_doctrine_validity` 통합: 인용 조문 추출 후 자동 룩업. 옛 위치 매칭되면 신규 신호 `🔴 [restructured_location]` + finalValidity를 `superseded_or_repealed`로 격상. 답변에 옛 조 번호를 그대로 옮기지 않도록 강제 안내.
+- `get_taxlaw_document_text` 응답 말미에 `── 구조개편 이력 자동 검출 ──` 섹션 자동 부착.
+
+**#2. 최근 심판례·해석례 적극 라벨링 (`target_or_later_inferred`)**
+- 신규 라벨 `target_or_later_inferred` — 본문에 시점 단서(YYYY.MM.DD)가 없어도 **인용 조문 추출 ≥1건 + 생산일자가 targetYear의 N년 이내**(기본 3년)이면 적극 라벨링. ✅⚠️ 동시 표시(현행 적용 가능성 높음 + 직접 대조 권장).
+- 환경변수 `TAXLAW_RECENT_THRESHOLD_YEARS`로 문턱값 override 가능 (기본 3, 양수 정수).
+- `checkYearApplicability(input)`에 `productionDate` 신규 입력 파라미터 추가. `index.ts`의 두 호출 지점(`get_taxlaw_document_text` / `assess_doctrine_validity`) 모두 자동 전달.
+- 이전엔 `no_citations` ❓로 잘못 분류되던 2023~2026 심판례·해석례 다수가 이제 `target_or_later_inferred` ✅로 분류.
+
+**#3. `no_citations` 라벨 세분화 (`citations_no_dates`)**
+- 신규 라벨 `citations_no_dates` — 인용 조문은 추출됐으나 시점 단서가 없는 케이스. 이전엔 `no_citations` / `uncertain`에 섞여 들어갔던 케이스를 분리.
+- 라벨 의미 명확화:
+  - `no_citations`: 인용 0건 (진짜 비어있음)
+  - `citations_no_dates`: 인용 ≥1건, 시점 0건 (v0.9.0 신규)
+  - `target_or_later_inferred`: 인용 ≥1건, 시점 0건, 생산 최근 N년 이내 (v0.9.0 신규)
+- `extractCitations`에 `ARTICLE_HINT_PATTERN` 추가 — "법령명 + 제N조" 형태만 있어도 chunk 생성(시점·법률번호·개정단서 없어도). 이전엔 chunk가 0건으로 잘못 처리되던 케이스가 해소됨.
+
+**citation-extract.ts 보완 — 공백 없는 옛 표기 대응**
+- `LAW_NAME_ALIAS`에 "부가가치세법시행령" / "소득세법시행령" / "법인세법시행령" 등 9개 alias 추가. 2013년 이전 예규 본문에 흔한 표기 정확히 잡음.
+
+### Changed
+- `DoctrineAssessment`에 `restructureHits: RestructureHit[]` 필드 신규.
+- `DoctrineSignal.kind`에 `restructured_location` / `recent_doctrine_inferred` / `citations_no_dates` 3종 추가.
+- `YearCheckClassification`에 `target_or_later_inferred` / `citations_no_dates` 2종 추가. 기존 `uncertain` 호환 유지.
+
+### Tested
+- 단위 테스트 86 → **108** (회귀 +22):
+  - `test/restructure-map.test.js` 11건 신규 — 룩업 우선순위, 중복 dedupe, 사전 외 법령 null, 공백 없는 표기.
+  - `test/year-check.test.js` +8건 — 신규 라벨 분기, 환경변수 override, 메타 fallback 동작.
+  - `test/doctrine-assess.test.js` +3건 — 신호 부착·finalValidity 격상.
+
+### Migration
+- 라벨 enum 확장은 호출 측 LLM이 신규 라벨을 모를 수 있으나 메시지 텍스트로 의미가 자연어 이해 가능 — 하위호환.
+- v0.8.0 사용자 대상 동작 변경: `no_citations`/`uncertain`으로 분류되던 일부 케이스가 v0.9.0에서는 `target_or_later_inferred` / `citations_no_dates` / `superseded_or_repealed`로 더 정확히 분기됨.
+
+### Motivation
+- v0.7.0 사문화 채점이 부가세법 2013.7.1 전부개정 같은 "구조 개편으로 인한 조문 위치 이전"을 자동 인식 못해 false-negative 발생. 옛 §35 인용이 명백한 케이스도 `no_citations`로 보수 분류됨.
+- 최근 심판례(생산 ≤3년)는 본문에 (YYYY.MM.DD) 시점 단서가 없는 경우가 많아 인용 9건 추출됐어도 ❓ 라벨로 떨어짐. 적극 라벨링 + 단서 부착으로 사용자 효용 향상.
+
 ## [0.8.0] - 2026-05-19
 
 ### Added

@@ -17,6 +17,9 @@ export interface YearCheckInput {
   targetYear?: number
   // 문서 메타데이터에서 추출한 관련법령 목록(쉼표·공백 구분). 본문 섹션이 비었을 때 fallback.
   metadataCitations?: string | string[]
+  // 문서 생산일자(YYYY.MM.DD). v0.9.0 — '최근 심판례 적극 라벨링' 분기에 사용.
+  // 본문에 시점 단서가 없어도 생산일자가 targetYear 근처면 target_or_later_inferred로 격상.
+  productionDate?: string
 }
 
 export interface CitedLawRef {
@@ -34,12 +37,14 @@ export interface CitedLawRef {
 export type YearCheckClassification =
   | "valid_current"           // 인용 시점이 targetYear 이상이고 개정 단서 없음
   | "target_or_later"         // 인용 시점이 targetYear 이상 (정상)
+  | "target_or_later_inferred" // v0.9.0 — 인용은 있으나 시점 단서 없고 생산이 최근 N년 이내. 적극 라벨링.
   | "before_target"           // 인용 시점이 targetYear보다 앞섬 (구법 가능성)
   | "partially_outdated"      // before_target + 개정 단서 (부분 사문화 가능성↑)
   | "repealed_or_superseded"  // 인용 법령 폐지·전부개정 단서 감지 (전면 사문화 가능성)
-  | "no_citations"            // 관련규정 섹션·메타데이터 모두 비어 자동검증 불가
+  | "no_citations"            // 인용 0건 (메타·본문 모두 비어 자동검증 불가)
+  | "citations_no_dates"      // v0.9.0 — 인용 ≥1건이지만 시점 단서(YYYY.MM.DD) 추출 실패. 진짜 no_citations와 분리.
   | "no_target"               // targetYear 미지정
-  | "uncertain"               // 인용은 있으나 시점 추출 실패
+  | "uncertain"               // 인용은 있으나 시점 추출 실패 (호환 유지 — 신규 분기에서는 사용 안 함)
 
 export interface YearCheckResult {
   hasRelatedSection: boolean
@@ -114,6 +119,9 @@ export function extractRelatedSection(body: string): string | null {
 
 const DATE_PATTERN = /(\d{4})\.\s?(\d{1,2})\.\s?(\d{1,2})\.?/g
 const LAW_NUMBER_PATTERN = /법률\s*제\s*(\d{1,6})\s*호/
+// v0.9.0 — 조 번호 hint. 시점·법률번호·개정단서가 없어도 "법령명 + 제N조"만 있어도
+// 인용으로 간주하기 위한 신호. citations_no_dates / target_or_later_inferred 분기 활성화용.
+const ARTICLE_HINT_PATTERN = /제\s?\d+\s?조/
 // 약한 단서: 단순 개정/신설 등은 살아있는 조문일 수도 있음.
 const AMENDMENT_CLUE_PATTERNS: Array<{ re: RegExp; label: string; supersession: boolean }> = [
   { re: /개정\s*전|개정되기\s*전/, label: "개정 전 조문 인용", supersession: false },
@@ -155,7 +163,9 @@ export function extractCitations(text: string): CitedLawRef[] {
         if (c.supersession) hasSupersessionClue = true
       }
     }
-    if (dates.length === 0 && !lawNum && clues.length === 0) continue
+    // v0.9.0 — 시점·법률번호·단서가 모두 없어도 "제N조" 조 번호 hint가 있으면 chunk 생성.
+    // 이후 신규 라벨(citations_no_dates / target_or_later_inferred) 분기에서 활용.
+    if (dates.length === 0 && !lawNum && clues.length === 0 && !ARTICLE_HINT_PATTERN.test(chunk)) continue
     dates.sort()
     out.push({
       rawSnippet: chunk.slice(0, 400),
@@ -180,12 +190,23 @@ function normalizeMetadataInput(meta?: string | string[]): string {
 const CLASSIFICATION_LABELS: Record<YearCheckClassification, string> = {
   valid_current: "✅ 현행 유효 추정 (인용 시점 ≥ targetYear, 개정 단서 없음)",
   target_or_later: "🟢 targetYear 이후 시점 (정상)",
+  target_or_later_inferred: "✅⚠️ 최근 심판례·해석례 (시점 단서 없으나 생산 N년 이내 + 인용 추출 — 현행 적용 가능성 높음, 단 직접 대조 권장)",
   before_target: "⚠️ 구법조문 기반 (사문화 가능성 — 현행 조문 대조 필수)",
   partially_outdated: "⚠️ 부분 사문화 가능성 (구법 + 개정 단서 — 결론 일부만 유효할 수 있음)",
   repealed_or_superseded: "🔴 폐지·전부개정 단서 감지 (전면 사문화 가능성 매우 높음)",
-  no_citations: "❓ 관련규정 섹션·메타데이터 모두 비어 자동검증 불가",
+  no_citations: "❓ 인용 0건 — 본문·메타 모두 비어 자동검증 불가",
+  citations_no_dates: "❓ 인용은 있으나 시점 단서 없음 — 인용 법령명 기준으로 직접 대조 필요",
   no_target: "ℹ️ targetYear 미지정 — 시점 비교 미수행",
   uncertain: "❓ 인용은 있으나 시점 추출 실패",
+}
+
+// v0.9.0 — '최근' 문턱값. 환경변수 TAXLAW_RECENT_THRESHOLD_YEARS로 override 가능.
+// 기본 3년 — targetYear=2026이면 2023.01 이후 생산이 적극 라벨링 대상.
+function getRecentThresholdYears(): number {
+  const env = process.env.TAXLAW_RECENT_THRESHOLD_YEARS
+  if (!env) return 3
+  const n = Number(env)
+  return Number.isFinite(n) && n > 0 ? n : 3
 }
 
 export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
@@ -235,6 +256,11 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
   let classification: YearCheckClassification = "uncertain"
   const year = input.targetYear
 
+  // v0.9.0 — 생산일자 기반 'recency' 계산. 본문 시점 추출 실패 시 적극 라벨링용.
+  const productionYear = input.productionDate ? Number(input.productionDate.slice(0, 4)) || null : null
+  const recentThreshold = getRecentThresholdYears()
+  const isRecentProduction = productionYear && year && (year - productionYear) <= recentThreshold && (year - productionYear) >= 0
+
   // 본문 전체에서도 supersession 단서를 별도로 grep. citation chunk별 분리 한계로
   // 누락되는 케이스(예: 본문에는 '(구)토지초과이득세법' 표기가 있지만 같은 줄에 시점 단서가
   // 없어 추출되지 않은 경우)를 보완한다. "폐지된" 단어는 통상 법령 폐지 컨텍스트로만 등장하므로
@@ -252,9 +278,9 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
       classification = "repealed_or_superseded"
       warnings.push("관련규정 섹션에서 인용 시점은 추출 못했으나, 본문 전체에 '전부 개정 / 폐지된 [법령] / (구) [법령]' 등 강한 사문화 단서가 감지됨. 인용 법령이 현행에서 갈음됐을 가능성 매우 높음.")
     } else {
-      // 메타데이터 fallback이 동작했지만 시점 단서를 못 뽑은 경우는 'uncertain'.
-      // 본문·메타 모두 비어서 자동 검증이 아예 불가능한 경우만 'no_citations'.
-      classification = usedMetadataFallback ? "uncertain" : "no_citations"
+      // v0.9.0 — fallback이 동작했어도 시점 단서까지 0건이면 진짜 no_citations로 분류.
+      // 본문·메타 양쪽 fallback 모두 실패한 케이스는 동일하게 no_citations.
+      classification = "no_citations"
     }
   } else {
     // 모든 인용 일자 중 가장 늦은 일자(latestDate)와 targetYear 비교.
@@ -262,8 +288,23 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
       .map((c) => c.latestDate)
       .filter((d): d is string => !!d)
     if (allLatest.length === 0) {
-      // 인용 chunk는 있지만 시점 추출 실패. 본문 supersession이 있으면 격상.
-      classification = bodyHasSupersession ? "repealed_or_superseded" : "uncertain"
+      // v0.9.0 — 인용 chunk는 있지만 시점 추출 실패. 신규 라벨 분기:
+      //   (a) 본문 supersession 단서 → repealed_or_superseded (최강 신호 유지)
+      //   (b) 생산일자가 targetYear 근처 (≤ N년) → target_or_later_inferred (적극 라벨링)
+      //   (c) 그 외 → citations_no_dates (이전엔 uncertain으로 묶였던 케이스)
+      if (bodyHasSupersession) {
+        classification = "repealed_or_superseded"
+      } else if (isRecentProduction) {
+        classification = "target_or_later_inferred"
+        warnings.push(
+          `최근 ${recentThreshold}년 이내 생산 (${input.productionDate}) + 인용 조문 ${citations.length}건 추출 → 현행 적용 가능성 높음. 단, 본문에 시점 단서(YYYY.MM.DD)가 없으므로 인용 법령의 현행 본문은 korean-law-mcp.get_law_text로 직접 대조 필수.`,
+        )
+      } else {
+        classification = "citations_no_dates"
+        warnings.push(
+          `인용 조문 ${citations.length}건 추출됐으나 시점 단서(YYYY.MM.DD)가 없어 자동 시점 비교 불가. 인용 법령명을 기준으로 korean-law-mcp.get_law_text로 직접 대조 필요.`,
+        )
+      }
     } else {
       const maxYear = allLatest.reduce((max, d) => Math.max(max, Number(d.slice(0, 4))), 0)
       if (maxYear < year) {

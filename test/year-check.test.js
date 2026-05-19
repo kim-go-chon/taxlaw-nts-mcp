@@ -190,3 +190,112 @@ test("checkYearApplicability: citations + body-wide '폐지된 [법령]' → rep
   const result = checkYearApplicability({ bodyText: body, targetYear: 2026 })
   assert.equal(result.classification, "repealed_or_superseded")
 })
+
+// ─── v0.9.0 신규 라벨 ─────────────────────────────────────────
+
+test("v0.9.0: 인용 있음 + 시점 단서 없음 + 생산 3년 이내 → target_or_later_inferred", () => {
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 제26조 제1항 제15호",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+    "○ 부가가치세법 시행규칙 제29조",
+  ].join("\n")
+  const result = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2024.03.27",
+  })
+  assert.equal(result.classification, "target_or_later_inferred")
+})
+
+test("v0.9.0: 인용 있음 + 시점 단서 없음 + 생산 5년 전 → citations_no_dates (3년 초과)", () => {
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 제26조 제1항 제15호",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+  ].join("\n")
+  const result = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2020.05.10",
+  })
+  assert.equal(result.classification, "citations_no_dates")
+})
+
+test("v0.9.0: 인용 0건 + 메타 없음 → no_citations (라벨 이름 유지)", () => {
+  const result = checkYearApplicability({
+    bodyText: "본문에 인용 없음.",
+    targetYear: 2026,
+    productionDate: "2024.01.01",
+  })
+  assert.equal(result.classification, "no_citations")
+})
+
+test("v0.9.0: 메타 fallback + 조 번호 있음 + 최근 → target_or_later_inferred (조 번호 hint로 인정)", () => {
+  // v0.9.0 — 메타에 "법령명 + 조 번호"가 있으면 ARTICLE_HINT_PATTERN으로 인용 chunk 인정.
+  // 생산일자가 recent면 신규 적극 라벨 'target_or_later_inferred' 적용.
+  const result = checkYearApplicability({
+    bodyText: "본문 인용 없음.",
+    targetYear: 2026,
+    metadataCitations: "부가가치세법 제26조, 부가가치세법 시행령 제42조",
+    productionDate: "2024.01.01",
+  })
+  assert.equal(result.classification, "target_or_later_inferred")
+  assert.ok(result.usedMetadataFallback)
+})
+
+test("v0.9.0: 메타에 법령명만 있고 조 번호 없음 → no_citations", () => {
+  const result = checkYearApplicability({
+    bodyText: "본문 인용 없음.",
+    targetYear: 2026,
+    metadataCitations: "부가가치세법",  // 조 번호 없음
+    productionDate: "2024.01.01",
+  })
+  // 조 번호 hint도 시점 단서도 없으면 chunk 생성 안 됨 → citations.length=0 → no_citations.
+  assert.equal(result.classification, "no_citations")
+})
+
+test("v0.9.0: 생산 미지정 + 인용 있음 + 시점 없음 → citations_no_dates", () => {
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+  ].join("\n")
+  const result = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    // productionDate 의도적 미지정
+  })
+  assert.equal(result.classification, "citations_no_dates")
+})
+
+test("v0.9.0: TAXLAW_RECENT_THRESHOLD_YEARS=5 env override → 5년까지 inferred", () => {
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+  ].join("\n")
+  process.env.TAXLAW_RECENT_THRESHOLD_YEARS = "5"
+  try {
+    const result = checkYearApplicability({
+      bodyText: body,
+      targetYear: 2026,
+      productionDate: "2022.05.10", // 4년차
+    })
+    assert.equal(result.classification, "target_or_later_inferred")
+  } finally {
+    delete process.env.TAXLAW_RECENT_THRESHOLD_YEARS
+  }
+})
+
+test("v0.9.0: 시점 단서 있음 → 기존 분류 (inferred 미경유)", () => {
+  // 시점 있는 경우는 기존 before_target/valid_current 등으로 흘러가야 함.
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 시행령 제42조 (2013. 6. 28. 대통령령 제24638호)",
+  ].join("\n")
+  const result = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2024.05.10", // 최근이지만 시점 단서가 있으면 기존 분류 사용
+  })
+  assert.equal(result.classification, "before_target")
+})

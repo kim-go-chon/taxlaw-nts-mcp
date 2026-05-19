@@ -7,6 +7,7 @@
 
 import type { YearCheckResult, YearCheckClassification } from "./year-check.js"
 import type { LawArticleRef } from "./citation-extract.js"
+import { detectPreRestructureCitations, formatRestructureHits, type RestructureHit } from "./restructure-map.js"
 
 export interface DoctrineMeta {
   id: string
@@ -52,6 +53,8 @@ export interface DoctrineAssessment {
     amendmentClueDetected: boolean
   }
   citedArticles: LawArticleRef[]
+  // v0.9.0 — 구조개편 사전 룩업 결과. 옛 위치 인용이 매핑된 경우만 채워짐.
+  restructureHits: RestructureHit[]
   // 사문화 위험 신호 (signalList) — 사람이 채점표로 답변에 옮기기 좋은 형식.
   signals: DoctrineSignal[]
   // 최종 판정 + 한 줄 라벨.
@@ -71,8 +74,11 @@ export interface DoctrineSignal {
     | "citation_vintage"   // 인용 조문 시점이 오래됨
     | "amendment_clue"     // 본문에 개정/구법 단서
     | "supersession_clue"  // 폐지/전부개정 단서
+    | "restructured_location"  // v0.9.0 — 옛 위치 인용 (전부개정으로 조 번호 이전)
+    | "recent_doctrine_inferred"  // v0.9.0 — 최근 심판례·해석례 적극 라벨링
     | "no_target"          // targetYear 미지정
-    | "no_citations"       // 인용 추출 실패
+    | "no_citations"       // 인용 추출 실패 (진짜 0건)
+    | "citations_no_dates" // v0.9.0 — 인용은 있으나 시점 단서 없음
     | "missing_metadata"   // 문서 메타데이터 비어있음
   severity: "ok" | "info" | "warn" | "high"
   message: string
@@ -98,14 +104,22 @@ function determineFinalValidity(
   yearCheck: YearCheckResult,
   productionYear: number | null,
   targetYear: number | null,
+  restructureHits: RestructureHit[] = [],
 ): FinalValidity {
   // 1) 가장 강한 신호: 폐지/전부개정.
   if (yearCheck.classification === "repealed_or_superseded") return "superseded_or_repealed"
 
-  // 2) 자동 검증 실패.
+  // 1b) v0.9.0 — 구조개편 사전에 매칭되면 위치 이전 = 사실상 superseded_or_repealed로 격상.
+  // 결론은 살아있을 수 있으나 답변에 옮길 때 조 번호 정정 필수이므로 강한 신호 부여.
+  if (restructureHits.length > 0) return "superseded_or_repealed"
+
+  // 2) 자동 검증 실패 — no_citations (진짜 0건) / uncertain.
   if (yearCheck.classification === "no_citations" || yearCheck.classification === "uncertain") {
     return "unverified"
   }
+
+  // 2b) v0.9.0 — citations_no_dates: 인용은 있으나 시점 단서 없음. 보수적으로 unverified.
+  if (yearCheck.classification === "citations_no_dates") return "unverified"
 
   // 3) targetYear 미지정 — 시점 비교 자체가 불가하므로 보수적으로 needs_current_check.
   if (yearCheck.classification === "no_target") return "needs_current_check"
@@ -123,6 +137,10 @@ function determineFinalValidity(
   // 통상 현행 조문 대조가 필요하다고 본다.
   if (yearCheck.classification === "target_or_later") return "needs_current_check"
 
+  // 5b) v0.9.0 — target_or_later_inferred: 최근 심판례·해석례 적극 라벨링.
+  // 사문화 의심 신호가 아니므로 needs_current_check로 분류 (적극 ✅ + ⚠ 동시).
+  if (yearCheck.classification === "target_or_later_inferred") return "needs_current_check"
+
   // 6) valid_current — 인용 시점이 target 이상 + 개정 단서 없음.
   if (yearCheck.classification === "valid_current") {
     if (productionYear && targetYear && targetYear - productionYear > 10) return "needs_current_check"
@@ -138,6 +156,7 @@ function buildSignals(
   productionYear: number | null,
   targetYear: number | null,
   citedArticles: LawArticleRef[],
+  restructureHits: RestructureHit[] = [],
 ): DoctrineSignal[] {
   const signals: DoctrineSignal[] = []
 
@@ -222,12 +241,33 @@ function buildSignals(
     })
   }
 
-  // No citations.
-  if (yearCheck.classification === "no_citations" || (yearCheck.citations.length === 0 && !yearCheck.usedMetadataFallback)) {
+  // No citations / citations_no_dates / restructured_location / recent_doctrine_inferred — v0.9.0 신규 분기.
+  if (yearCheck.classification === "no_citations") {
     signals.push({
       kind: "no_citations",
       severity: "warn",
       message: "관련규정 섹션과 메타데이터 양쪽 모두에서 인용 법령을 자동 추출하지 못함. 본문 직접 확인 필요.",
+    })
+  } else if (yearCheck.classification === "citations_no_dates") {
+    signals.push({
+      kind: "citations_no_dates",
+      severity: "info",
+      message: `인용 조문 ${yearCheck.citations.length}건 추출됐으나 시점 단서(YYYY.MM.DD)가 없어 자동 시점 비교 불가. korean-law-mcp.get_law_text로 직접 대조.`,
+    })
+  } else if (yearCheck.classification === "target_or_later_inferred") {
+    signals.push({
+      kind: "recent_doctrine_inferred",
+      severity: "ok",
+      message: `최근 심판례·해석례 + 인용 ${yearCheck.citations.length}건 → 현행 적용 가능성 높음. 단, 인용 법령 현행 본문은 직접 대조 권장.`,
+    })
+  }
+
+  // v0.9.0 — 구조개편 이력 사전 매칭. 옛 위치 인용이면 강한 격상 신호.
+  for (const hit of restructureHits) {
+    signals.push({
+      kind: "restructured_location",
+      severity: "high",
+      message: `🔴 ${hit.lawName} ${hit.oldRef} → 현행 ${hit.newRef} (${hit.restructureDate} ${hit.type}). 옛 조 번호를 답변에 그대로 옮기지 말 것. 결론은 살아있을 수 있으나 현행 조문 번호로 정정 필수.`,
     })
   }
 
@@ -355,8 +395,11 @@ export function assessDoctrineValidity(input: AssessDoctrineInput): DoctrineAsse
   const targetYear = input.targetYear ?? null
   const productionYear = meta.productionDate ? Number(meta.productionDate.slice(0, 4)) || null : null
 
-  const finalValidity = determineFinalValidity(yearCheck, productionYear, targetYear)
-  const signals = buildSignals(yearCheck, meta, productionYear, targetYear, citedArticles)
+  // v0.9.0 — 인용 조문에 옛 위치(전부개정 전) 매핑이 있는지 사전 룩업.
+  const restructureHits = detectPreRestructureCitations(citedArticles)
+
+  const finalValidity = determineFinalValidity(yearCheck, productionYear, targetYear, restructureHits)
+  const signals = buildSignals(yearCheck, meta, productionYear, targetYear, citedArticles, restructureHits)
   const nextActions = buildNextActions(meta, yearCheck, citedArticles, targetYear, finalValidity)
   const scorecardLines = buildScorecardLines(meta, yearCheck, finalValidity, signals, targetYear)
 
@@ -388,6 +431,7 @@ export function assessDoctrineValidity(input: AssessDoctrineInput): DoctrineAsse
       amendmentClueDetected: yearCheck.citations.some((c) => c.hasAmendmentClue),
     },
     citedArticles,
+    restructureHits,
     signals,
     finalValidity,
     finalLabel: FINAL_LABELS[finalValidity],
@@ -401,6 +445,10 @@ export function formatAssessment(a: DoctrineAssessment): string[] {
   const lines: string[] = []
   lines.push(...a.scorecardLines)
   lines.push("")
+  if (a.restructureHits.length > 0) {
+    lines.push(...formatRestructureHits(a.restructureHits))
+    lines.push("")
+  }
   if (a.citedArticles.length > 0) {
     lines.push("인용 조문 (자동 추출):")
     for (const c of a.citedArticles.slice(0, 20)) {

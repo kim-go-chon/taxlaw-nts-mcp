@@ -19,9 +19,10 @@ import {
 import { checkYearApplicability, formatYearCheck } from "./year-check.js"
 import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef, type BasicRulingRef } from "./citation-extract.js"
 import { assessDoctrineValidity, formatAssessment, type DoctrineMeta } from "./doctrine-assess.js"
+import { detectPreRestructureCitations, formatRestructureHits } from "./restructure-map.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.8.0"
+const VERSION = "0.9.0"
 
 const COMPANION_NOTICE =
   "동반 호출 필수: 본 도구는 korean-law-mcp(법제처 Open API)와 항상 짝으로 사용하세요. 법령 본문·시행일·개정연혁 확인은 korean-law-mcp의 search_law + get_law_text가 1차 권위입니다. 본 MCP는 국세청 측 해석례·질의회신·기본통칙·서식·홈택스 상담사례를 보완합니다."
@@ -1640,12 +1641,22 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   // 본문에서 헤더를 못 찾으면 문서 메타데이터의 관련법령 목록(relatedLaws)으로 fallback.
   const sourceForYearCheck = [gist, answer, bodyText].filter(Boolean).join("\n\n")
   if (sourceForYearCheck || relatedLaws) {
+    const productionDateForCheck = normalizeDate(dcm.ntstDcmRgtDt || dcm.DCM_RGT_DTM)
     const result = checkYearApplicability({
       bodyText: sourceForYearCheck,
       targetYear,
       metadataCitations: relatedLaws,
+      productionDate: productionDateForCheck,
     })
     lines.push("", ...formatYearCheck(result), "")
+
+    // v0.9.0 — 본문·메타에서 추출한 인용 조문에 옛 위치(전부개정 전) 매핑이 있으면 추가 안내.
+    const citedRefs = extractLawArticleRefs([gist, answer, bodyText, relatedLaws].filter(Boolean).join("\n"))
+    const restructureHits = detectPreRestructureCitations(citedRefs)
+    if (restructureHits.length > 0) {
+      lines.push("", ...formatRestructureHits(restructureHits), "")
+    }
+
     lines.push(
       "동반 호출 필수: 위 검증은 본문 휴리스틱입니다. 인용 법조문의 현행 적용가능성은 반드시 korean-law-mcp의 search_law + get_law_text(law=..., jo=...)로 직접 대조 후 사용자에게 보고하세요.",
       "",
@@ -1725,6 +1736,7 @@ async function assessDoctrineValidityTool(args: AssessDoctrineArgs): Promise<Too
         bodyText: sourceForYearCheck,
         targetYear: args.targetYear,
         metadataCitations: relatedLaws,
+        productionDate,
       })
       // 인용 조문 추출: 본문 + 메타데이터 모두를 source로 (관련법령 메타에 조문 번호가 흔히 있음).
       const citedArticles = extractLawArticleRefs([gist, answer, bodyText, relatedLaws].filter(Boolean).join("\n"))
