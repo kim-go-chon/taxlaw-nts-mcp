@@ -229,7 +229,18 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
     }
   }
 
-  if (!related) {
+  // v0.9.1 — related 섹션이 없고 메타도 없어도 본문 자체에서 직접 ARTICLE_HINT 매칭 시도.
+  // 이전엔 여기서 early return으로 no_citations 처리됐지만, self-review에서 본문에
+  // "법령명 + 제N조" 형태로 인용이 있는데도 헤더가 없으면 잡지 못하는 갭 발견.
+  let citations = related ? extractCitations(related) : []
+  if (citations.length === 0 && input.bodyText) {
+    const bodyCitations = extractCitations(input.bodyText)
+    if (bodyCitations.length > 0) {
+      citations = bodyCitations
+    }
+  }
+
+  if (!related && citations.length === 0) {
     warnings.push("본문에서 '관련규정/관련법령' 섹션을 찾지 못했고 문서 메타데이터의 관련법령 목록도 비어 있어 인용 법령의 시점을 자동 확인할 수 없습니다.")
     return {
       hasRelatedSection: false,
@@ -244,7 +255,6 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
     }
   }
 
-  const citations = extractCitations(related)
   if (citations.length === 0) {
     warnings.push(
       usedMetadataFallback
@@ -343,9 +353,11 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
     }
   }
 
+  // v0.9.1 — related가 null이라도 본문 직접 추출로 citations를 잡은 경우 hasRelatedSection=false로 표기.
+  const finalRelatedText = related ? (related.length > 4000 ? related.slice(0, 4000) + " …(truncated)" : related) : null
   return {
-    hasRelatedSection: true,
-    relatedSectionText: related.length > 4000 ? related.slice(0, 4000) + " …(truncated)" : related,
+    hasRelatedSection: !!related,
+    relatedSectionText: finalRelatedText,
     usedMetadataFallback,
     citations,
     targetYear: year ?? null,

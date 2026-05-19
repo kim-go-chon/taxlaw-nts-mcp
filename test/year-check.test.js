@@ -299,3 +299,24 @@ test("v0.9.0: 시점 단서 있음 → 기존 분류 (inferred 미경유)", () =
   })
   assert.equal(result.classification, "before_target")
 })
+
+// ─── v0.9.1 hotfix ───────────────────────────────────────────
+
+test("v0.9.1: 관련규정 헤더 없는 본문 + 조 번호만 인용 → 본문 직접 추출로 citations 수집", () => {
+  // self-review 발견 갭: 메타 fallback이 동작했어도 본문에 "법령명 + 제N조"가 있으면 잡아야.
+  const body = [
+    "사회정화국민운동 추진협의회 및 동 지부는 법인세법 제18조 제2항에 규정한",
+    "국가 또는 지방자치단체로 볼 수 없으며, 동 협의회 및 지부에 제공한 기부금은",
+    "법인세법 시행령 제42조 및 동법 시행규칙 제17조에 열거되지 아니한 기부금으로서",
+    "손금용인이 되지 아니하는 것임.",
+  ].join("\n")
+  const result = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "1982.04.15",
+    // metadataCitations 의도적 미지정 — 본문 직접 추출 패스가 동작해야 함.
+  })
+  // 본문에 시점 단서 없으므로 분류는 citations_no_dates 또는 target_or_later_inferred (생산 1982년이라 not recent)
+  assert.equal(result.classification, "citations_no_dates")
+  assert.ok(result.citations.length > 0, "본문 직접 추출 패스가 citations를 수집해야 함")
+})

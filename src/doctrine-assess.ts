@@ -127,6 +127,13 @@ function determineFinalValidity(
   // 4) before_target / partially_outdated — 부분/전반 사문화.
   if (yearCheck.classification === "partially_outdated") return "partially_outdated"
   if (yearCheck.classification === "before_target") {
+    // v0.9.1 — 최근 심판례·해석례(생산 3년 이내)는 인용 법령 시점이 형식상 과거 일자라도
+    // 본문 자체가 최근 시점에서 작성된 것이므로 partially_outdated 격상 회피.
+    // 예: 조심-2026-서-0581 (2026.04.08)이 조특법 "(2021.12.28. 개정된 것)"을 인용한 경우.
+    // 시점 비교만으로 사문화 처리하면 false-positive 발생.
+    if (productionYear && targetYear && targetYear - productionYear <= 3) {
+      return "needs_current_check"
+    }
     // 생산일자가 매우 오래된 경우(>15년)는 likely_outdated.
     if (productionYear && targetYear && targetYear - productionYear > 15) return "likely_outdated"
     return "partially_outdated"

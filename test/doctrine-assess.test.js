@@ -173,6 +173,51 @@ test("v0.9.0: 최근 심판례 + 시점 단서 없음 → recent_doctrine_inferr
   assert.equal(a.finalValidity, "needs_current_check")
 })
 
+test("v0.9.1: 최근 심판례 + before_target → needs_current_check (partially_outdated 회피)", () => {
+  // self-review 발견 갭: 조심-2026-서-0581 같은 최근 심판례가 조특법 "(2021.12.28 개정된 것)"
+  // 형식 시점 단서 때문에 partially_outdated로 떨어지는 false-positive 차단.
+  const body = [
+    "가. 관련 법령",
+    "○ 조세특례제한법(2021.12.28. 법률 제186434호로 일부 개정 된 것) 제6조",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2026.04.08", // 0년차 (최근)
+  })
+  assert.equal(yc.classification, "before_target", "year-check는 before_target 유지")
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2026.04.08" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  // v0.9.1 — 생산 3년 이내면 partially_outdated 회피.
+  assert.equal(a.finalValidity, "needs_current_check", "최근 심판례는 needs_current_check로 격상 회피")
+})
+
+test("v0.9.1: 오래된 예규 + before_target → 기존대로 partially_outdated", () => {
+  // 회귀 검증: 생산 3년 초과면 기존 partially_outdated 동작 유지.
+  const body = [
+    "가. 관련 법령",
+    "○ 조세특례제한법 제6조 (2010.12.31. 개정)",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2012.05.10", // 14년차
+  })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2012.05.10" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  assert.equal(a.finalValidity, "partially_outdated", "오래된 케이스는 기존대로 partially_outdated")
+})
+
 test("v0.9.0: citations_no_dates → citations_no_dates 신호 + unverified", () => {
   const body = [
     "가. 관련 법령",

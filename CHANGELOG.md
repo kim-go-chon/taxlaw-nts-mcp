@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.1] - 2026-05-19
+
+### Fixed — self-review로 발견한 2건 갭 해소
+
+**#1. 본문 직접 추출 패스 (메타 fallback 경로의 citations_no_dates 미트리거)**
+- `checkYearApplicability`: 관련규정 섹션 추출이 0건이고 메타 fallback도 동작했지만 chunk가 비어 있는 경우, 본문(`bodyText`) 자체에 `extractCitations`를 한 번 더 적용. ARTICLE_HINT_PATTERN으로 "법령명 + 제N조" 형식 인용을 추가 수집.
+- 헤더가 없는 본문(`related === null`)일 때도 본문 직접 추출 패스로 citations를 잡으면 분류 로직으로 진행. 이전엔 early return으로 `no_citations` 처리됐던 케이스 다수가 이제 `citations_no_dates` 또는 `target_or_later_inferred`로 정확히 분기.
+- `relatedSectionText`/`hasRelatedSection` 출력이 본문 직접 추출 패스와도 안전하게 호환되도록 처리.
+
+**#2. before_target false-positive 완화 (최근 심판례 보호)**
+- `determineFinalValidity`: `before_target` 분류 + 생산일자가 targetYear의 3년 이내인 경우 `partially_outdated` 격상 회피하고 `needs_current_check`로 분류.
+- 예: 조심-2026-서-0581(2026.04.08)이 본문에 "조특법 §6 (2021.12.28. 개정된 것)" 시점 단서를 인용해도, 심판례 자체가 2026년에 내려진 것이라 인용 법령이 2026년 시점 동일 문구로 살아있을 가능성 높음. 시점 비교만으로 사문화 처리하는 false-positive 차단.
+
+### Tested
+- 단위 테스트 108 → **111** (회귀 +3):
+  - `test/year-check.test.js` +1: 관련규정 헤더 없는 본문 + 조 번호만 인용 → 본문 직접 추출 패스
+  - `test/doctrine-assess.test.js` +2: 최근 심판례 before_target → needs_current_check 회피 + 오래된 케이스 partially_outdated 회귀 유지
+- 라이브 NTS API smoke-test 4/4 통과.
+
+### Motivation
+- v0.9.0 self-review에서 발견한 두 갭:
+  1. `조법1264-488 (1982)` 본문에 "법인세법 시행령 제42조"가 명시되어 있는데도 메타 fallback 경로에서 citations 0건 → `uncertain`(이전엔 v0.7.0 호환)로 분류. v0.9.0 의도(`citations_no_dates`/`target_or_later_inferred`)와 어긋남.
+  2. `조심-2026-서-0581 (2026.04)`이 본문에 인용한 조특법 §6의 시점 단서 "(2021.12.28. 개정)"을 그대로 받아 `before_target → partially_outdated`로 격상. 실제 인용 법령은 2026년에도 동일 문구로 살아있는 false-positive.
+
 ## [0.9.0] - 2026-05-19
 
 ### Added — 사문화 채점 정확도 3대 개선
