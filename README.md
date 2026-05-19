@@ -38,6 +38,8 @@ MCP `InitializeResult.instructions`로 LLM에 자동 주입됩니다. 클라이�
 
 **연도 검증 의무** — 해석례 인용 시 `get_taxlaw_document_text(targetYear=YYYY)`로 인용 법조문 시점 자동 검증. 구법조문 기반 예규는 ⚠ 사문화 가능성 경고 동봉.
 
+**사문화 자동 채점 (0.7.0+)** — 예규/심판례/판례를 인용할 때 `assess_doctrine_validity(id, targetYear)`를 호출하면 8단계 분류(valid_current / target_or_later / before_target / partially_outdated / repealed_or_superseded / no_citations / no_target / uncertain)와 6단계 최종 판정(valid_current / needs_current_check / partially_outdated / likely_outdated / superseded_or_repealed / unverified)을 자동 채점하고, korean-law-mcp로 현행 조문 대조 + 후속 결정(대법원·헌재) 확인까지 이어지는 next-action 큐를 반환합니다.
+
 ## 제공 도구
 
 ### 국세법령정보시스템 검색·조회
@@ -46,6 +48,7 @@ MCP `InitializeResult.instructions`로 LLM에 자동 주입됩니다. 클라이�
 | `search_taxlaw_all` | 국세법령정보시스템 통합검색. 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례를 함께 검색 |
 | `search_taxlaw_documents` | 세법해석례/질의회신과 과세전적부, 이의, 심사, 심판, 판례, 헌재 문서 검색 |
 | `get_taxlaw_document_text` | 검색 결과의 `DOC_ID`/`DOCID`로 문서 상세 본문 조회. **`targetYear` 옵션**으로 인용 법조문 시점 자동 검증 |
+| `assess_doctrine_validity` (0.7.0) | 단일 예규·심판례·판례의 **현행 유효성 자동 채점**. 시점 비교 + 사문화 신호 + 최종 판정 6단계 + 권장 후속 호출 큐(`korean-law-mcp.search_law/get_law_text/search_decisions` + NTS 후일자 해석례 검색) 반환 |
 | `get_taxlaw_hometax_counsel_text` | 통합검색 홈택스 상담사례 결과의 `REQ_STD_ID`로 상세 본문 조회 |
 | `list_taxlaw_site_menus` | 국세법령정보시스템 주요 메뉴와 확인된 `action.do` 호출 정보 조회 |
 | `call_taxlaw_action` | 메뉴에서 확인한 `actionId`/`paramData`로 `action.do` 원시 JSON 조회 |

@@ -1,0 +1,12 @@
+{
+  "id": "synthetic-004",
+  "docNumber": "재일46014-3076",
+  "productionDate": "1995.11.27",
+  "title": "[합성] 30년 묵은 doctrine + 구법 인용 → likely_outdated",
+  "type": "질의회신",
+  "taxLawCode": "305",
+  "relatedLawsMeta": "조세감면규제법 제55조",
+  "targetYear": 2026,
+  "expectedFinalValidity": "likely_outdated",
+  "body": "가. 관련규정\n조세감면규제법(1993. 12. 31. 법률 제4666호) 제55조 자경농지에 대한 양도소득세의 면제\n\n나. 회신\n양도자가 농지소재지에 거주하면서 해당농지를 직접 경작한 사실은 있으나 주민등록상 거주사실이 등재되지 아니한 경우에도 소관 세무서장의 조사에 의하여 거주 및 경작사실이 확인되면 그 기간은 8년자경기간에 포함하는 것임."
+}

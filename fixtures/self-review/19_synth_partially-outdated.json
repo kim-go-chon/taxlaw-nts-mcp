@@ -1,0 +1,12 @@
+{
+  "id": "synthetic-003",
+  "docNumber": "서면-2018-법인-1000",
+  "productionDate": "2018.05.10",
+  "title": "[합성] 5년 전 인용 + 개정 전 단서 → partially_outdated",
+  "type": "질의회신",
+  "taxLawCode": "303",
+  "relatedLawsMeta": "법인세법 제19조",
+  "targetYear": 2024,
+  "expectedFinalValidity": "partially_outdated",
+  "body": "가. 관련규정\n구 법인세법 (2015. 12. 15. 법률 제13560호로 개정되기 전의 것) 제19조 손금의 범위\n\n나. 회신\n구법 기준으로 손금 산입함."
+}

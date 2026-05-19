@@ -17,9 +17,11 @@ import {
   type UpjongRecord,
 } from "./upjong.js"
 import { checkYearApplicability, formatYearCheck } from "./year-check.js"
+import { extractLawArticleRefs } from "./citation-extract.js"
+import { assessDoctrineValidity, formatAssessment, type DoctrineMeta } from "./doctrine-assess.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.6.0"
+const VERSION = "0.7.0"
 
 const COMPANION_NOTICE =
   "동반 호출 필수: 본 도구는 korean-law-mcp(법제처 Open API)와 항상 짝으로 사용하세요. 법령 본문·시행일·개정연혁 확인은 korean-law-mcp의 search_law + get_law_text가 1차 권위입니다. 본 MCP는 국세청 측 해석례·질의회신·기본통칙·서식·홈택스 상담사례를 보완합니다."
@@ -131,6 +133,13 @@ interface DocumentDetailArgs {
   // 사용자가 적용하려는 연도 (예: 2024). 본문 '관련규정/관련법령' 섹션을 파싱해
   // 인용 법조문의 시점과 비교하고, 구법 기반이면 사문화 가능성 경고를 함께 반환한다.
   targetYear?: number
+}
+
+interface AssessDoctrineArgs {
+  id?: string
+  docType?: string
+  targetYear?: number
+  full?: boolean
 }
 
 interface UpjongLookupArgs {
@@ -582,6 +591,21 @@ const tools = [
         docType: { type: "string", enum: ["advance", "reply", "tax_standard", "written", "tax_pre_review", "objection", "review", "tribunal", "precedent", "constitutional", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10"], description: "알고 있는 경우 문서유형. 미입력 시 질의/판례 상세를 순차 시도" },
         full: { type: "boolean", default: false, description: "true면 HTML 원문 변환 텍스트를 더 길게 포함" },
         targetYear: { type: "number", minimum: 1990, maximum: 2100, description: "사용자가 적용하려는 연도(예: 2024). 본문 관련규정 섹션을 파싱해 인용 법조문 시점과 비교하고, targetYear보다 앞선 시점의 구법조문 기반이면 경고를 함께 반환합니다." },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "assess_doctrine_validity",
+    description: `세법해석례·심판례·판례 단일 문서의 **현행 유효성**을 자동 채점한다. ${COMPANION_NOTICE}\n호출 한 번으로: (1) 본문/메타데이터에서 인용 법조문 시점 파싱, (2) targetYear 대비 사문화 위험 신호 점수화, (3) 최종 판정(valid_current / needs_current_check / partially_outdated / likely_outdated / superseded_or_repealed / unverified) 한 줄 라벨, (4) 권장 후속 호출 큐(korean-law-mcp.search_law/get_law_text/search_decisions + 본 MCP의 후일자 해석례 검색)를 반환. LLM은 next-action 큐를 순서대로 실행해서 답변의 채점표에 결과를 채우세요.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "평가할 문서의 DOC_ID/DOCID. search_taxlaw_documents/search_taxlaw_all 결과에서 획득." },
+        docType: { type: "string", enum: ["advance", "reply", "tax_standard", "written", "tax_pre_review", "objection", "review", "tribunal", "precedent", "constitutional", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10"], description: "알고 있는 경우 문서유형. 미입력 시 질의/판례 상세를 순차 시도." },
+        targetYear: { type: "number", minimum: 1990, maximum: 2100, description: "적용하려는 연도 (예: 2026). 시점 비교의 기준. 미지정 시 needs_current_check로 분류." },
+        full: { type: "boolean", default: false, description: "true면 본문 원문 텍스트를 더 길게 가져와 인용 추출 정확도 향상." },
       },
       required: ["id"],
       additionalProperties: false,
@@ -1604,9 +1628,14 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   }
 
   // 연도 적용여부 검증 (관련규정 섹션 파싱). 본문이 없으면 답변 텍스트를 사용.
+  // 본문에서 헤더를 못 찾으면 문서 메타데이터의 관련법령 목록(relatedLaws)으로 fallback.
   const sourceForYearCheck = [gist, answer, bodyText].filter(Boolean).join("\n\n")
-  if (sourceForYearCheck) {
-    const result = checkYearApplicability({ bodyText: sourceForYearCheck, targetYear })
+  if (sourceForYearCheck || relatedLaws) {
+    const result = checkYearApplicability({
+      bodyText: sourceForYearCheck,
+      targetYear,
+      metadataCitations: relatedLaws,
+    })
     lines.push("", ...formatYearCheck(result), "")
     lines.push(
       "동반 호출 필수: 위 검증은 본문 휴리스틱입니다. 인용 법조문의 현행 적용가능성은 반드시 korean-law-mcp의 search_law + get_law_text(law=..., jo=...)로 직접 대조 후 사용자에게 보고하세요.",
@@ -1615,6 +1644,95 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   }
 
   return truncate(lines.join("\n"), full ? 50000 : 30000)
+}
+
+async function assessDoctrineValidityTool(args: AssessDoctrineArgs): Promise<ToolResponse> {
+  const rawId = requireString("id", args.id)
+  const id = normalizeDetailId(rawId)
+  const knownCode = docCodeFromType(args.docType)
+  const attempts = knownCode
+    ? [refererForDoc(knownCode, id)]
+    : [`/qt/USEQTA002P.do?ntstDcmId=${encodeURIComponent(id)}`, `/pd/USEPDA002P.do?ntstDcmId=${encodeURIComponent(id)}`]
+
+  let lastError: unknown
+  for (const referer of attempts) {
+    try {
+      const data = await postTaxlawAction<TaxlawDetailData>(
+        "ASIQTB002PR01",
+        { dcmDVO: { ntstDcmId: id } },
+        referer,
+      )
+      const detail = data.ASIQTB002PR01
+      const dcm = detail.dcmDVO
+      if (!dcm) continue
+
+      const relatedLaws = (detail.dcmRltnStttList || [])
+        .map((item) => cleanText(item.ntstTextNm))
+        .filter(Boolean)
+        .join(", ")
+      const bodyText = detailTextFromHtmlList(detail.dcmHwpEditorDVOList)
+      const gist = cleanText(dcm.ntstDcmGistCntn || dcm.GIST_CNTN)
+      const answer = cleanText(dcm.ntstDcmCntn || dcm.CNTN)
+      const title = cleanText(dcm.ntstDcmTtl || dcm.TTL)
+      const code = dcm.ntstDcmClCd || dcm.NTST_DCM_CL_CD
+      const type = dcm.ntstDcmClNm || dcm.NTST_DCM_CL_NM || docLabel(code)
+      const docNumber = cleanText(dcm.ntstDcmDscmCntn || dcm.NTST_DCM_DSCM_CNTN)
+      const productionDate = normalizeDate(dcm.ntstDcmRgtDt || dcm.DCM_RGT_DTM)
+      const taxLawCode = dcm.ntstTlawClCd || ""
+
+      const sourceForYearCheck = [gist, answer, bodyText].filter(Boolean).join("\n\n")
+      const yearCheck = checkYearApplicability({
+        bodyText: sourceForYearCheck,
+        targetYear: args.targetYear,
+        metadataCitations: relatedLaws,
+      })
+      // 인용 조문 추출: 본문 + 메타데이터 모두를 source로 (관련법령 메타에 조문 번호가 흔히 있음).
+      const citedArticles = extractLawArticleRefs([gist, answer, bodyText, relatedLaws].filter(Boolean).join("\n"))
+
+      const meta: DoctrineMeta = {
+        id: dcm.ntstDcmId || id,
+        title,
+        docNumber,
+        productionDate,
+        type,
+        taxLawCode,
+        relatedLawsMeta: relatedLaws,
+      }
+      const assessment = assessDoctrineValidity({
+        meta,
+        yearCheck,
+        citedArticles,
+        targetYear: args.targetYear,
+      })
+
+      const out: string[] = []
+      out.push(`=== 예규 현행 유효성 자동 평가: ${title || meta.id} ===`)
+      out.push("")
+      out.push(`출처: ${TAXLAW_BASE}${referer}`)
+      out.push(`구분: ${meta.type} / 문서번호: ${meta.docNumber} / 생산일자: ${meta.productionDate}`)
+      out.push("")
+      out.push(...formatAssessment(assessment))
+      if (args.full) {
+        out.push("")
+        out.push("── 본문 발췌 (full=true) ──")
+        out.push(compactBodyText(sourceForYearCheck, true))
+      }
+      return textResponse(truncate(out.join("\n"), 50000))
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  if (lastError instanceof TaxlawMcpError) {
+    if (attempts.length === 1) throw lastError
+    if (lastError.code !== ErrorCodes.NOT_FOUND && lastError.code !== ErrorCodes.PARSE_ERROR) {
+      throw lastError
+    }
+  }
+  return notFoundResponse(`국세법령정보시스템 문서를 찾을 수 없습니다: ${rawId}`, [
+    "search_taxlaw_documents로 DOC_ID를 다시 확인하세요.",
+    "docType을 알고 있으면 함께 입력하세요.",
+  ])
 }
 
 async function getTaxlawHometaxCounselText(args: HometaxCounselArgs): Promise<ToolResponse> {
@@ -2345,6 +2463,9 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "get_taxlaw_document_text") {
       return await getTaxlawDocumentText(input as DocumentDetailArgs)
+    }
+    if (name === "assess_doctrine_validity") {
+      return await assessDoctrineValidityTool(input as AssessDoctrineArgs)
     }
     if (name === "get_taxlaw_hometax_counsel_text") {
       return await getTaxlawHometaxCounselText(input as HometaxCounselArgs)

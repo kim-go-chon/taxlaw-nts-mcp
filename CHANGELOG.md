@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.7.0] - 2026-05-19
+
+### Added
+- 신규 도구 **`assess_doctrine_validity`** — 세법해석례·심판례·판례 단일 문서의 **현행 유효성 자동 채점**. 호출 한 번에:
+  - 본문/메타데이터에서 인용 법조문 시점 파싱
+  - targetYear 대비 사문화 위험 신호 점수화 (vintage, citation_vintage, amendment_clue, supersession_clue, no_target, no_citations, missing_metadata)
+  - 최종 판정 6단계: `valid_current` / `needs_current_check` / `partially_outdated` / `likely_outdated` / `superseded_or_repealed` / `unverified`
+  - 권장 후속 호출 큐 (`korean-law-mcp.search_law/get_law_text/search_decisions` + 본 MCP의 후일자 해석례 검색) 반환
+  - LLM은 next-action 큐를 순서대로 실행해서 답변의 채점표에 결과를 채움
+- 신규 모듈 `src/citation-extract.ts` — 인용 법령명·조·항·호 구조화 추출 (조특법/조특/소득세 등 약칭→정식 명칭 매핑, 시행령/시행규칙 구분).
+- 신규 모듈 `src/doctrine-assess.ts` — 사문화 평가 오케스트레이터. 채점표(matrix) + 신호(signals) + next-action queue 생성.
+
+### Changed
+- `src/year-check.ts` 강화:
+  - **헤더 패턴 9종 → 14종**으로 확장: "관련 조세법령(법률, 시행령, 시행규칙, 기본통칙)", "관련 세법", "근거 법령", "참고 법령", "인용 법령", 그리고 헌재/판례 양식의 `[심판대상조문]` / `[참조조문]` / `[심판의 대상]` 등 대괄호 헤더.
+  - **메타데이터 fallback 추가**: 본문에서 헤더를 못 찾으면 문서 기본정보의 `관련법령:` 필드(`dcmRltnStttList`)를 인용 텍스트로 fallback. 자동검증 적용 범위가 크게 확장.
+  - **classification 5단 → 8단**: `valid_current`(인용 시점 ≥ target + 개정 단서 없음), `partially_outdated`(before_target + amendment clue), `repealed_or_superseded`(폐지·전부개정 단서 감지), `target_or_later`(인용 시점 ≥ target + amendment clue), `before_target`, `no_citations`, `no_target`, `uncertain`.
+  - 개정 단서 패턴 확장: "(구) 법령명", "구 [법령]", "폐지된 「법령」", "전부 개정" (띄어쓰기 변형 포함) 등 헌재/심판례 본문 양식 매치.
+- `get_taxlaw_document_text`가 year-check 호출 시 메타데이터 fallback도 함께 전달.
+
+### Tested
+- 단위 테스트 **57 → 75개** (year-check 신규 7건, citation-extract 6건, doctrine-assess 6건 추가).
+- **자체 회귀 검증 20건** (`fixtures/self-review/*.json` + `scripts/self-review.mjs`): 어제 인용된 외국인근로자 4건, 다양 vintage 라이브 4건, 헌재 위헌결정 1건, 헌재 합헌 1건, 1980s 법인세 2건, 2026 심판례 2건, 부가세 영세율 판례 2건, 합성 boundary 케이스 4건. **expected 일치율 20/20 (100%)**.
+- 검증된 식별 정확도:
+  - 헌재 위헌결정 (2009헌바35,82) → `superseded_or_repealed` 자동 분류 (본문 "전부 개정" + 구법명 단서로 식별)
+  - 폐지된 토지초과이득세법 인용 (부동산-1190, 2010) → `superseded_or_repealed`
+  - 외국인근로자 단일세율 인용례 4건 (2006~2010, 2026 target) → 모두 `likely_outdated`
+  - 최신 NTS 해석례 (2026) → `unverified` (시점 단서 없음 + 메타 fallback 우회) — 정직한 표기
+
+### Migration / Compatibility
+- 기존 도구(`get_taxlaw_document_text` 등)의 시그니처와 출력 호환. 추가 정보(분류 라벨, fallback 표기)만 늘어남.
+- `YearCheckResult` 인터페이스에 `usedMetadataFallback`, `classificationLabel` 필드 추가.
+
 ## [0.6.0] - 2026-05-18
 
 ### Added

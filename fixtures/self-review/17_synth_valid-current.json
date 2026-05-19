@@ -1,0 +1,12 @@
+{
+  "id": "synthetic-001",
+  "docNumber": "기획재정부 재산세제과-2025-99",
+  "productionDate": "2025.06.15",
+  "title": "[합성] 2024년 기준 본문에 동일연도 인용 + 개정단서 없음 → valid_current",
+  "type": "질의회신",
+  "taxLawCode": "303",
+  "relatedLawsMeta": "법인세법 제19조, 법인세법 시행령 제19조",
+  "targetYear": 2024,
+  "expectedFinalValidity": "valid_current",
+  "body": "가. 관련규정\n법인세법(2024. 12. 31. 법률 제20055호) 제19조 손금의 범위\n법인세법 시행령(2024. 12. 31. 대통령령 제35001호) 제19조\n\n나. 회신\n질의의 경우 손금에 산입하는 것임."
+}

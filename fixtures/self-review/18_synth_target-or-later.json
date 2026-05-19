@@ -1,0 +1,12 @@
+{
+  "id": "synthetic-002",
+  "docNumber": "기획재정부 법인세제과-2025-50",
+  "productionDate": "2025.07.01",
+  "title": "[합성] 인용 시점이 target 이후 + 일부개정 단서 → needs_current_check",
+  "type": "질의회신",
+  "taxLawCode": "303",
+  "relatedLawsMeta": "조세특례제한법 제18조의2",
+  "targetYear": 2024,
+  "expectedFinalValidity": "needs_current_check",
+  "body": "가. 관련규정\n조세특례제한법 (2025. 12. 31. 법률 제20100호로 일부개정) 제18조의2\n\n나. 회신\n적용 가능함."
+}

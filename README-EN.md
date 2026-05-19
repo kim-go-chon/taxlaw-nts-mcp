@@ -28,6 +28,7 @@ This server only displays items returned by the NTS Tax Law Information System. 
 | `search_taxlaw_all` | Integrated NTS search across annexes/forms, tax statutes, interpretations/Q&A, cases, publications, and Hometax counseling |
 | `search_taxlaw_documents` | Search interpretations/Q&A and dispute documents |
 | `get_taxlaw_document_text` | Retrieve document detail text by `DOC_ID`/`DOCID`. **`targetYear` option**: auto-verifies cited statute dates and warns if the document is based on superseded provisions |
+| `assess_doctrine_validity` (0.7.0) | Auto-score the **current validity** of a single doctrine (interpretation / tribunal / court decision). Returns 6-level final verdict (`valid_current` / `needs_current_check` / `partially_outdated` / `likely_outdated` / `superseded_or_repealed` / `unverified`) plus a recommended next-action queue (`korean-law-mcp.search_law/get_law_text/search_decisions` + NTS later-dated interpretations search). |
 | `get_taxlaw_hometax_counsel_text` | Retrieve Hometax counseling detail text by `REQ_STD_ID` |
 | `list_taxlaw_site_menus` | List major NTS menus plus observed `action.do` call metadata |
 | `call_taxlaw_action` | Call a raw NTS `action.do` action with `actionId` and `paramData` |
