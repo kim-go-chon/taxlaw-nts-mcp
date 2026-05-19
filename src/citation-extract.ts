@@ -79,7 +79,8 @@ LAW_PATTERN_ENTRIES.sort((a, b) => b.raw.length - a.raw.length)
 
 const ARTICLE_PATTERN = /제\s?(\d+)\s?조(?:\s?의\s?(\d+))?/
 const PARAGRAPH_PATTERN = /제\s?(\d+)\s?항/
-const ITEM_PATTERN = /제\s?(\d+)\s?호/
+// "법률 제N호" / "대통령령 제N호" 같은 법령번호는 호(item)가 아님. negative lookbehind로 제외.
+const ITEM_PATTERN = /(?<!(?:법률|대통령령|총리령|부령|행정안전부령|기획재정부령|국무총리령|규칙)\s)제\s?(\d+)\s?호/
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -115,11 +116,13 @@ export function extractLawArticleRefs(text: string): LawArticleRef[] {
         const art = tail.match(ARTICLE_PATTERN)
         const par = tail.match(PARAGRAPH_PATTERN)
         const it = tail.match(ITEM_PATTERN)
-        // 법령명만 떨어져 있고 조문 인용이 아예 없는 경우는 제외 (메타 헤더 노이즈 방지).
-        if (!art && !par && !it) continue
         const article = art ? (art[2] ? `제${art[1]}조의${art[2]}` : `제${art[1]}조`) : null
         const paragraph = par ? `제${par[1]}항` : null
-        const item = it ? `제${it[1]}호` : null
+        // 호(item)는 조(article) 또는 항(paragraph) 없이 단독으로 존재하지 않는다.
+        // 단독 "제N호"는 통상 "법률 제N호" / "대통령령 제N호" 같은 법령번호 노이즈이므로 무시.
+        const item = it && (article || paragraph) ? `제${it[1]}호` : null
+        // 법령명만 있고 조·항·호 어느 것도 매치하지 않으면 제외 (메타 헤더 노이즈 방지).
+        if (!article && !paragraph && !item) continue
         const key = `${entry.canonical}|${article || ""}|${paragraph || ""}|${item || ""}`
         if (seen.has(key)) continue
         seen.add(key)

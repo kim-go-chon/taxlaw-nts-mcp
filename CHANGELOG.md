@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.1] - 2026-05-19
+
+### Fixed
+라이브 NTS API 검증에서 발견된 회귀 2건:
+- **citation 추출 — "법률/대통령령 제N호" 노이즈**: 본문에 "법률 제4666호로 전부 개정된 것" / "대통령령 제15976호로 전문개정된 것" 같은 표기가 흔한데, 기존 `ITEM_PATTERN`이 이 법령번호도 호(item)로 잘못 매칭. 헌재 위헌결정 본문의 `조세특례제한법 시행령 제138조 제15976호` 같은 거짓 인용 다수 발생.
+  - 수정: ITEM_PATTERN에 negative lookbehind 추가 (`(?<!(?:법률|대통령령|총리령|부령|...)\s)제\s?(\d+)\s?호`).
+  - 추가 보호: 호(item)는 조(article) 또는 항(paragraph) 없이 단독으로 존재하지 않음 — 단독 "제N호"는 매치 무효.
+- **헌재·심판례 본문 supersession 미감지**: 본문이 길고 줄 단위 chunk 분리 한계로 `(구)법령`/`폐지된 「법령」`이 별도 줄에 있을 때 amendment_clue/supersession_clue가 격상되지 않던 문제. 라이브 검증에서 헌재 2009헌바35,82(위헌결정) → 잘못된 `unverified`, 토지초과이득세 부동산-1190 → 잘못된 `likely_outdated` (실제: 모두 `superseded_or_repealed` 분류 대상).
+  - 수정: `checkYearApplicability`가 본문 전체에 대해 supersession grep을 별도 수행 (`전부\s*개정|폐지된|폐지\s*\)|\(\s*구\s*\)\s*[가-힣]+법`). citation chunk별 분리 한계와 무관하게 격상.
+  - citations.length=0이거나 latestDate 추출 실패해도 본문 supersession 단서 있으면 `repealed_or_superseded`로 격상.
+
+### Tested
+- 라이브 NTS API에 STDIO MCP 호출(`scripts/smoke-test.mjs`)로 5건 검증:
+  - 헌재 2009-헌바-35,82 (위헌) → `repealed_or_superseded` ✓
+  - 서면1팀-1219 (외국인근로자 2007) → `before_target` → `likely_outdated` ✓
+  - 부동산-1190 (토지초과이득세 2010) → `repealed_or_superseded` ✓
+  - 서면-2025-4517 (사내복지기금 2026) → `uncertain` → `unverified` ✓ (정직한 처리)
+  - 법인1264.21-61 (1985) → `uncertain` → `unverified` ✓
+- 단위 테스트 75 → **79** (회귀 4건 추가): 본문 전체 grep 격상, citation 노이즈 제거.
+
 ## [0.7.0] - 2026-05-19
 
 ### Added

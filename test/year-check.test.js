@@ -160,3 +160,33 @@ test("checkYearApplicability: target_or_later + no amendment clue → valid_curr
   assert.equal(result.classification, "valid_current")
   assert.match(result.classificationLabel, /현행 유효 추정/)
 })
+
+// 0.7.1 핫픽스 회귀 — 헌재 본문처럼 [심판대상조문] 헤더는 잡혔으나 citations 0건일 때
+// 본문 전체에 '전부 개정' 단서가 있으면 repealed_or_superseded로 격상되어야 한다.
+test("checkYearApplicability: body-wide '전부 개정' clue without citations → repealed_or_superseded (hotfix)", () => {
+  const body = [
+    "[심판대상조문]",
+    "구 조세감면규제법 부칙 제23조 제1항",
+    "",
+    "[참조판례]",
+    "당사자: 청구인 …",
+    "",
+    "결정요지: 법률 제4666호로 전부 개정된 것의 시행에도 불구하고 …",
+  ].join("\n")
+  const result = checkYearApplicability({ bodyText: body, targetYear: 2026, metadataCitations: "조세특례제한법" })
+  assert.equal(result.classification, "repealed_or_superseded")
+})
+
+// 0.7.1 핫픽스 회귀 — citations가 있어도 본문 전체에 '폐지된 「법령」'이 별도 위치에 있으면
+// supersession으로 격상 (citation chunk 분리 한계 보완).
+test("checkYearApplicability: citations + body-wide '폐지된 [법령]' → repealed_or_superseded (hotfix)", () => {
+  const body = [
+    "본 건 처분은 토지초과이득세 결정일로부터 6년을 초과하여 …",
+    "기 부과된 토지초과이득세는 폐지된「토지초과이득세법」부칙(1998.12.31. 법률 제5586호) 제2조에 따라 필요경비로 공제하는 것입니다.",
+    "",
+    "가. 관련 조세 법령",
+    "○ 소득세법 제97조 (2009. 12. 31. 개정)",
+  ].join("\n")
+  const result = checkYearApplicability({ bodyText: body, targetYear: 2026 })
+  assert.equal(result.classification, "repealed_or_superseded")
+})

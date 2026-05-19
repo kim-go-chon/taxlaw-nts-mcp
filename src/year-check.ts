@@ -235,23 +235,35 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
   let classification: YearCheckClassification = "uncertain"
   const year = input.targetYear
 
-  const anySupersession = citations.some((c) => c.hasSupersessionClue)
+  // 본문 전체에서도 supersession 단서를 별도로 grep. citation chunk별 분리 한계로
+  // 누락되는 케이스(예: 본문에는 '(구)토지초과이득세법' 표기가 있지만 같은 줄에 시점 단서가
+  // 없어 추출되지 않은 경우)를 보완한다. "폐지된" 단어는 통상 법령 폐지 컨텍스트로만 등장하므로
+  // 단독 매치도 강한 신호로 본다.
+  const bodyHasSupersession = /전부\s*개정|폐지된|폐지\s*\)|\(\s*구\s*\)\s*[가-힣]+법/.test(input.bodyText || "")
+
+  const anySupersession = citations.some((c) => c.hasSupersessionClue) || bodyHasSupersession
   const anyAmendmentClue = citations.some((c) => c.hasAmendmentClue)
 
   if (!year) {
     classification = "no_target"
     guidance.unshift("targetYear가 주어지지 않아 적용연도 비교를 수행하지 않았습니다. 호출 시 targetYear=YYYY를 지정하세요.")
   } else if (citations.length === 0) {
-    // 메타데이터 fallback이 동작했지만 시점 단서를 못 뽑은 경우는 'uncertain'.
-    // 본문·메타 모두 비어서 자동 검증이 아예 불가능한 경우만 'no_citations'.
-    classification = usedMetadataFallback ? "uncertain" : "no_citations"
+    if (bodyHasSupersession) {
+      classification = "repealed_or_superseded"
+      warnings.push("관련규정 섹션에서 인용 시점은 추출 못했으나, 본문 전체에 '전부 개정 / 폐지된 [법령] / (구) [법령]' 등 강한 사문화 단서가 감지됨. 인용 법령이 현행에서 갈음됐을 가능성 매우 높음.")
+    } else {
+      // 메타데이터 fallback이 동작했지만 시점 단서를 못 뽑은 경우는 'uncertain'.
+      // 본문·메타 모두 비어서 자동 검증이 아예 불가능한 경우만 'no_citations'.
+      classification = usedMetadataFallback ? "uncertain" : "no_citations"
+    }
   } else {
     // 모든 인용 일자 중 가장 늦은 일자(latestDate)와 targetYear 비교.
     const allLatest = citations
       .map((c) => c.latestDate)
       .filter((d): d is string => !!d)
     if (allLatest.length === 0) {
-      classification = "uncertain"
+      // 인용 chunk는 있지만 시점 추출 실패. 본문 supersession이 있으면 격상.
+      classification = bodyHasSupersession ? "repealed_or_superseded" : "uncertain"
     } else {
       const maxYear = allLatest.reduce((max, d) => Math.max(max, Number(d.slice(0, 4))), 0)
       if (maxYear < year) {

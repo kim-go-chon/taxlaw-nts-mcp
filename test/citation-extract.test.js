@@ -45,6 +45,24 @@ test("extractLawArticleRefs: ignores law name without article reference", () => 
   assert.equal(refs.length, 0)
 })
 
+// 0.7.1 핫픽스 회귀 — "법률 제N호" / "대통령령 제N호"는 호(item)가 아닌 법령번호.
+// citation 추출 시 잘못된 item으로 매핑되지 않아야 한다.
+test("extractLawArticleRefs: '법률 제N호' / '대통령령 제N호' is not extracted as 호 (hotfix)", () => {
+  const text = "구 조세감면규제법 (1990. 12. 31. 법률 제4285호) 부칙 제23조"
+  const refs = extractLawArticleRefs(text)
+  // 법률번호 4285가 호로 잡히면 안 됨.
+  assert.ok(!refs.some((r) => r.item === "제4285호"), `bad refs: ${JSON.stringify(refs)}`)
+})
+
+test("extractLawArticleRefs: 대통령령 제N호 + 시행령 제M조 → article만 추출, 대통령령 번호는 호 아님 (hotfix)", () => {
+  const text = "구 조세특례제한법 시행령(1998. 12. 31. 대통령령 제15976호로 전문개정된 것) 제138조"
+  const refs = extractLawArticleRefs(text)
+  // article=제138조는 OK, item=제15976호는 아니어야 함
+  const article138 = refs.find((r) => r.article === "제138조")
+  assert.ok(article138, `expected 제138조 ref: got ${JSON.stringify(refs)}`)
+  assert.equal(article138.item, null, `대통령령 번호가 호로 잘못 추출됨: ${JSON.stringify(article138)}`)
+})
+
 test("formatLawArticleRef: composes a readable label", () => {
   const ref = {
     lawName: "조세특례제한법",
