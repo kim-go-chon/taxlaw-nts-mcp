@@ -88,6 +88,19 @@ const cases = [
     label: "서면-2015-부가-2158 (2015) — v0.9.0 #3: 인용 있고 시점 없음 → citations_no_dates",
     expectHints: ["citations_no_dates", "인용"],
   },
+  {
+    id: "010000000000075982",
+    label: "조법1264-488 (1982) — v0.9.1 #1: 헤더 없는 본문 + 법인세법 §42 인용 → 본문 직접 추출",
+    // v0.9.0에서는 uncertain ❓. v0.9.1 패치 후엔 본문 직접 추출 패스로 citations_no_dates 분류.
+    expectHints: ["citations_no_dates"],
+  },
+  {
+    id: "200000000000020464",
+    label: "조심-2026-서-0581 (2026.04) — v0.9.1 #2: 최근 + before_target → needs_current_check 회피",
+    // v0.9.0에서는 partially_outdated ⚠. v0.9.1 패치 후엔 3년 이내라 needs_current_check로 회피.
+    // 한국어 라벨이라 "1:1 대조 권장"으로 매칭 (needs_current_check finalLabel).
+    expectHints: ["before_target", "vintage_recent", "1:1 대조"],
+  },
 ]
 
 let idSeq = 3

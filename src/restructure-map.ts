@@ -122,16 +122,38 @@ export function lookupRestructure(lawName: string, articleRef: { article: string
   return null
 }
 
+// v0.9.2 — citation-extract의 ARTICLE_PATTERN이 80자 윈도우로 매칭하다 보니
+// 본문에 "조세특례제한법 제6조"가 있고 같은 줄에 "부가가치세법"이 있으면
+// "부가가치세법 + 제6조"로 잘못 페어링하는 false-positive 발생.
+// substring 재확인으로 본문에 실제로 "{법령명} 제N조" 또는 "{법령명}제N조"가
+// 등장하는지 검증해 노이즈 차단.
+function citationAppearsInBody(lawName: string, article: string, bodyText: string): boolean {
+  if (!bodyText) return true  // 본문이 없으면 검증 생략 (하위호환).
+  // "부가가치세법 제6조" / "부가가치세법제6조" / "부가가치세법시행령 제35조" 등
+  // 공백·NBSP 모두 허용.
+  const lawNoSpace = lawName.replace(/\s+/g, "")
+  const articleNoSpace = article.replace(/\s+/g, "")
+  const bodyNoSpace = bodyText.replace(/\s+/g, "")
+  return bodyNoSpace.includes(lawNoSpace + articleNoSpace)
+}
+
 /**
  * 추출된 인용 목록 전체를 스캔해 옛 위치 인용을 모두 찾는다.
  * 중복 제거: 같은 oldRef→newRef는 1건만.
+ *
+ * v0.9.2 — bodyText 파라미터가 전달되면 매핑된 인용이 본문에 실제 substring으로
+ * 등장하는지 재확인. citation-extract의 80자 윈도우 노이즈 차단용.
  */
-export function detectPreRestructureCitations(citations: LawArticleRef[]): RestructureHit[] {
+export function detectPreRestructureCitations(citations: LawArticleRef[], bodyText?: string): RestructureHit[] {
   const hits: RestructureHit[] = []
   const seen = new Set<string>()
   for (const c of citations) {
     const hit = lookupRestructure(c.lawName, { article: c.article, paragraph: c.paragraph, item: c.item })
     if (!hit) continue
+    // v0.9.2 — 본문 substring 재확인 (옵션). 노이즈 매칭 차단.
+    if (bodyText !== undefined && c.article && !citationAppearsInBody(c.lawName, c.article, bodyText)) {
+      continue
+    }
     const key = `${hit.lawName}|${hit.oldRef}→${hit.newRef}`
     if (seen.has(key)) continue
     seen.add(key)

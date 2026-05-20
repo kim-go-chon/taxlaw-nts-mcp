@@ -27,6 +27,8 @@ export type FinalValidity =
   | "superseded_or_repealed" // 인용 법령 폐지/전부개정 — 사실상 사용 금지
   | "unverified"             // 자동 검증 실패 — 사용자 직접 판단 필요
 
+export type NextActionPriority = "required" | "recommended" | "optional"
+
 export interface NextAction {
   // korean-law-mcp / search_taxlaw_documents 등 다음 단계 도구.
   tool: string
@@ -36,6 +38,11 @@ export interface NextAction {
   purpose: string
   // 결과를 사용자 답변에 어떻게 반영할지.
   expectedUse: string
+  // v0.9.5 — 실행 우선순위. LLM이 큐를 모두 실행하지 않아도 required만으로 핵심 검증 가능.
+  //   required    = 핵심 검증. 답변 전 반드시 실행.
+  //   recommended = 권장. 정확도 향상에 도움.
+  //   optional    = 부가. 시간/맥락 여유 시.
+  priority: NextActionPriority
 }
 
 export interface DoctrineAssessment {
@@ -299,14 +306,24 @@ function buildNextActions(
 ): NextAction[] {
   const actions: NextAction[] = []
 
-  // 1) 인용 조문 현행 대조 — finalValidity != valid_current일 때 강한 권장.
+  // v0.9.5 — 사문화 가능성 신호 강도에 따라 priority 등급화.
+  // required 등급은 처음 2개 인용 조문(핵심)에만 부착해 큐 폭증 방지.
+  const isUnsafeValidity =
+    finalValidity === "partially_outdated" ||
+    finalValidity === "likely_outdated" ||
+    finalValidity === "superseded_or_repealed"
+
+  // 1) 인용 조문 현행 대조 — 처음 2개는 required, 나머지는 recommended.
   const articlesWithArticleNum = citedArticles.filter((c) => c.article)
-  for (const ref of articlesWithArticleNum.slice(0, 8)) {
+  for (let i = 0; i < Math.min(articlesWithArticleNum.length, 8); i++) {
+    const ref = articlesWithArticleNum[i]
+    const priority: NextActionPriority = i < 2 ? "required" : "recommended"
     actions.push({
       tool: "korean-law-mcp.search_law",
       args: { query: ref.lawName, display: 3 },
       purpose: `${ref.lawName} 현행 법령 식별자(mst/lawId) 확보`,
       expectedUse: `다음 단계 get_law_text(mst=..., jo='${ref.article}')에 사용`,
+      priority,
     })
     actions.push({
       tool: "korean-law-mcp.get_law_text",
@@ -317,14 +334,13 @@ function buildNextActions(
       },
       purpose: `${ref.lawName} ${ref.article}${ref.paragraph ? ` ${ref.paragraph}` : ""} 현행 본문 확보`,
       expectedUse: "예규 본문의 인용 문구와 1:1 대조해 동일/차이를 줄단위로 분리. 차이 부분은 부분 사문화로 표시.",
+      priority,
     })
   }
 
-  // 2) 후속 결정(대법원/헌재) 검색 — 부분/전반 사문화 가능성 있을 때.
+  // 2) 후속 결정(대법원/헌재) — 사문화 가능성 있을 때만. 대법원은 recommended, 헌재는 optional.
   if (
-    finalValidity === "partially_outdated" ||
-    finalValidity === "likely_outdated" ||
-    finalValidity === "superseded_or_repealed" ||
+    isUnsafeValidity ||
     finalValidity === "needs_current_check"
   ) {
     actions.push({
@@ -335,6 +351,8 @@ function buildNextActions(
       },
       purpose: "동일 쟁점에 대한 대법원 판결로 행정해석이 갈음됐는지 확인",
       expectedUse: "더 권위 있는 후속 판단이 있으면 본 예규 대신 그것을 1차 인용",
+      // 사문화 신호 강하면 required로 격상 (위헌 가능성 즉시 확인).
+      priority: isUnsafeValidity ? "required" : "recommended",
     })
     actions.push({
       tool: "korean-law-mcp.search_decisions",
@@ -344,10 +362,11 @@ function buildNextActions(
       },
       purpose: "인용 법조문에 위헌·헌법불합치 결정이 있는지 확인",
       expectedUse: "위헌 결정이 있으면 해당 조문 기반 예규 전부 사문화 처리",
+      priority: isUnsafeValidity ? "recommended" : "optional",
     })
   }
 
-  // 3) NTS 후속 해석례 검색 — 같은 쟁점의 후일자 해석례가 있으면 그게 우선.
+  // 3) NTS 후속 해석례 검색 — 후일자 행정해석이 우선 갈음할 수 있음.
   actions.push({
     tool: "taxlaw-nts-mcp.search_taxlaw_documents",
     args: {
@@ -359,9 +378,25 @@ function buildNextActions(
     },
     purpose: "같은 쟁점·후일자 NTS 해석례 검색 (행정해석 내부에서도 후행이 선행을 갈음)",
     expectedUse: "더 최근 해석례가 본 예규와 결론이 다르면 그것을 1차 인용",
+    priority: "optional",
   })
 
-  return actions
+  // v0.9.6 — (tool, args) 기준 dedupe. 인용 조문에 "제24조 제1항 제1호"와 "제24조"가
+  // 별개 ref로 들어와 동일 search_law/get_law_text가 중복 push되는 패턴 제거. priority가
+  // 다르면 더 강한 쪽(required > recommended > optional)을 유지.
+  const priorityRank: Record<NextActionPriority, number> = { required: 0, recommended: 1, optional: 2 }
+  const seen = new Map<string, NextAction>()
+  for (const action of actions) {
+    const key = `${action.tool}::${JSON.stringify(action.args)}`
+    const prior = seen.get(key)
+    if (!prior || priorityRank[action.priority] < priorityRank[prior.priority]) {
+      seen.set(key, action)
+    }
+  }
+  const deduped = Array.from(seen.values())
+
+  // v0.9.5 — required → recommended → optional 순으로 정렬해 LLM이 최소한 required만으로도 핵심 검증 가능.
+  return deduped.sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority])
 }
 
 function buildScorecardLines(
@@ -395,6 +430,9 @@ export interface AssessDoctrineInput {
   yearCheck: YearCheckResult
   citedArticles: LawArticleRef[]
   targetYear?: number
+  // v0.9.2 — restructure 룩업 시 본문 substring 재확인용. citation-extract의 80자
+  // 윈도우 노이즈 차단. 비어 있으면 yearCheck.relatedSectionText로 fallback.
+  bodyText?: string
 }
 
 export function assessDoctrineValidity(input: AssessDoctrineInput): DoctrineAssessment {
@@ -403,7 +441,9 @@ export function assessDoctrineValidity(input: AssessDoctrineInput): DoctrineAsse
   const productionYear = meta.productionDate ? Number(meta.productionDate.slice(0, 4)) || null : null
 
   // v0.9.0 — 인용 조문에 옛 위치(전부개정 전) 매핑이 있는지 사전 룩업.
-  const restructureHits = detectPreRestructureCitations(citedArticles)
+  // v0.9.2 — bodyText 전달로 본문 substring 재확인 활성화 (false-positive 차단).
+  const bodyForVerify = input.bodyText ?? yearCheck.relatedSectionText ?? ""
+  const restructureHits = detectPreRestructureCitations(citedArticles, bodyForVerify)
 
   const finalValidity = determineFinalValidity(yearCheck, productionYear, targetYear, restructureHits)
   const signals = buildSignals(yearCheck, meta, productionYear, targetYear, citedArticles, restructureHits)
@@ -465,13 +505,71 @@ export function formatAssessment(a: DoctrineAssessment): string[] {
     lines.push("")
   }
   if (a.nextActions.length > 0) {
-    lines.push("권장 후속 호출 큐 (LLM은 아래 순서로 실행):")
+    const requiredCount = a.nextActions.filter((n) => n.priority === "required").length
+    const recommendedCount = a.nextActions.filter((n) => n.priority === "recommended").length
+    const optionalCount = a.nextActions.filter((n) => n.priority === "optional").length
+    lines.push(
+      `권장 후속 호출 큐 (priority 순 실행 — required ${requiredCount}건 / recommended ${recommendedCount}건 / optional ${optionalCount}건):`,
+    )
+    const priorityIcon: Record<NextActionPriority, string> = {
+      required: "🔴",
+      recommended: "🟡",
+      optional: "⚪",
+    }
+
+    // v0.9.6 — tool 종류별 그룹 헤더화. 동일 패턴(인용 조문 본문 대조)에서 매 항목 반복되던
+    // `목적`/`활용` 보일러플레이트를 그룹 헤더 1회로 압축.
+    type Group = {
+      title: string
+      header?: string  // 그룹 공통 활용 한 줄. 없으면 그룹별 항목에 인라인.
+      actions: Array<{ idx: number; action: NextAction }>
+    }
+    const groupFor = (tool: string): string => {
+      if (tool === "korean-law-mcp.search_law" || tool === "korean-law-mcp.get_law_text") {
+        return "citation_check"
+      }
+      if (tool === "korean-law-mcp.search_decisions") return "follow_decisions"
+      if (tool === "taxlaw-nts-mcp.search_taxlaw_documents") return "follow_nts"
+      return "other"
+    }
+    const groupMeta: Record<string, { title: string; header?: string }> = {
+      citation_check: {
+        title: "인용 조문 본문 확보 + 1:1 대조",
+        header: "예규 본문의 인용 문구와 현행 조문 차이를 줄단위로 분리. 차이 부분은 부분 사문화로 표시.",
+      },
+      follow_decisions: {
+        title: "후속 결정 검색",
+        header: "더 권위 있는 후속 판단(대법원/헌재)이 있으면 본 예규 대신 그것을 1차 인용.",
+      },
+      follow_nts: {
+        title: "후일자 NTS 해석례",
+        header: "행정해석 내부에서도 후행이 선행을 갈음. 더 최근 결론이 본 예규와 다르면 그것을 1차 인용.",
+      },
+      other: { title: "기타" },
+    }
+    const groupOrder = ["citation_check", "follow_decisions", "follow_nts", "other"]
+    const groups: Record<string, Group> = {}
     for (let i = 0; i < a.nextActions.length; i++) {
-      const na = a.nextActions[i]
-      lines.push(`  [${i + 1}] ${na.tool}`)
-      lines.push(`      args: ${JSON.stringify(na.args)}`)
-      lines.push(`      목적: ${na.purpose}`)
-      lines.push(`      활용: ${na.expectedUse}`)
+      const action = a.nextActions[i]
+      const gid = groupFor(action.tool)
+      if (!groups[gid]) groups[gid] = { ...groupMeta[gid], actions: [] }
+      groups[gid].actions.push({ idx: i + 1, action })
+    }
+
+    for (const gid of groupOrder) {
+      const g = groups[gid]
+      if (!g || g.actions.length === 0) continue
+      lines.push(`  ■ ${g.title}${g.header ? ` — ${g.header}` : ""}`)
+      for (const { idx, action } of g.actions) {
+        const argsInline = JSON.stringify(action.args)
+        lines.push(`    [${idx}] ${priorityIcon[action.priority]} ${action.tool}(${argsInline})`)
+        // 그룹 헤더로 활용을 일반화한 그룹은 항목별 purpose만 한 줄(▸). 그 외엔 purpose+활용 인라인.
+        if (g.header) {
+          lines.push(`        ▸ ${action.purpose}`)
+        } else {
+          lines.push(`        ▸ ${action.purpose} → ${action.expectedUse}`)
+        }
+      }
     }
     lines.push("")
   }

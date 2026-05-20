@@ -14,6 +14,8 @@ const {
   documentDateValue,
   documentDedupKey,
   isEmptyPayload,
+  tokenizeQuery,
+  matchesAllTokens,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -189,4 +191,37 @@ test("isEmptyPayload: number/boolean/non-empty string is non-empty", () => {
   assert.equal(isEmptyPayload("hi"), false)
   assert.equal(isEmptyPayload({ a: 1 }), false)
   assert.equal(isEmptyPayload([0]), false)
+})
+
+test("tokenizeQuery: splits whitespace and middle dot", () => {
+  assert.deepEqual(tokenizeQuery("연구·인력개발비 세액공제"), ["연구", "인력개발비", "세액공제"])
+})
+
+test("tokenizeQuery: collapses duplicates", () => {
+  assert.deepEqual(tokenizeQuery("가지급금 가지급금 인정이자"), ["가지급금", "인정이자"])
+})
+
+test("tokenizeQuery: empty/whitespace returns empty array", () => {
+  assert.deepEqual(tokenizeQuery(""), [])
+  assert.deepEqual(tokenizeQuery("   "), [])
+  assert.deepEqual(tokenizeQuery(null), [])
+})
+
+test("matchesAllTokens: empty token list always true", () => {
+  assert.equal(matchesAllTokens("아무 텍스트", []), true)
+})
+
+test("matchesAllTokens: all tokens must be present", () => {
+  const tokens = tokenizeQuery("가지급금 인정이자")
+  assert.equal(
+    matchesAllTokens("법인이 그 대표자에게 업무무관 가지급금을 계상하고 당해 가지급금에 대한 인정이자를 계산하는 중에", tokens),
+    true,
+  )
+  assert.equal(matchesAllTokens("가지급금만 있고 다른 키워드는 없음", tokens), false)
+})
+
+test("matchesAllTokens: collapsed form catches spacing/middle-dot variants", () => {
+  const tokens = tokenizeQuery("연구·인력개발비")
+  assert.equal(matchesAllTokens("연구인력개발비 세액공제 대상", tokens), true)
+  assert.equal(matchesAllTokens("연구 인력 개발비 세액공제", tokens), true)
 })

@@ -98,8 +98,8 @@ npm run build
 
 ## Install — per MCP client
 
-### Claude Code (Claude Desktop MCP)
-Add to `claude_desktop_config.json` or project-local `.mcp.json`:
+### Claude Desktop / Claude Code (native STDIO)
+Add to `claude_desktop_config.json` (Claude Desktop) or project-local `.mcp.json` (Claude Code):
 
 ```json
 {
@@ -111,6 +111,13 @@ Add to `claude_desktop_config.json` or project-local `.mcp.json`:
   }
 }
 ```
+
+### Claude.ai web (browser)
+**This MCP cannot be used directly on claude.ai web.** claude.ai's [Custom Connectors](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) feature only accepts **remote MCP servers exposed over the public internet (HTTPS)**, but this server is STDIO-only.
+
+**Recommended — Claude Desktop**: the `claude_desktop_config.json` setup from the "Claude Code" section above works as-is. Claude Desktop (macOS/Windows app) supports local STDIO MCP servers natively, with no deployment needed. If you want the same models and chat history as claude.ai web, Claude Desktop is the shortest path.
+
+**Advanced — STDIO→HTTP bridge (⚠ not recommended)**: you can wrap STDIO as HTTP with `mcp-proxy` and expose it via `cloudflared tunnel` / `ngrok` to register as a Custom Connector — but this server has **no authentication layer**, so a public URL means anyone can drive NTS through your bridge. This may violate the NTS terms of use (avoid burdening the upstream service; see Legal Notice below). Not recommended.
 
 ### Codex (OpenAI Codex CLI)
 Add to `~/.codex/config.toml`:

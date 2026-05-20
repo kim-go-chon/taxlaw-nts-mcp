@@ -20,12 +20,24 @@ import { checkYearApplicability, formatYearCheck } from "./year-check.js"
 import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef, type BasicRulingRef } from "./citation-extract.js"
 import { assessDoctrineValidity, formatAssessment, type DoctrineMeta } from "./doctrine-assess.js"
 import { detectPreRestructureCitations, formatRestructureHits } from "./restructure-map.js"
+import {
+  TAX_LAW_CODE_MAP,
+  describeTaxLawCode,
+  formatTaxLawCell,
+  formatTaxLawCellCompact,
+  formatTaxLawCodeHeader,
+  taxLawCodeMatches,
+  taxLawCodeReference,
+} from "./tax-law-code-map.js"
+import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.9.1"
+const VERSION = "0.9.11"
 
+// v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
+// 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
 const COMPANION_NOTICE =
-  "동반 호출 필수: 본 도구는 korean-law-mcp(법제처 Open API)와 항상 짝으로 사용하세요. 법령 본문·시행일·개정연혁 확인은 korean-law-mcp의 search_law + get_law_text가 1차 권위입니다. 본 MCP는 국세청 측 해석례·질의회신·기본통칙·서식·홈택스 상담사례를 보완합니다."
+  "⚠ korean-law-mcp(법제처) 동반 호출 필수 — 법령 본문·시행일은 그쪽이 1차."
 
 const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 자료를 검색·조회한다.
 세법·법령 질의에서 korean-law-mcp(법제처 Open API)와 항상 짝으로 호출한다.
@@ -58,6 +70,7 @@ const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 
 
 [출처 격리] (1)~(4)는 검증된 출처. 섹션 내용을 다른 섹션과 섞지 말 것.
 [빈 결과 처리] 빈 섹션도 헤더 유지 + "검색 결과 없음" 표기. 추측·생성 금지.
+[NOT_FOUND 자가복구] 응답에 [RETRY_CANDIDATES] 블록이 있으면 L1(쿼리 조정) → L2(도구 변경) → L3(외부 MCP) 순서대로 재시도. L1만으로 회수되면 L2/L3 생략.
 
 [표준 워크플로]
 1. 키워드 추출
@@ -123,6 +136,7 @@ interface IntegratedSearchArgs {
   toDate?: string
   taxLawCode?: string
   synonym?: boolean
+  verbose?: boolean
 }
 
 interface DocumentSearchArgs {
@@ -134,6 +148,7 @@ interface DocumentSearchArgs {
   fromDate?: string
   toDate?: string
   taxLawCode?: string
+  verbose?: boolean
 }
 
 interface DocumentDetailArgs {
@@ -193,6 +208,7 @@ interface BasicRulingTextArgs {
   query?: string
   display?: number
   full?: boolean
+  verbose?: boolean
 }
 
 interface FormsSearchArgs {
@@ -258,6 +274,7 @@ interface TaxlawDcm {
   NTST_DCM_DSCM_CNTN?: string
   NTST_DCM_RPLY_CNTN?: string
   NTST_TLAW_CL_NM?: string
+  NTST_TLAW_CL_CD?: string
   NTST_DCM_CL_NM?: string
   LBL1_TTL?: string
   LBL2_TTL?: string
@@ -561,8 +578,9 @@ const tools = [
         sort: { type: "string", enum: ["score", "date_desc"], default: "score" },
         fromDate: { type: "string", pattern: "^\\d{8}$", description: "검색 시작일 YYYYMMDD" },
         toDate: { type: "string", pattern: "^\\d{8}$", description: "검색 종료일 YYYYMMDD" },
-        taxLawCode: { type: "string", description: "세목 코드. 예: 303=법인세, 305=종합소득세" },
-        synonym: { type: "boolean", default: false, description: "동의어 검색 사용 여부" },
+        taxLawCode: { type: "string", description: `NTS 세목 코드. ${taxLawCodeReference()}. NTS API 코드 필터링이 strict하지 않아 다른 코드가 섞이면 ⚠ taxLawCode_mismatch 라벨 자동 부착.` },
+        synonym: { type: "boolean", default: true, description: "동의어 검색 사용 여부 (기본값 true: 가운뎃점·띄어쓰기 변형 자동 보정. 정확매칭만 원하면 false 명시)" },
+        verbose: { type: "boolean", default: true, description: "v0.9.9 — false 시 각 항목의 내용(요약) 생략하고 ID/분류/문서번호/일자만 반환. 검증·헬스체크 등 메타데이터만 필요 시 사용해 응답 토큰 ~60% 절감." },
       },
       required: ["query"],
       additionalProperties: false,
@@ -570,7 +588,9 @@ const tools = [
   },
   {
     name: "search_taxlaw_documents",
-    description: `국세법령정보시스템 문서 검색. 세법해석례/질의회신(01-04)과 과세전적부·이의·심사·심판·판례·헌재(05-10)를 검색. 최신 조세심판원 결정례는 NTS가 강세. ${COMPANION_NOTICE} 결과를 사용자에게 보여줄 때는 (1) 본 검색 + (2) korean-law-mcp의 search_decisions(domain=...)를 둘 다 호출해 양쪽 출처를 병기하세요.`,
+    description: `국세법령정보시스템 문서 검색. 세법해석례/질의회신(01-04)과 과세전적부·이의·심사·심판·판례·헌재(05-10)를 검색. 최신 조세심판원 결정례는 NTS가 강세. ${COMPANION_NOTICE} 결과는 본 검색 + korean-law-mcp.search_decisions를 함께 호출해 양쪽 출처 병기.
+
+⚠️ taxLawCode 권장: 검색어가 여러 세법에 걸칠 수 있으면 세목 코드 명시. NTS 코드 매핑: ${taxLawCodeReference()}. NTS API의 코드 필터링이 strict하지 않아 불일치 항목은 ⚠ taxLawCode_mismatch 자동 부착.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -585,7 +605,8 @@ const tools = [
         sort: { type: "string", enum: ["date_desc", "date_asc", "reg_desc", "reg_asc"], default: "date_desc" },
         fromDate: { type: "string", pattern: "^\\d{8}$", description: "검색 시작일 YYYYMMDD" },
         toDate: { type: "string", pattern: "^\\d{8}$", description: "검색 종료일 YYYYMMDD" },
-        taxLawCode: { type: "string", description: "세목 코드. 예: 303=법인세, 305=종합소득세" },
+        taxLawCode: { type: "string", description: `NTS 세목 코드 (검색 정확도 향상에 강력 권장). ${taxLawCodeReference()}. NTS API의 코드 필터링이 strict하지 않아 다른 코드가 섞이면 ⚠ taxLawCode_mismatch 자동 부착. quirk: 312(원천세) 직접 호출은 NOT_FOUND 빈번 — 305(종합소득세) 호출 시 mismatch로 노출됨.` },
+        verbose: { type: "boolean", default: true, description: "v0.9.9 — false 시 각 항목의 요지·검색근거 생략하고 ID/구분/세목/문서번호/일자만 반환. 검증·헬스체크 등 메타데이터만 필요 시 사용해 응답 토큰 ~60% 절감." },
       },
       required: [],
       additionalProperties: false,
@@ -728,6 +749,7 @@ const tools = [
         query: { type: "string", description: "통칙 제목/본문 내 필터" },
         display: { type: "number", minimum: 1, maximum: 200, default: 30 },
         full: { type: "boolean", default: false },
+        verbose: { type: "boolean", default: true, description: "v0.9.11 — false 시 본문 텍스트 생략, 헤더·항목명·번호만 반환. 인접 번호 군집 스캔용." },
       },
       required: ["lawId"],
       additionalProperties: false,
@@ -880,15 +902,65 @@ function textResponse(text: string, isError = false): ToolResponse {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) }
 }
 
-function notFoundResponse(message: string, suggestions: string[] = []): ToolResponse {
+function lookupSiteActions(keys: string[]): SiteMenuAction[] {
+  const out: SiteMenuAction[] = []
+  for (const key of keys) {
+    const found = SITE_MENU_ACTIONS.find((a) => a.key === key)
+    if (found) out.push(found)
+  }
+  return out
+}
+
+// 도구별로 NOT_FOUND 시 다음에 시도할만한 NTS 사이트 actionId 후보.
+// SITE_MENU_ACTIONS와 일치하는 key만 추천한다. (call_taxlaw_action으로 직접 호출 가능)
+const NOT_FOUND_ACTION_HINTS: Record<string, string[]> = {
+  search_taxlaw_all: ["moleg_interpretations", "interpretation_cleanup", "audit_review", "taxpayer_protection_cases", "valuation_review_cases", "major_supreme_court"],
+  search_taxlaw_documents: ["moleg_interpretations", "audit_review", "taxpayer_protection_cases", "valuation_review_cases", "major_supreme_court", "major_decisions"],
+  search_taxlaw_interpretations: ["moleg_interpretations", "interpretation_cleanup", "major_interpretations", "frequent_issue_cases"],
+  get_taxlaw_basic_ruling_text: ["basic_rulings", "execution_standards", "amended_tax_explanations"],
+  list_taxlaw_basic_ruling_laws: ["basic_rulings"],
+  search_taxlaw_publications: ["publications", "summary_info"],
+  search_taxlaw_forms: ["all_forms", "annexes", "legal_forms", "instruction_forms", "favorite_forms"],
+  get_taxlaw_document_text: ["moleg_interpretations", "audit_review", "major_supreme_court"],
+  get_taxlaw_hometax_counsel_text: ["interpretations_all"],
+}
+
+// v0.9.9 — NOT_FOUND 응답 토큰 압축. 반복되는 LLM 가드·재시도 제안·actionId 리스트를
+// 보일러플레이트 압축 (도구별 ~500토큰 → ~120토큰).
+// v0.9.11 — [RETRY_CANDIDATES] 명시 marker + 단계별 라벨로 LLM이 self-recover 순서대로
+// 실행하도록 신호. suggestions를 단순 배열 또는 단계별 객체로 받음.
+function notFoundResponse(
+  message: string,
+  suggestions: string[] | { L1?: string[]; L2?: string[]; L3?: string[] } = [],
+  options: { toolName?: string; relatedActions?: SiteMenuAction[] } = {},
+): ToolResponse {
   const lines = [
     `[${ErrorCodes.NOT_FOUND}] ${message}`,
-    "",
-    "⚠️ 이 도구는 국세법령정보시스템에서 실제 데이터를 찾지 못했습니다. LLM은 결과를 추측하거나 생성하지 말고, '해당 데이터 없음/검색 실패'를 사용자에게 명시하세요.",
+    "⚠ 데이터 없음 — LLM은 결과 추측·생성 금지.",
   ]
-  if (suggestions.length > 0) {
-    lines.push("", "재시도 제안:")
-    suggestions.forEach((suggestion) => lines.push(`  - ${suggestion}`))
+  const isLeveled = !Array.isArray(suggestions)
+  if (isLeveled) {
+    const levels = suggestions as { L1?: string[]; L2?: string[]; L3?: string[] }
+    const groups: Array<[string, string[]]> = [
+      ["L1 (쿼리·파라미터 조정)", levels.L1 || []],
+      ["L2 (도구·범위 변경)", levels.L2 || []],
+      ["L3 (외부 MCP 병행)", levels.L3 || []],
+    ].filter(([, items]) => items.length > 0) as Array<[string, string[]]>
+    if (groups.length > 0) {
+      lines.push("[RETRY_CANDIDATES] 다음 순서로 재시도:")
+      groups.forEach(([label, items]) => {
+        items.forEach((s) => lines.push(`  ${label}: ${s}`))
+      })
+    }
+  } else if (suggestions.length > 0) {
+    lines.push("[RETRY_CANDIDATES] 다음 순서로 재시도:")
+    suggestions.forEach((s, i) => lines.push(`  ${i + 1}. ${s}`))
+  }
+  const actions = options.relatedActions
+    || (options.toolName ? lookupSiteActions(NOT_FOUND_ACTION_HINTS[options.toolName] || []) : [])
+  if (actions.length > 0) {
+    const ids = actions.map((a) => `[${a.actionId || "N/A"}] ${a.label}`).join(" | ")
+    lines.push(`🔗 actionId(call_taxlaw_action): ${ids}`)
   }
   return textResponse(lines.join("\n"), true)
 }
@@ -910,6 +982,33 @@ function formatToolError(error: unknown, context: string): ToolResponse {
 export function truncate(text: string, max = 50000): string {
   if (text.length <= max) return text
   return `${text.slice(0, max)}\n\n[truncated to ${max.toLocaleString()} chars]`
+}
+
+// 한국 세법 용어는 가운뎃점("·"), 공백, 하이픈 변형이 흔함.
+// "연구·인력개발비" vs "연구 인력개발비" vs "연구인력개발비" 같은 패턴을 모두 잡기 위해
+// 쿼리를 토큰으로 쪼개 AND 매칭 + 정규화 폼을 함께 검사한다.
+export function tokenizeQuery(query: string): string[] {
+  const lowered = String(query || "").toLowerCase()
+  if (!lowered.trim()) return []
+  const tokens = lowered
+    .split(/[\s·.,;:/+&()\[\]{}'"`~!?<>|·•‧・/\\-]+/u)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+  return Array.from(new Set(tokens))
+}
+
+// 토큰화한 쿼리 전체가 본문에 포함되는지 확인.
+// 비어 있는 쿼리는 항상 true(필터 미적용).
+// 공백·구두점을 제거한 collapsed form에서도 검사해 "연구·인력" vs "연구인력" 모두 잡는다.
+export function matchesAllTokens(text: string, tokens: string[]): boolean {
+  if (tokens.length === 0) return true
+  const haystack = String(text || "").toLowerCase()
+  const collapsed = haystack.replace(/[\s·.,;:/+&()\[\]{}'"`~!?<>|·•‧・/\\-]+/gu, "")
+  return tokens.every((token) => {
+    if (haystack.includes(token)) return true
+    const compactToken = token.replace(/[\s·.,;:/+&()\[\]{}'"`~!?<>|·•‧・/\\-]+/gu, "")
+    return compactToken.length > 0 && collapsed.includes(compactToken)
+  })
 }
 
 function asPositiveInt(value: unknown, fallback: number, max?: number): number {
@@ -1307,7 +1406,7 @@ function formatIntegratedId(row: AnyRecord): string {
   return cleanText(firstValue(row, ["DOC_ID", "DOCID", "REQ_STD_ID", "NTST_PLCN_BK_ID"])) || "N/A"
 }
 
-function formatIntegratedRow(row: AnyRecord, collectionName: string): string {
+function formatIntegratedRow(row: AnyRecord, collectionName: string, verbose = true): string {
   const id = formatIntegratedId(row)
   const title = formatIntegratedTitle(row)
   const firstLabel = cleanText(firstValue(row, ["LBL1_TTL", "LBL1_NM", "STTT_CL_NM", "NTST_DCM_CL_NM", "REQ_TP_NM"]))
@@ -1322,10 +1421,13 @@ function formatIntegratedRow(row: AnyRecord, collectionName: string): string {
   if (labels) lines.push(`  분류: ${labels}`)
   if (docNo || replyNo) lines.push(`  문서번호: ${docNo || "N/A"}${replyNo ? ` / 회신번호: ${replyNo}` : ""}`)
   lines.push(`  일자: ${date}`)
-  if (summary) {
-    lines.push(`  내용: ${truncate(summary, collectionName === "hometaxCnslThan" ? 600 : 500)}`)
-  } else if (!title && !labels && !docNo && !replyNo) {
-    lines.push("  내용: (메타데이터 부족 — 본문 없음. 추가 조회 도구로 확인 필요)")
+  // v0.9.9 — verbose=false 시 내용(요약) 생략(메타데이터만). 검증·헬스체크용.
+  if (verbose) {
+    if (summary) {
+      lines.push(`  내용: ${truncate(summary, collectionName === "hometaxCnslThan" ? 600 : 500)}`)
+    } else if (!title && !labels && !docNo && !replyNo) {
+      lines.push("  내용: (메타데이터 부족 — 본문 없음. 추가 조회 도구로 확인 필요)")
+    }
   }
   if ((collectionName === "question" || collectionName === "precedent") && id !== "N/A") {
     lines.push("  상세: get_taxlaw_document_text에 위 ID 사용")
@@ -1336,7 +1438,10 @@ function formatIntegratedRow(row: AnyRecord, collectionName: string): string {
   return lines.join("\n")
 }
 
-async function searchTaxlawAll(args: IntegratedSearchArgs): Promise<ToolResponse> {
+async function searchTaxlawAll(
+  args: IntegratedSearchArgs,
+  retryContext: { originalQuery?: string } = {},
+): Promise<ToolResponse> {
   const query = requireString("query", args.query)
   validateDateRange(args.fromDate, args.toDate)
 
@@ -1362,7 +1467,7 @@ async function searchTaxlawAll(args: IntegratedSearchArgs): Promise<ToolResponse
     prtsPrgrStatCtl: [],
     prtsLwsDfntYn: "",
     mainIdCtl: [],
-    useSynonymYn: args.synonym ? "Y" : "N",
+    useSynonymYn: args.synonym === false ? "N" : "Y",
   }
   if (args.fromDate) params.bltnStrtDtm = `${args.fromDate}000000`
   if (args.toDate) params.bltnEndDtm = `${args.toDate}999999`
@@ -1377,22 +1482,73 @@ async function searchTaxlawAll(args: IntegratedSearchArgs): Promise<ToolResponse
   const total = list.reduce((sum, col) => sum + Number(col.totalCount || 0), 0)
 
   if (total === 0) {
-    return notFoundResponse(`국세법령정보시스템 통합검색 '${query}' 결과가 없습니다.`, [
-      "검색어를 더 짧게 줄여 재검색하세요.",
-      "세법해석/판례만 필요하면 search_taxlaw_documents를 사용하세요.",
-      "법제처 해석례·감사원 심사청구·납세자보호위원회 심의사례·평가심의사례는 통합검색에 포함되지 않습니다. list_taxlaw_site_menus에서 actionId를 확인 후 call_taxlaw_action으로 조회하세요.",
-      "법조문 본문 자체가 필요한 경우 NTS의 statute 컬렉션은 본문 인덱싱이 약하므로 korean-law-mcp의 search_law + get_law_text(jo=...)로 직접 조회하는 것이 확실합니다.",
-      "판례·해석례·조세심판이 NTS에 없으면 korean-law-mcp의 search_decisions(domain=precedent/interpretation/tax_tribunal)도 함께 시도하세요(두 시스템은 인덱싱 범위가 달라 한쪽만 회수되는 경우가 흔함).",
-    ])
+    // v0.9.5 — 복합어 NOT_FOUND 자동 분해 재시도 (1회만)
+    if (!retryContext.originalQuery) {
+      const retryQueries = buildRetryQueries(query)
+      for (const retryQuery of retryQueries) {
+        try {
+          const retryResult = await searchTaxlawAll(
+            { ...args, query: retryQuery },
+            { originalQuery: query },
+          )
+          if (!retryResult.isError) {
+            return retryResult
+          }
+        } catch {
+          // 재시도 실패 시 다음 후보 시도
+        }
+      }
+    }
+    const triedNotice = retryContext.originalQuery
+      ? ` (자동 재시도 분해 키워드: "${query}")`
+      : ""
+    return notFoundResponse(
+      `국세법령정보시스템 통합검색 '${retryContext.originalQuery || query}' 결과가 없습니다${triedNotice}.`,
+      {
+        L1: [
+          "쿼리를 더 짧게/핵심 키워드로 줄여 재검색.",
+          "synonym=true(기본값) 유지하여 가운뎃점·띄어쓰기 변형 허용.",
+        ],
+        L2: [
+          "세법해석/판례만 필요하면 search_taxlaw_documents.",
+          "법제처 해석례·감사원 심사청구·납세자보호위원회 등은 통합검색에 미포함 — 아래 actionId를 call_taxlaw_action으로 호출.",
+        ],
+        L3: [
+          "법조문 본문은 korean-law-mcp.search_law + get_law_text(jo=...)가 1차.",
+          "판례·해석례·조세심판은 korean-law-mcp.search_decisions(domain=precedent/interpretation/tax_tribunal) 병행 시도.",
+        ],
+      },
+      { toolName: "search_taxlaw_all" },
+    )
   }
 
+  const estimatedPagesAll = total > 0 ? Math.ceil(total / (display * collections.length)) : 0
   const lines = [
     `국세법령정보시스템 통합검색 결과: "${query}"`,
     `출처: ${TAXLAW_BASE}/is/USEISA001M.do`,
-    `검색 컬렉션: ${collections.join(", ")} / 총 ${total.toLocaleString()}건 / page=${page}`,
+    `검색 컬렉션: ${collections.join(", ")} / 총 ${total.toLocaleString()}건 / page=${page}/${estimatedPagesAll.toLocaleString()} (displayPerCollection=${display}) — 다음 페이지: page=${page + 1}`,
     "주의: 아래 결과는 국세법령정보시스템 action.do 응답에서 온 실제 항목만 표시합니다.",
     "",
   ]
+  // v0.9.5 — 복합어 자동 분해 재시도로 회수된 결과에 대한 안내
+  if (retryContext.originalQuery && retryContext.originalQuery !== query) {
+    lines.push(describeRetryAttempt(retryContext.originalQuery, query, total), "")
+  }
+
+  // v0.9.9 — 동적 세목 코드 헤더 (search_taxlaw_documents와 동일 로직 이식).
+  // 응답에 등장한 unique 세목 코드 묶음 안내를 헤더 1줄로 압축.
+  const headerItems: Array<{ code?: string; name?: string }> = []
+  for (const collection of list) {
+    for (const row of (collection.resultList || []).slice(0, display)) {
+      const r = row as AnyRecord
+      headerItems.push({
+        code: cleanText(String(r.NTST_TLAW_CL_CD || "")),
+        name: cleanText(String(r.NTST_TLAW_CL_NM || "")),
+      })
+    }
+  }
+  const codeHeader = formatTaxLawCodeHeader(headerItems)
+  if (codeHeader) lines.push(codeHeader, "")
 
   for (const collection of list) {
     const nameKr = collection.nameKr || collection.nameEn || "컬렉션"
@@ -1404,8 +1560,9 @@ async function searchTaxlawAll(args: IntegratedSearchArgs): Promise<ToolResponse
       lines.push("[NOT_FOUND] 이 컬렉션의 표시 가능한 결과가 없습니다.", "")
       continue
     }
+    const verbose = args.verbose !== false
     rows.slice(0, display).forEach((row) => {
-      lines.push(formatIntegratedRow(row, nameEn), "")
+      lines.push(formatIntegratedRow(row, nameEn, verbose), "")
     })
   }
 
@@ -1477,28 +1634,83 @@ function uniqueDocuments(items: TaxlawDcm[]): { items: TaxlawDcm[]; duplicatesRe
   return { items: unique, duplicatesRemoved: items.length - unique.length }
 }
 
-function formatDocumentSearchItem(item: TaxlawDcm, query?: string): string {
+// v0.9.3 — 검색 결과의 query 관련성 판정. NTS 검색 엔진이 query 토큰 중 일부만
+// 매칭되어도 결과를 반환하는 경우가 잦아, 사용자가 결과를 본문 클릭 없이 신뢰성
+// 판단할 수 있도록 ⚠ tag 부착.
+// v0.9.5 — 어떤 토큰이 매칭/누락됐는지 tag에 노출해 사용자가 즉시 진단 가능.
+function judgeRelevance(query: string, haystack: string): {
+  tag: string
+  matchedRatio: number
+  matched: string[]
+  missing: string[]
+} {
+  const tokens = query.split(/\s+/).filter((t) => t.length > 1)
+  if (tokens.length === 0) return { tag: "", matchedRatio: 1, matched: [], missing: [] }
+  const matched = tokens.filter((t) => haystack.includes(t))
+  const missing = tokens.filter((t) => !haystack.includes(t))
+  const ratio = matched.length / tokens.length
+  const fmtList = (arr: string[]) =>
+    arr.length === 0 ? "[]" : `[${arr.map((s) => `"${s}"`).join(", ")}]`
+  if (ratio === 0) {
+    return {
+      tag: ` ⚠ relevance_low (matched: ${fmtList(matched)}, missing: ${fmtList(missing)})`,
+      matchedRatio: 0,
+      matched,
+      missing,
+    }
+  }
+  if (ratio < 0.5 && tokens.length >= 2) {
+    return {
+      tag: ` ⚠ relevance_partial (matched: ${fmtList(matched)}, missing: ${fmtList(missing)})`,
+      matchedRatio: ratio,
+      matched,
+      missing,
+    }
+  }
+  return { tag: "", matchedRatio: ratio, matched, missing }
+}
+
+function formatDocumentSearchItem(item: TaxlawDcm, query?: string, requestedTaxLawCode?: string, verbose = true): string {
   const id = item.DOC_ID || item.DOCID || "N/A"
   const code = String(item.NTST_DCM_CL_CD || "").padStart(2, "0")
   const type = item.NTST_DCM_CL_NM || item.LBL1_TTL || docLabel(code)
   const tax = item.NTST_TLAW_CL_NM || item.LBL2_TTL || "N/A"
+  const taxCode = cleanText(item.NTST_TLAW_CL_CD || "")
   const title = cleanText(item.TTL)
   const gist = cleanText(item.GIST_CNTN || item.CNTN || item.FILE_CN)
   const snippet = query ? highlightedSnippet(item.FILE_CN || item.CNTN || item.GIST_CNTN || item.TTL, query) : ""
+
+  // v0.9.3 — query 토큰 vs 본문(제목+요지+발췌) 관련성 ⚠ 표시
+  const haystack = [title, gist, snippet, cleanText(item.FILE_CN || "")].join(" ")
+  const relevance = query ? judgeRelevance(query, haystack) : { tag: "", matchedRatio: 1, matched: [], missing: [] }
+
+  // v0.9.5 — NTS API의 taxLawCode 필터링이 strict하지 않아 응답에 다른 세목 코드가 섞일 수 있음.
+  // 요청 코드와 응답 코드가 다르면 ⚠ 라벨 부착.
+  const codeMismatchTag = requestedTaxLawCode && !taxLawCodeMatches(requestedTaxLawCode, taxCode)
+    ? ` ⚠ taxLawCode_mismatch (요청=${requestedTaxLawCode} / 응답=${taxCode || "N/A"})`
+    : ""
+
   const lines = [
-    `[${id}] ${title}`,
-    `  구분: ${type} / 세목: ${tax}`,
+    `[${id}] ${title}${relevance.tag}${codeMismatchTag}`,
+    `  구분: ${type} / 세목: ${formatTaxLawCellCompact(tax, taxCode)}`,
     `  문서번호: ${cleanText(item.NTST_DCM_DSCM_CNTN) || "N/A"} / 회신번호: ${cleanText(item.NTST_DCM_RPLY_CNTN) || "N/A"}`,
     `  생산일자: ${normalizeDate(item.DCM_RGT_DTM_S || item.DCM_RGT_DTM)} / 등록일자: ${normalizeDate(item.FRS_RGT_DTM)}`,
   ]
   if (item.NTST_DCM_DCS_CL_NM) lines.push(`  결정: ${item.NTST_DCM_DCS_CL_NM}`)
-  if (gist) lines.push(`  요지: ${truncate(gist, 700)}`)
-  if (snippet && !gist.includes(snippet)) lines.push(`  검색근거: ${truncate(snippet, 500)}`)
+  // v0.9.9 — verbose=false 시 요지·검색근거 생략(메타데이터만). 검증·헬스체크용.
+  if (verbose) {
+    if (gist) lines.push(`  요지: ${truncate(gist, 700)}`)
+    if (snippet && !gist.includes(snippet)) lines.push(`  검색근거: ${truncate(snippet, 500)}`)
+  }
   lines.push("  상세: get_taxlaw_document_text에 위 ID 사용")
   return lines.join("\n")
 }
 
-async function searchTaxlawDocuments(args: DocumentSearchArgs, fallbackDocType = "reply"): Promise<ToolResponse> {
+async function searchTaxlawDocuments(
+  args: DocumentSearchArgs,
+  fallbackDocType = "reply",
+  retryContext: { originalQuery?: string } = {},
+): Promise<ToolResponse> {
   validateDateRange(args.fromDate, args.toDate)
 
   const codes = documentCodes(args.docType, fallbackDocType)
@@ -1527,23 +1739,62 @@ async function searchTaxlawDocuments(args: DocumentSearchArgs, fallbackDocType =
   const items = uniqueItems.slice(0, asPositiveInt(args.display, 20, 50))
 
   if (total === 0 || items.length === 0) {
+    // v0.9.5 — 복합어 NOT_FOUND 자동 분해 재시도 (1회만)
+    if (!retryContext.originalQuery && args.query) {
+      const retryQueries = buildRetryQueries(args.query)
+      for (const retryQuery of retryQueries) {
+        try {
+          const retryResult = await searchTaxlawDocuments(
+            { ...args, query: retryQuery },
+            fallbackDocType,
+            { originalQuery: args.query },
+          )
+          if (!retryResult.isError) {
+            return retryResult
+          }
+        } catch {
+          // 재시도 실패 시 다음 후보 시도
+        }
+      }
+    }
     const label = codes.map((code) => docLabel(code)).join(", ")
-    return notFoundResponse(`국세법령정보시스템 '${args.query || "(전체)"}' ${label} 검색 결과가 없습니다.`, [
-      "docType을 all 또는 interpretations/disputes로 넓혀 재검색하세요.",
-      "통합검색이 필요하면 search_taxlaw_all을 사용하세요.",
-      "본 도구는 코드 01–10(세법해석례·과세전적부심사·이의·심사·심판·판례·헌재)만 직접 지원합니다. 법제처 해석례(actionId=ASIBGE004MR03), 감사원 심사청구(ASIPDM001MR01), 납세자보호위원회 심의사례(ASIPRC019MR02), 평가심의사례(ASIBGH004MR01)는 list_taxlaw_site_menus + call_taxlaw_action으로 조회하세요.",
-      "korean-law-mcp의 search_decisions(domain=precedent/interpretation/tax_tribunal/constitutional)도 병행 시도하세요. NTS와 법제처는 인덱싱 범위·본문 검색 강도가 달라 한쪽에만 회수되는 사건이 흔합니다(특히 최신 조세심판원 결정례는 NTS, 일부 대법원·헌재 판결은 법제처가 강세).",
-    ])
+    const triedQueries = retryContext.originalQuery
+      ? ` (자동 재시도 분해 키워드: "${args.query}")`
+      : ""
+    return notFoundResponse(
+      `국세법령정보시스템 '${retryContext.originalQuery || args.query || "(전체)"}' ${label} 검색 결과가 없습니다${triedQueries}.`,
+      {
+        L1: [
+          "키워드를 짧게 줄이거나 가운뎃점·공백 제거 (예: '연구·인력개발비' → '연구개발비').",
+          "docType을 all 또는 interpretations/disputes로 확대.",
+        ],
+        L2: [
+          "통합 컬렉션이 필요하면 search_taxlaw_all.",
+          "본 도구는 01–10 코드만 지원 — 그 밖의 자료는 아래 actionId를 call_taxlaw_action으로 호출.",
+        ],
+        L3: [
+          "korean-law-mcp.search_decisions(domain=precedent/interpretation/tax_tribunal/constitutional) 병행 — 최신 조세심판원은 NTS, 일부 대법원·헌재는 법제처가 강세.",
+        ],
+      },
+      { toolName: "search_taxlaw_documents" },
+    )
   }
 
   const title = codes.length === 1 ? docLabel(codes[0]) : codes.map((code) => docLabel(code)).join(", ")
+  const currentPage = asPositiveInt(args.page, 1)
+  const pageSize = asPositiveInt(args.display, 20, 50)
+  const estimatedPages = total > 0 ? Math.ceil(total / pageSize) : 0
   const lines = [
     `국세법령정보시스템 문서 검색 결과: ${title}`,
     `출처: ${TAXLAW_BASE}/action.do (ASIPDI002PR01)`,
-    `검색어: ${args.query || "(전체)"} / 총 ${total.toLocaleString()}건 / page=${asPositiveInt(args.page, 1)}`,
+    `검색어: ${args.query || "(전체)"} / 총 ${total.toLocaleString()}건 / page=${currentPage}/${estimatedPages.toLocaleString()} (display=${pageSize}) — 다음 페이지: page=${currentPage + 1}`,
     "주의: 아래 결과는 국세법령정보시스템 응답에 존재한 항목만 표시합니다.",
     "",
   ]
+  // v0.9.5 — 복합어 자동 분해 재시도로 회수된 결과에 대한 안내
+  if (retryContext.originalQuery && retryContext.originalQuery !== args.query) {
+    lines.push(describeRetryAttempt(retryContext.originalQuery, args.query || "", total), "")
+  }
   if (duplicatesRemoved > 0) {
     lines.push(`중복 제거: 같은 문서번호/회신번호/제목으로 보이는 ${duplicatesRemoved.toLocaleString()}건은 표시에서 제외했습니다.`, "")
   }
@@ -1552,7 +1803,32 @@ async function searchTaxlawDocuments(args: DocumentSearchArgs, fallbackDocType =
     const reasons = failedGroups.map((entry) => entry.reason instanceof Error ? entry.reason.message : String(entry.reason)).join("; ")
     lines.push(`⚠️ 일부 그룹 조회 실패(표시되지 않음): ${labels} — ${reasons}`, "")
   }
-  items.forEach((item) => lines.push(formatDocumentSearchItem(item, args.query), ""))
+
+  // v0.9.5 — post-fetch 필터링 통계: NTS API가 taxLawCode를 strict하게 필터링하지 않아
+  // 응답에 다른 코드 케이스가 섞이는 빈도를 사용자/LLM에게 알림.
+  if (args.taxLawCode) {
+    const mismatchCount = items.filter(
+      (item) => !taxLawCodeMatches(args.taxLawCode, cleanText(item.NTST_TLAW_CL_CD || "")),
+    ).length
+    if (mismatchCount > 0) {
+      lines.push(
+        `⚠️ taxLawCode 불일치: 요청 코드 ${args.taxLawCode}(${describeTaxLawCode(args.taxLawCode)})와 응답이 다른 항목 ${mismatchCount}건 — 각 결과 줄에 ⚠ taxLawCode_mismatch 라벨 부착. NTS API의 코드 필터 한계로 인한 정상 동작이며, 다른 코드 케이스를 그대로 인용하려면 본문 확인 후 사용하세요.`,
+        "",
+      )
+    }
+  }
+
+  // v0.9.6 — 응답에 등장한 unique 세목 코드의 묶음세 안내를 헤더 1회로 압축.
+  // 매 결과 항목에 반복되던 `(부가가치세·개별소비세·주세·인지세)` 같은 부가설명을 헤더로 이동.
+  // v0.9.7 — 매핑표 외 코드(310 국제조세, 309 조세특례 등)도 헤더에 포함하기 위해 NTS 분류명 동반 전달.
+  const codeHeader = formatTaxLawCodeHeader(items.map((it) => ({
+    code: cleanText(it.NTST_TLAW_CL_CD || ""),
+    name: cleanText(it.NTST_TLAW_CL_NM || ""),
+  })))
+  if (codeHeader) lines.push(codeHeader, "")
+
+  const verbose = args.verbose !== false
+  items.forEach((item) => lines.push(formatDocumentSearchItem(item, args.query, args.taxLawCode, verbose), ""))
   return textResponse(truncate(lines.join("\n"), 50000))
 }
 
@@ -1590,7 +1866,7 @@ async function getTaxlawDocumentText(args: DocumentDetailArgs): Promise<ToolResp
   return notFoundResponse(`국세법령정보시스템 문서 상세를 찾을 수 없습니다: ${rawId}`, [
     "search_taxlaw_documents로 DOC_ID를 다시 확인하세요.",
     "docType을 알고 있으면 함께 입력하세요.",
-  ])
+  ], { toolName: "get_taxlaw_document_text" })
 }
 
 function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailData["ASIQTB002PR01"], full: boolean, referer: string, targetYear?: number): string {
@@ -1651,8 +1927,10 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
     lines.push("", ...formatYearCheck(result), "")
 
     // v0.9.0 — 본문·메타에서 추출한 인용 조문에 옛 위치(전부개정 전) 매핑이 있으면 추가 안내.
+    // v0.9.2 — bodyText 전달로 본문 substring 재확인 (citation 80자 윈도우 노이즈 차단).
     const citedRefs = extractLawArticleRefs([gist, answer, bodyText, relatedLaws].filter(Boolean).join("\n"))
-    const restructureHits = detectPreRestructureCitations(citedRefs)
+    const verifyBody = [gist, answer, bodyText].filter(Boolean).join("\n")
+    const restructureHits = detectPreRestructureCitations(citedRefs, verifyBody)
     if (restructureHits.length > 0) {
       lines.push("", ...formatRestructureHits(restructureHits), "")
     }
@@ -1755,6 +2033,7 @@ async function assessDoctrineValidityTool(args: AssessDoctrineArgs): Promise<Too
         yearCheck,
         citedArticles,
         targetYear: args.targetYear,
+        bodyText: sourceForYearCheck,  // v0.9.2 — restructure 본문 substring 재확인용
       })
 
       const out: string[] = []
@@ -1784,7 +2063,7 @@ async function assessDoctrineValidityTool(args: AssessDoctrineArgs): Promise<Too
   return notFoundResponse(`국세법령정보시스템 문서를 찾을 수 없습니다: ${rawId}`, [
     "search_taxlaw_documents로 DOC_ID를 다시 확인하세요.",
     "docType을 알고 있으면 함께 입력하세요.",
-  ])
+  ], { toolName: "get_taxlaw_document_text" })
 }
 
 async function getTaxlawHometaxCounselText(args: HometaxCounselArgs): Promise<ToolResponse> {
@@ -1799,7 +2078,7 @@ async function getTaxlawHometaxCounselText(args: HometaxCounselArgs): Promise<To
   if (!item || !item.reqStdId) {
     return notFoundResponse(`국세법령정보시스템 홈택스 상담사례 상세를 찾을 수 없습니다: ${id}`, [
       "search_taxlaw_all에서 hometaxCnslThan 결과의 ID를 다시 확인하세요.",
-    ])
+    ], { toolName: "get_taxlaw_hometax_counsel_text" })
   }
 
   const answer = cleanText(item.answerStdContent)
@@ -1954,7 +2233,11 @@ async function listTaxlawBasicRulingLaws(args: BasicRulingLawArgs): Promise<Tool
     .filter((item) => !query || cleanText(item.ntstNm).toLowerCase().includes(query))
 
   if (laws.length === 0) {
-    return notFoundResponse(`기본통칙 법령 목록에서 '${args.query || "(전체)"}' 결과가 없습니다.`)
+    return notFoundResponse(
+      `기본통칙 법령 목록에서 '${args.query || "(전체)"}' 결과가 없습니다.`,
+      ["법령명에서 가운뎃점/공백을 제거하거나 짧은 키워드(예: '법인세')로 재시도하세요."],
+      { toolName: "list_taxlaw_basic_ruling_laws" },
+    )
   }
 
   const lines = [
@@ -1989,7 +2272,8 @@ async function getTaxlawBasicRulingText(args: BasicRulingTextArgs): Promise<Tool
     `/st/USESTD002M.do?ntstBscId=${encodeURIComponent(lawId)}`,
   )
 
-  const query = cleanText(args.query).toLowerCase()
+  const rawQuery = cleanText(args.query)
+  const queryTokens = tokenizeQuery(rawQuery)
   const allItems = [
     ...(data.ASISTD001MR02?.bscExrDVOList || []),
     ...(data.ASISTD001MR02?.bscExrDVOArList || []),
@@ -1997,15 +2281,18 @@ async function getTaxlawBasicRulingText(args: BasicRulingTextArgs): Promise<Tool
   const textItems = allItems
     .filter((item) => item.lawClCd === "5" || cleanText(htmlToText(item.ntstTextCntn || "")))
     .filter((item) => {
-      if (!query) return true
-      return `${cleanText(item.ntstTextNm)} ${cleanText(htmlToText(item.ntstTextCntn || ""))}`.toLowerCase().includes(query)
+      if (queryTokens.length === 0) return true
+      const haystack = `${cleanText(item.ntstTextNm)} ${cleanText(htmlToText(item.ntstTextCntn || ""))}`
+      return matchesAllTokens(haystack, queryTokens)
     })
 
   if (textItems.length === 0) {
     return notFoundResponse(`기본통칙 ${lawId}/${year}에서 '${args.query || "(전체)"}' 항목을 찾을 수 없습니다.`, [
       "list_taxlaw_basic_ruling_laws로 lawId를 확인하세요.",
       "year를 비우면 최신 연도로 조회합니다.",
-    ])
+      "검색어를 여러 토큰으로 분리하고 핵심 키워드만 남겨 재시도하세요(본 도구는 공백/가운뎃점을 토큰화해 AND 매칭).",
+      "통칙 키워드 매칭이 실패하면 search_taxlaw_all에서 기본통칙 컬렉션을 함께 회수합니다(statute 컬렉션에 통칙 단편이 포함).",
+    ], { toolName: "get_taxlaw_basic_ruling_text" })
   }
 
   const shown = args.full ? textItems : textItems.slice(0, display)
@@ -2017,10 +2304,11 @@ async function getTaxlawBasicRulingText(args: BasicRulingTextArgs): Promise<Tool
     "",
   ]
 
+  const verbose = args.verbose !== false
   for (const item of shown) {
     const body = htmlToText(item.ntstTextCntn || "")
     lines.push(`[${item.ntstExrBaseSn || "N/A"}] ${cleanText(item.ntstTextNm) || "N/A"}`)
-    if (body) lines.push(truncate(body, args.full ? 3000 : 1200))
+    if (verbose && body) lines.push(truncate(body, args.full ? 3000 : 1200))
     lines.push("")
   }
   if (!args.full && textItems.length > shown.length) {
@@ -2162,7 +2450,11 @@ async function searchTaxlawForms(args: FormsSearchArgs): Promise<ToolResponse> {
   const total = results.reduce((sum, entry) => sum + Number(entry.result.recordCount || 0), 0)
 
   if (total === 0) {
-    return notFoundResponse(`국세법령정보시스템 별표/서식 '${args.query || "(전체)"}' 검색 결과가 없습니다.`)
+    return notFoundResponse(
+      `국세법령정보시스템 별표/서식 '${args.query || "(전체)"}' 검색 결과가 없습니다.`,
+      ["kind를 'all'로 두거나 'annex'/'legal_form'/'instruction_form' 등으로 좁혀 재시도하세요."],
+      { toolName: "search_taxlaw_forms" },
+    )
   }
 
   const lines = [
@@ -2242,7 +2534,7 @@ async function searchTaxlawPublications(args: PublicationSearchArgs): Promise<To
     return notFoundResponse(`국세법령정보시스템 발간책자 '${args.query || "(전체)"}' 검색 결과가 없습니다.`, [
       "list_taxlaw_publication_categories로 분야 코드를 확인하세요.",
       "query를 비우면 최신 발간책자 목록을 볼 수 있습니다.",
-    ])
+    ], { toolName: "search_taxlaw_publications" })
   }
 
   const enrichedList = await mapWithConcurrency(list, 8, enrichPublicationItem)

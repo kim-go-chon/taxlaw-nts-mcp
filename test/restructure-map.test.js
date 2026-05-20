@@ -153,3 +153,71 @@ test("formatRestructureHits: 옛 §35 매핑 안내 라인 생성", () => {
   assert.ok(lines.some((l) => l.includes("구조개편 이력 자동 검출")))
   assert.ok(lines.some((l) => l.includes("시행령.제35조제1호 → 현행 시행령.제42조제1호")))
 })
+
+// ─── v0.9.2 본문 substring 재확인 ──────────────────────
+
+test("v0.9.2: 본문에 '부가가치세법 제6조' 표기 없으면 매핑 무효 (false-positive 차단)", () => {
+  const citations = [
+    {
+      lawName: "부가가치세법",
+      lawNameRaw: "부가가치세법",
+      article: "제6조",
+      paragraph: null,
+      item: null,
+      rawSnippet: "",
+    },
+  ]
+  // 본문에 "조세특례제한법 제6조"만 있고 "부가가치세법 제6조"는 없음
+  // (citation-extract 80자 윈도우가 잘못 매칭한 케이스 재현)
+  const bodyText = "청구인이 「조세특례제한법」 제6조에 따른 창업중소기업 감면을 적용받으려 하였고, 「부가가치세법」 제26조에 따라 면세 인적용역에 해당한다."
+  const hits = detectPreRestructureCitations(citations, bodyText)
+  assert.equal(hits.length, 0, "본문에 '부가가치세법 제6조'가 없으면 매핑 무효")
+})
+
+test("v0.9.2: 본문에 옛 표기 실제 등장하면 매핑 유효", () => {
+  const citations = [
+    {
+      lawName: "부가가치세법 시행령",
+      lawNameRaw: "부가가치세법 시행령",
+      article: "제35조",
+      paragraph: null,
+      item: "제1호",
+      rawSnippet: "",
+    },
+  ]
+  const bodyText = "이 건은 부가가치세법 시행령 제35조 제1호의 인적용역에 해당하는지 여부가 쟁점이다."
+  const hits = detectPreRestructureCitations(citations, bodyText)
+  assert.equal(hits.length, 1, "본문에 실제 등장하면 매핑 유효")
+  assert.equal(hits[0].oldRef, "시행령.제35조제1호")
+})
+
+test("v0.9.2: 공백 차이 ('부가가치세법시행령' vs '부가가치세법 시행령')도 substring 매칭", () => {
+  const citations = [
+    {
+      lawName: "부가가치세법 시행령",  // 공백 있는 정규화 표기
+      lawNameRaw: "부가가치세법시행령",  // 본문 표기
+      article: "제35조",
+      paragraph: null,
+      item: null,
+      rawSnippet: "",
+    },
+  ]
+  const bodyText = "부가가치세법시행령 제35조에 해당함."  // 공백 없는 표기
+  const hits = detectPreRestructureCitations(citations, bodyText)
+  assert.equal(hits.length, 1, "공백 정규화 후 substring 매칭")
+})
+
+test("v0.9.2: bodyText 미전달 시 기존 동작 유지 (하위호환)", () => {
+  const citations = [
+    {
+      lawName: "부가가치세법",
+      lawNameRaw: "부가가치세법",
+      article: "제6조",
+      paragraph: null,
+      item: null,
+      rawSnippet: "",
+    },
+  ]
+  const hits = detectPreRestructureCitations(citations)  // bodyText 생략
+  assert.equal(hits.length, 1, "bodyText 미전달이면 verify 생략 — 기존 v0.9.0/0.9.1 동작 유지")
+})
