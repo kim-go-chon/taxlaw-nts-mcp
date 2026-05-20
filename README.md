@@ -137,8 +137,6 @@ npm run build
 
 **권장 대안 — Claude Desktop**: 위 "Claude Code" 섹션의 `claude_desktop_config.json` 등록 방식이 그대로 적용됩니다. Claude Desktop은 macOS/Windows 앱에서 로컬 STDIO MCP를 직접 지원하므로 별도 배포 없이 즉시 동작합니다. claude.ai 웹과 동일한 모델·대화 히스토리를 사용하면서 본 MCP를 쓰려면 Claude Desktop이 가장 간단한 경로입니다.
 
-**고급 사용자 — STDIO→HTTP 브리지 (⚠ 비권장)**: `mcp-proxy` 같은 브리지로 STDIO를 HTTP로 래핑한 뒤 `cloudflared tunnel`·`ngrok`으로 공개 URL을 만들어 Custom Connector로 등록할 수 있지만, 본 서버에는 인증 레이어가 없어 **공개 노출 시 누구나 NTS를 대신 호출**하게 됩니다. NTS 약관(L213 부담 방지)을 위반할 수 있으므로 권장하지 않습니다.
-
 ### Codex (OpenAI Codex CLI)
 `~/.codex/config.toml`에 등록:
 

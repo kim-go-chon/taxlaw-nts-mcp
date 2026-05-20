@@ -23,7 +23,7 @@ v0.9.9의 0건 fallback이 한자·복합어에서 누락이 잦아 변형 후�
 모든 도구 description에 ~210자 반복되던 `korean-law-mcp 동반 호출 필수 — 법령 본문은 그쪽이 1차…` 보일러플레이트를 ~50자(`⚠ korean-law-mcp(법제처) 동반 호출 필수 — 법령 본문·시행일은 그쪽이 1차.`)로 축약. `search_taxlaw_documents` description 길이 약 58% 감소. 시스템 프롬프트 토큰 절감 효과.
 
 ### Docs — claude.ai 웹 사용자 안내 추가 (`README.md`, `README-EN.md`)
-사용자 요청으로 claude.ai 웹(브라우저) MCP 지원 현황 명시. claude.ai의 Custom Connectors는 원격 HTTPS MCP만 지원하므로 본 STDIO 서버는 직접 추가 불가 — Claude Desktop 권장(STDIO 직접 지원, 동일 모델·대화 히스토리). STDIO→HTTP 브리지(mcp-proxy + cloudflared/ngrok) 방식은 본 서버에 인증 레이어가 없어 NTS 약관 위반 위험이 있으므로 비권장으로 표기. 기존 "Claude Code (Claude Desktop의 MCP 설정)" 헤더는 "Claude Desktop / Claude Code (STDIO 직접 지원)"로 정정 — Claude Code(CLI)와 Claude Desktop(앱)이 같은 STDIO 설정을 공유한다는 점을 명확화.
+사용자 요청으로 claude.ai 웹(브라우저) MCP 지원 현황 명시. claude.ai의 Custom Connectors는 원격 HTTPS MCP만 지원하므로 본 STDIO 서버는 직접 추가 불가 — Claude Desktop 권장(STDIO 직접 지원, 동일 모델·대화 히스토리). 기존 "Claude Code (Claude Desktop의 MCP 설정)" 헤더는 "Claude Desktop / Claude Code (STDIO 직접 지원)"로 정정 — Claude Code(CLI)와 Claude Desktop(앱)이 같은 STDIO 설정을 공유한다는 점을 명확화.
 
 ### Tested
 - `npm test`: 121/121 통과.
