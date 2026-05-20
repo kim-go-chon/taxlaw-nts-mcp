@@ -23,7 +23,6 @@ import { detectPreRestructureCitations, formatRestructureHits } from "./restruct
 import {
   TAX_LAW_CODE_MAP,
   describeTaxLawCode,
-  formatTaxLawCell,
   formatTaxLawCellCompact,
   formatTaxLawCodeHeader,
   taxLawCodeMatches,
@@ -32,7 +31,7 @@ import {
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.9.11"
+const VERSION = "0.9.12"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -605,7 +604,7 @@ const tools = [
         sort: { type: "string", enum: ["date_desc", "date_asc", "reg_desc", "reg_asc"], default: "date_desc" },
         fromDate: { type: "string", pattern: "^\\d{8}$", description: "검색 시작일 YYYYMMDD" },
         toDate: { type: "string", pattern: "^\\d{8}$", description: "검색 종료일 YYYYMMDD" },
-        taxLawCode: { type: "string", description: `NTS 세목 코드 (검색 정확도 향상에 강력 권장). ${taxLawCodeReference()}. NTS API의 코드 필터링이 strict하지 않아 다른 코드가 섞이면 ⚠ taxLawCode_mismatch 자동 부착. quirk: 312(원천세) 직접 호출은 NOT_FOUND 빈번 — 305(종합소득세) 호출 시 mismatch로 노출됨.` },
+        taxLawCode: { type: "string", description: `NTS 세목 코드 (검색 정확도 향상에 강력 권장). ${taxLawCodeReference()}. NTS API의 코드 필터링이 strict하지 않아 다른 코드가 섞이면 ⚠ taxLawCode_mismatch 자동 부착. quirk: 305(종합소득세)↔312(원천세) 양방향 cross-bleed 잦음 — 식대·자가운전보조금·기타소득 등 원천징수 분야는 두 코드 어느 쪽으로 호출해도 다른 쪽 케이스가 mismatch로 섞이는 게 정상. 312 단독 호출은 NOT_FOUND 빈번하므로 305로 호출 후 mismatch까지 함께 검토 권장.` },
         verbose: { type: "boolean", default: true, description: "v0.9.9 — false 시 각 항목의 요지·검색근거 생략하고 ID/구분/세목/문서번호/일자만 반환. 검증·헬스체크 등 메타데이터만 필요 시 사용해 응답 토큰 ~60% 절감." },
       },
       required: [],
@@ -1826,6 +1825,36 @@ async function searchTaxlawDocuments(
     name: cleanText(it.NTST_TLAW_CL_NM || ""),
   })))
   if (codeHeader) lines.push(codeHeader, "")
+
+  // v0.9.12 — relevance_low overflow 경고. 멀티 키워드(2개+) 쿼리에서 회수 항목의 80% 이상이
+  // query 토큰을 하나도 매칭하지 않으면 "사실상 매칭 실패" 시그널. NTS 검색 엔진이 OR로 빠진
+  // 결과를 반환하지만 본문은 사용자 의도와 무관한 경우(예: "신성장원천기술 R&D 세액공제" → 변형
+  // 분해로 "R&D"만 매칭된 무관 회신). 자동 변형 재시도 결과에 특히 잦으므로 사용자/LLM이
+  // 본문 클릭 전에 "다른 키워드 조합으로 재시도" 판단을 빠르게 하도록 헤더 1줄로 안내.
+  //
+  // 자동 재시도로 들어온 호출은 args.query가 분해 후 단일 토큰일 수 있으므로(예: "R&D"),
+  // 원본 쿼리(retryContext.originalQuery)가 있으면 그쪽 토큰을 기준으로 판정.
+  const relevanceQuery = retryContext.originalQuery || args.query
+  if (relevanceQuery && items.length >= 3) {
+    const tokens = relevanceQuery.split(/\s+/).filter((t) => t.length > 1)
+    if (tokens.length >= 2) {
+      const lowCount = items.reduce((cnt, item) => {
+        const haystack = [
+          cleanText(item.TTL),
+          cleanText(item.GIST_CNTN || item.CNTN || ""),
+          cleanText(item.FILE_CN || ""),
+        ].join(" ")
+        const r = judgeRelevance(relevanceQuery, haystack)
+        return cnt + (r.matchedRatio === 0 ? 1 : 0)
+      }, 0)
+      if (lowCount / items.length >= 0.8) {
+        lines.push(
+          `⚠️ relevance_low overflow: ${lowCount}/${items.length}건이 원본 query 토큰을 본문에 포함하지 않음 — 사실상 매칭 실패. 키워드를 1~2개 핵심 단어로 줄이거나, 합성어를 분리(예: "신성장원천기술 R&D 세액공제" → "신성장원천기술" 또는 "통합투자세액공제")해서 재시도 권장.`,
+          "",
+        )
+      }
+    }
+  }
 
   const verbose = args.verbose !== false
   items.forEach((item) => lines.push(formatDocumentSearchItem(item, args.query, args.taxLawCode, verbose), ""))

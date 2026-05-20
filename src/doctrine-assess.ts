@@ -126,7 +126,15 @@ function determineFinalValidity(
   }
 
   // 2b) v0.9.0 — citations_no_dates: 인용은 있으나 시점 단서 없음. 보수적으로 unverified.
-  if (yearCheck.classification === "citations_no_dates") return "unverified"
+  // v0.9.12 — 단, 생산일자가 매우 오래된 경우(≥15년)는 시점 단서가 없어도 사문화 위험이
+  // 높다고 보고 likely_outdated로 격상. 본문에 일자가 없어도 vintage gap 자체가 강한 신호.
+  // 예: 2011년 식대 비과세 회신 → 2026 targetYear(15년 차이) → 적용 전 현행 조문 + 후속 결정 확인 필수.
+  // before_target의 > 15보다 한 단계 보수적(≥)인 이유: citations_no_dates는 인용 시점 자체가 없어
+  // 더 약한 증거 위에 서 있으므로 안전망을 한 칸 더 넓게 친다.
+  if (yearCheck.classification === "citations_no_dates") {
+    if (productionYear && targetYear && targetYear - productionYear >= 15) return "likely_outdated"
+    return "unverified"
+  }
 
   // 3) targetYear 미지정 — 시점 비교 자체가 불가하므로 보수적으로 needs_current_check.
   if (yearCheck.classification === "no_target") return "needs_current_check"

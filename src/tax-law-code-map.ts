@@ -108,22 +108,6 @@ export function describeTaxLawCode(code: string | undefined | null): string {
 }
 
 /**
- * 응답에 표시되는 NTS 분류명이 우리 매핑표와 다른지 점검 후 정규화 표기 생성.
- * 응답 NTS 분류명 그대로 노출 + 매핑표 기준 실무명 병기.
- */
-export function formatTaxLawCell(ntsName: string | undefined, code: string | undefined): string {
-  const cleanName = (ntsName || "").trim() || "N/A"
-  const cleanCode = String(code || "").trim()
-  if (!cleanCode) return cleanName
-  const entry = TAX_LAW_CODE_MAP[cleanCode]
-  if (!entry) return `${cleanName} (코드 ${cleanCode})`
-  // NTS가 응답에서 다른 분류명을 줄 때(드물지만 가능) 둘 다 표시
-  const showCanonical = cleanName !== entry.ntsLabel ? ` [정규명: ${entry.ntsLabel}]` : ""
-  const taxes = entry.taxes.length > 1 ? ` (${entry.taxes.join("·")})` : ""
-  return `${cleanName} (코드 ${cleanCode})${showCanonical}${taxes}`
-}
-
-/**
  * post-fetch 필터링. NTS API가 taxLawCode 파라미터를 strict하게 적용하지 않는 경우
  * 응답에 다른 코드 케이스가 섞여 회수됨. 요청 코드와 응답 코드 일치 여부 판정.
  */

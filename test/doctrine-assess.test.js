@@ -239,3 +239,61 @@ test("v0.9.0: citations_no_dates → citations_no_dates 신호 + unverified", ()
   assert.ok(a.signals.some((s) => s.kind === "citations_no_dates"), "citations_no_dates 신호 부착")
   assert.equal(a.finalValidity, "unverified")
 })
+
+test("v0.9.12: citations_no_dates + vintage>15y → likely_outdated 격상", () => {
+  // 인용은 있으나 시점 단서 없음 + 생산일자 2011 → targetYear 2026 (15년 차이)
+  // → 본문에 일자가 없어도 vintage gap 자체가 강한 사문화 신호로 likely_outdated 격상.
+  const body = [
+    "가. 관련 법령",
+    "○ 소득세법 제12조 제3호 러목",
+    "○ 소득세법 시행령 제17조의2 제1호",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2011.04.04",
+  })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2011.04.04" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  assert.equal(yc.classification, "citations_no_dates")
+  assert.equal(a.finalValidity, "likely_outdated", "vintage>15y면 unverified가 아닌 likely_outdated")
+})
+
+test("v0.9.12: citations_no_dates + vintage<15y → 기존대로 unverified", () => {
+  // 회귀 가드: vintage 14년이면 격상 미발동(임계 ≥ 15).
+  const body = [
+    "가. 관련 법령",
+    "○ 부가가치세법 시행령 제42조 제1호 파목",
+  ].join("\n")
+  const yc = checkYearApplicability({
+    bodyText: body,
+    targetYear: 2026,
+    productionDate: "2012.05.10", // 14년차 — 격상 임계값 미만
+  })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({
+    meta: makeMeta({ productionDate: "2012.05.10" }),
+    yearCheck: yc,
+    citedArticles: refs,
+    targetYear: 2026,
+  })
+  assert.equal(yc.classification, "citations_no_dates")
+  assert.equal(a.finalValidity, "unverified", "14년 < 15년 임계는 격상 미발동")
+})
+
+test("v0.9.12: extractLawArticleRefs — '소득세법 제1항' 같은 조 없는 ref는 거부", () => {
+  // 같은 줄에 법령명이 두 번 등장하고 두 번째 매치에서 article window를 벗어나
+  // paragraph만 잡히는 노이즈 케이스. 정식 인용은 항상 조 번호를 포함하므로 거부.
+  const text = "소득세법 제12조 제1항에 따라 … 그리고 소득세법 제2항도 적용"
+  const refs = extractLawArticleRefs(text)
+  // "소득세법 제2항"(article 없음) 같은 ref는 추출 X.
+  assert.ok(
+    refs.every((r) => r.article !== null),
+    `article 없는 ref가 추출됨: ${JSON.stringify(refs)}`,
+  )
+})

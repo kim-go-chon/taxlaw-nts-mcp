@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.12] - 2026-05-20
+
+### Removed — 데드코드 정리 (`src/index.ts`, `src/tax-law-code-map.ts`)
+v0.9.6에서 `formatTaxLawCell` → `formatTaxLawCellCompact` 교체 시 옛 함수 미제거. import 1줄 + 함수 정의 15줄 데드 코드 → 빌드 크기 소폭 절감 + 인지 부담 제거. 사용처 0건 확인 후 제거.
+
+### Fixed — citation-extract 노이즈 ref 차단 (`src/citation-extract.ts`)
+같은 줄에 법령명이 여러 번 등장하고 80자 window 안에 조 번호 없이 항만 잡히는 경우 `소득세법 제1항` 같은 무효 ref가 추출되던 버그. doctrine-assess 라이브 출력에서 `소득세법 제1항`, `소득세법 제2항` 노이즈 2건 관찰. 정식 법령 인용은 항상 조 번호를 포함하므로 `article === null` ref는 무조건 거부. 회귀 가드 테스트 1건 추가.
+
+### Added — relevance_low overflow 경고 (`src/index.ts` `searchTaxlawDocuments`)
+멀티 키워드(2토큰+) 쿼리에서 회수 항목의 80% 이상이 원본 query 토큰을 본문에 하나도 포함하지 않으면 헤더에 `⚠️ relevance_low overflow: N/M건…` 경고 노출. 자동 분해 재시도로 들어온 무관 결과(예: "신성장원천기술 R&D 세액공제" → 변형 매칭으로 R&D 관련 옛 회신만 회수)를 사용자/LLM이 본문 클릭 전에 식별 가능. 토큰 판정은 자동 재시도 케이스를 고려해 원본 쿼리(`retryContext.originalQuery`) 기준으로 측정.
+
+### Changed — `taxLawCode=305↔312` cross-bleed 양방향 안내 (`src/index.ts`)
+v0.9.5의 단방향 안내(`312 직접 호출 NOT_FOUND 빈번 → 305로 호출 시 mismatch로 노출됨`)가 실제 라이브 패턴과 어긋남. 라이브에서 `taxLawCode=305 + "근로소득 비과세 식대"` 검색 시 312(원천세)로 분류된 식대·자가운전보조금 케이스가 자주 mismatch로 섞임. description을 양방향으로 정정: `quirk: 305(종합소득세)↔312(원천세) 양방향 cross-bleed 잦음`.
+
+### Changed — `citations_no_dates` + vintage ≥15년 → `likely_outdated` 격상 (`src/doctrine-assess.ts`)
+v0.9.0의 `citations_no_dates` 분류는 인용 시점 단서가 없으면 무조건 `unverified`로 떨어졌는데, 라이브에서 vintage gap 15년(2011년 식대 회신 → 2026 targetYear)인 케이스도 ❓로 떨어지는 패턴 관찰. 본문에 일자가 없어도 vintage gap 자체가 강한 사문화 신호이므로 ≥15년이면 `likely_outdated`로 격상. 임계값을 before_target의 `> 15`보다 한 단계 보수적(`≥ 15`)으로 설정한 이유는 citations_no_dates가 더 약한 증거 위에 서 있으므로 안전망을 한 칸 더 넓힘. 회귀 가드 테스트 2건 추가 (15년 격상 / 14년 미격상).
+
+### Tested
+- `npm test`: 124/124 통과 (신규 3건: citations_no_dates 격상, 14년 미격상 회귀, article 없는 ref 거부).
+- `node scripts/smoke-test.mjs`: all cases pass.
+- 라이브 검증(0.9.12 빌드 반영 후 클라이언트 재시작 시 활성):
+  - `search_taxlaw_documents(query="신성장원천기술 R&D 세액공제", taxLawCode=309)` → 자동 변형으로 4건 회수되지만 모두 relevance_low → `⚠️ relevance_low overflow` 헤더 노출.
+  - `assess_doctrine_validity(id="010000000000143289", targetYear=2026)` → vintage 15년 + citations_no_dates → 기존 `unverified` 대신 `likely_outdated` 판정.
+
 ## [0.9.11] - 2026-05-20
 
 ### Added — `[RETRY_CANDIDATES]` 명시 marker + L1/L2/L3 단계 라벨 (`src/index.ts`)

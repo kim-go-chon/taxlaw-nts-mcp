@@ -130,10 +130,13 @@ export function extractLawArticleRefs(text: string): LawArticleRef[] {
         const article = art ? (art[2] ? `제${art[1]}조의${art[2]}` : `제${art[1]}조`) : null
         const paragraph = par ? `제${par[1]}항` : null
         // 호(item)는 조(article) 또는 항(paragraph) 없이 단독으로 존재하지 않는다.
-        // 단독 "제N호"는 통상 "법률 제N호" / "대통령령 제N호" 같은 법령번호 노이즈이므로 무시.
+        // 단독 "제N호"는 통상 "법령 번호 노이즈이므로 무시.
         const item = it && (article || paragraph) ? `제${it[1]}호` : null
-        // 법령명만 있고 조·항·호 어느 것도 매치하지 않으면 제외 (메타 헤더 노이즈 방지).
-        if (!article && !paragraph && !item) continue
+        // v0.9.12 — 조(article) 없이 항/호만 있는 ref는 거부.
+        // "소득세법 제1항" 같은 표기는 법령명+항(項) 단독 노이즈로, 같은 줄에 다수의 법령명이
+        // 등장하면서 80자 window 안에 조 번호 없이 항만 매치되는 경우 발생.
+        // 정식 법령 인용은 항상 조 번호를 포함하므로, article 없는 ref는 항상 거부.
+        if (!article) continue
         const key = `${entry.canonical}|${article || ""}|${paragraph || ""}|${item || ""}`
         if (seen.has(key)) continue
         seen.add(key)
