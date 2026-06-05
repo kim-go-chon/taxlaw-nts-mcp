@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.13] - 2026-06-05
+
+### Added — 행정규칙(훈령·예규·고시) stale 경고 (`src/index.ts` `searchTaxlawAll`)
+NTS statute/별표 컬렉션은 행정규칙 개정 후 색인 갱신이 지연될 수 있다. 실측: 「모범납세자 관리규정」이 법제처에서는 **2026.5.19 제2742호 현행본**(31개 조)인데, 본 MCP의 statute 컬렉션은 **2022.9.30 구버전**(14개 조)을 보유 → 조문 번호 체계가 전면 불일치(제4조 추천 vs 선정일, 제6조 내부검증 vs 관리종료 등). 이 구버전만 신뢰하면 현행 의견서를 "조문 전부 오류"로 오판할 위험이 있었음.
+
+두 MCP(korean-law 법제처 + taxlaw-nts 국세청)는 **자동 교차검증이 아니라 서로 다른 DB를 보는 상호보완 관계**라, 단순히 둘 다 호출하는 것만으로는 staleness가 드러나지 않는다. 이를 응답 레벨에서 가시화:
+- 통합검색 결과 분류 라벨이 행정규칙(`/^(훈령|예규|고시|지침)(서식)?$|행정규칙/`)이면 헤더에 `⚠ 행정규칙 … stale 가능` 경고 + 법제처 현행본 교차확인 경로(`korean-law-mcp.discover_tools(intent="행정규칙") → search_admin_rule → get_admin_rule`)와 공포일·시행일·문서번호 3종 대조를 안내.
+- 앵커(`^…$`)로 `고시서면질의`(해석례 docType) 같은 라벨의 오탐 방지.
+- `isAdminRuleRow` 헬퍼 export(테스트용). 기존 headerItems 스캔에 1줄 편승 — 추가 순회·API 호출 없음.
+
+### Added — INSTRUCTIONS `[행정규칙 현행성 — stale 경고]` 절차
+서버 INSTRUCTIONS에 행정규칙 근거 질의의 강제 절차 추가: ① 응답의 stale 경고 무시 금지, ② `search_law`는 행정규칙 NOT_FOUND → `discover_tools → search_admin_rule(knd) → get_admin_rule`로 법제처 현행본 조회, ③ 공포일·시행일·문서번호 교차확인 후 조문 1:1 대조(개정 시 조문 체계 재편 가능).
+
+### Tested
+- `test/admin-rule-stale.test.js` 신규 8건 (훈령/훈령서식/예규·고시·지침/2nd 라벨/고시서면질의 오탐 가드/일반 해석례·판례 false/빈 행 false).
+- `npm test` 전체 통과.
+
 ## [0.9.12] - 2026-05-20
 
 ### Removed — 데드코드 정리 (`src/index.ts`, `src/tax-law-code-map.ts`)

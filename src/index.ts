@@ -31,12 +31,22 @@ import {
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.9.12"
+const VERSION = "0.9.13"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
 const COMPANION_NOTICE =
   "⚠ korean-law-mcp(법제처) 동반 호출 필수 — 법령 본문·시행일은 그쪽이 1차."
+
+// v0.9.13 — 행정규칙(훈령·예규·고시·지침) stale 경고.
+// NTS statute/별표 컬렉션은 행정규칙 개정 후 색인 갱신이 지연될 수 있다(실측: 「모범납세자 관리규정」이
+// 법제처는 2026.5.19 제2742호 현행본인데 NTS는 2022.9.30 구버전을 보유 → 조문 번호 전면 불일치).
+// 두 MCP는 자동 교차검증이 아니라 상호보완 DB이므로, 행정규칙 결과에는 법제처 현행본 교차확인을 명시 안내한다.
+const ADMIN_RULE_LABEL_RE = /^(훈령|예규|고시|지침)(서식)?$|행정규칙/
+const ADMIN_RULE_STALE_NOTICE =
+  "⚠ 행정규칙(훈령·예규·고시·지침) 결과 포함 — 본 NTS 컬렉션은 행정규칙 개정 후 갱신이 지연될 수 있습니다(stale 가능). " +
+  "현행본은 법제처 국가법령정보센터 행정규칙에서 교차 확인하세요: korean-law-mcp.discover_tools(intent=\"행정규칙\") → search_admin_rule(knd=\"1\"훈령/\"2\"예규/\"3\"고시) → get_admin_rule. " +
+  "공포일·시행일·문서번호가 NTS 결과와 다르면 법제처 현행본을 1차로 채택하세요."
 
 const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 자료를 검색·조회한다.
 세법·법령 질의에서 korean-law-mcp(법제처 Open API)와 항상 짝으로 호출한다.
@@ -89,7 +99,13 @@ const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 
 3. get_taxlaw_basic_ruling_text(lawId, query="주제 키워드")로 현행 본문/번호 1차 확인. 단건이 아닌 주제 키워드로 호출하여 인접 번호대(예: 27-55…5~13)를 일괄 수집할 것 — 관련 통칙 군집 누락 방지.
 4. 옛 번호("N-N")는 절대 답변에 노출 금지. 본문에 옛 번호가 있으면 (a) 현행 번호로 정정하거나, (b) "본문 인용 — 현행 번호 미확인" 형태로 ⚠ 표기.
 
-위 절차는 통칙 도구가 호출 가능한 경우에 한해 자동 적용. 통칙 도구 응답이 NOT_FOUND이면 답변에서 통칙 인용 자체를 제거하거나 "현행 번호 미확인" ⚠ 표기 유지.`
+위 절차는 통칙 도구가 호출 가능한 경우에 한해 자동 적용. 통칙 도구 응답이 NOT_FOUND이면 답변에서 통칙 인용 자체를 제거하거나 "현행 번호 미확인" ⚠ 표기 유지.
+
+[행정규칙 현행성 — stale 경고 강제 절차]
+훈령·예규·고시·지침(행정규칙)이 근거인 질의는 본 NTS DB만 신뢰하지 말 것. NTS statute/별표 컬렉션은 행정규칙 개정 후 색인 갱신이 지연될 수 있다(구버전 보유 가능). 두 MCP는 자동 교차검증이 아니라 서로 다른 DB를 보는 상호보완 관계이므로, 다음을 반드시 수행:
+1. search_taxlaw_all 응답에 "⚠ 행정규칙 … stale 가능" 안내가 있으면 무시하지 말 것.
+2. 법제처 현행본을 1차로 확인: korean-law-mcp.search_law는 행정규칙을 NOT_FOUND 반환하므로 discover_tools(intent="행정규칙") → search_admin_rule(knd="1"훈령/"2"예규/"3"고시) → get_admin_rule로 전문 조회.
+3. 공포일·시행일·문서번호 3종을 NTS 결과와 교차 확인. 다르면 법제처 현행본을 1차로 채택하고 조문 번호·내용을 1:1 대조(개정으로 조문 체계가 재편됐을 수 있음).`
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -559,7 +575,7 @@ const SITE_MENU_ACTIONS: SiteMenuAction[] = [
 const tools = [
   {
     name: "search_taxlaw_all",
-    description: `국세법령정보시스템 통합검색. 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례. ${COMPANION_NOTICE} 법조문 본문은 korean-law-mcp의 get_law_text가 정확하고, 본 도구의 statute 컬렉션은 메타·인용 위주.`,
+    description: `국세법령정보시스템 통합검색. 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례. ${COMPANION_NOTICE} 법조문 본문은 korean-law-mcp의 get_law_text가 정확하고, 본 도구의 statute 컬렉션은 메타·인용 위주. 행정규칙(훈령·예규·고시) 결과에는 stale 경고 + 법제처 행정규칙(search_admin_rule/get_admin_rule) 교차확인 안내가 자동 부착됨.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1405,6 +1421,15 @@ function formatIntegratedId(row: AnyRecord): string {
   return cleanText(firstValue(row, ["DOC_ID", "DOCID", "REQ_STD_ID", "NTST_PLCN_BK_ID"])) || "N/A"
 }
 
+// v0.9.13 — 통합검색 결과 행이 행정규칙(훈령·예규·고시·지침)인지 분류 라벨로 판별.
+// formatIntegratedRow와 동일한 라벨 필드를 사용. "고시서면질의" 같은 해석례 docType 라벨은
+// ADMIN_RULE_LABEL_RE의 앵커(^…$) 덕에 오탐되지 않는다.
+export function isAdminRuleRow(row: AnyRecord): boolean {
+  const firstLabel = cleanText(firstValue(row, ["LBL1_TTL", "LBL1_NM", "STTT_CL_NM", "NTST_DCM_CL_NM", "REQ_TP_NM"]))
+  const secondLabel = cleanText(firstValue(row, ["LBL2_TTL", "LBL2_NM", "SJT_CL_NM", "NTST_TLAW_CL_NM", "MAIN_CATEGORY"]))
+  return ADMIN_RULE_LABEL_RE.test(firstLabel) || ADMIN_RULE_LABEL_RE.test(secondLabel)
+}
+
 function formatIntegratedRow(row: AnyRecord, collectionName: string, verbose = true): string {
   const id = formatIntegratedId(row)
   const title = formatIntegratedTitle(row)
@@ -1537,6 +1562,7 @@ async function searchTaxlawAll(
   // v0.9.9 — 동적 세목 코드 헤더 (search_taxlaw_documents와 동일 로직 이식).
   // 응답에 등장한 unique 세목 코드 묶음 안내를 헤더 1줄로 압축.
   const headerItems: Array<{ code?: string; name?: string }> = []
+  let hasAdminRule = false
   for (const collection of list) {
     for (const row of (collection.resultList || []).slice(0, display)) {
       const r = row as AnyRecord
@@ -1544,10 +1570,13 @@ async function searchTaxlawAll(
         code: cleanText(String(r.NTST_TLAW_CL_CD || "")),
         name: cleanText(String(r.NTST_TLAW_CL_NM || "")),
       })
+      if (!hasAdminRule && isAdminRuleRow(r)) hasAdminRule = true
     }
   }
   const codeHeader = formatTaxLawCodeHeader(headerItems)
   if (codeHeader) lines.push(codeHeader, "")
+  // v0.9.13 — 행정규칙(훈령·예규·고시) 결과면 법제처 현행본 교차확인 안내(stale 방지).
+  if (hasAdminRule) lines.push(ADMIN_RULE_STALE_NOTICE, "")
 
   for (const collection of list) {
     const nameKr = collection.nameKr || collection.nameEn || "컬렉션"
