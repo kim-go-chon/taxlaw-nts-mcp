@@ -33,7 +33,7 @@ import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.9.17"
+const VERSION = "0.9.18"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -263,6 +263,16 @@ interface TraceArticleArgs {
   hang?: string
   targetYear?: number
   filingMonth?: number
+  oc?: string
+  full?: boolean
+}
+
+interface LawArticleArgs {
+  jo?: string
+  mst?: string
+  lawName?: string
+  efYd?: string
+  year?: number
   oc?: string
   full?: boolean
 }
@@ -761,6 +771,24 @@ const tools = [
         filingMonth: { type: "number", description: "신고시점 기준 적용례 판단용 신고 월(말일 기준). 법인세=3, 종합소득세=5(기본 3). targetYear+1년의 해당 월로 추정." },
         oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC." },
         full: { type: "boolean", default: false, description: "true면 조문 본문 발췌·부칙 적용례를 더 길게." },
+      },
+      required: ["jo"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_law_article",
+    description: "특정 시점(연도/시행일/MST)의 조문 본문과 '수식 이미지 URL'을 법제처 국가법령정보 DRF에서 회수한다. ⚠ korean-law-mcp의 연혁(시점별 조문) 회수가 사실상 고장(get_historical_law jo 추출 불능, efYd NOT_FOUND)이고 계산식이 이미지라 본문에 안 보이는 문제를 보완. year(예: 2025) 또는 efYd(YYYYMMDD)를 주면 그 시점에 시행 중이던 버전을 자동 선택(시행일 ≤ 기준 중 최신). 수식(계산식)은 flDownload.do 이미지 URL로 반환 — 다운로드 후 Read/브라우저로 확인. 주의: 이 본문은 '그 시점 시행 중이던' 조문일 뿐, 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙)으로 따로 판정.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        jo: { type: "string", description: "조회할 조문. 예: 제26조의8 (필수)" },
+        year: { type: "number", description: "그 해 말(12.31) 시점에 시행 중이던 버전 자동 선택. 예: 2025" },
+        efYd: { type: "string", description: "기준 시행일 YYYYMMDD. year보다 우선. 예: 20250101" },
+        mst: { type: "string", description: "특정 시행본 MST를 직접 지정(연혁 목록에서 고른 값)." },
+        lawName: { type: "string", description: "법령명. year/efYd로 시점 해소 또는 현행 해소에 사용. 예: 조세특례제한법 시행령" },
+        oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC." },
+        full: { type: "boolean", default: false, description: "true면 본문·연혁 목록을 더 길게." },
       },
       required: ["jo"],
       additionalProperties: false,
@@ -2458,6 +2486,53 @@ async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promi
   return out
 }
 
+export interface LawVersion { mst: string; enforceDate: string }
+
+// eflaw 검색으로 (mst, 시행일자) 쌍을 시행일 내림차순으로. 시점별 조문 회수용.
+async function fetchEflawVersions(oc: string, lawName: string, limit: number): Promise<LawVersion[]> {
+  const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=40&query=${encodeURIComponent(lawName)}`
+  const xml = await fetchMolegXml(url, "시행일 법령 검색")
+  const ids = [...xml.matchAll(/<법령일련번호>(\d+)<\/법령일련번호>/g)].map((m) => m[1])
+  const enfs = [...xml.matchAll(/<시행일자>(\d+)<\/시행일자>/g)].map((m) => m[1])
+  const out: LawVersion[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < ids.length; i++) {
+    const mst = ids[i]
+    const enforceDate = enfs[i] || ""
+    const key = `${mst}:${enforceDate}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ mst, enforceDate })
+    if (out.length >= limit) break
+  }
+  return out.sort((a, b) => (b.enforceDate || "").localeCompare(a.enforceDate || ""))
+}
+
+// 특정 시점(efYd, YYYYMMDD)에 시행 중이던 버전 = 시행일 ≤ efYd 중 가장 늦은 것.
+export function pickVersionInForce(versions: LawVersion[], efYd: string): LawVersion | null {
+  const cands = versions
+    .filter((v) => v.enforceDate && v.enforceDate <= efYd)
+    .sort((a, b) => b.enforceDate.localeCompare(a.enforceDate))
+  return cands[0] || null
+}
+
+// 조문단위 블록에서 본문 텍스트 + 수식 이미지(flDownload) URL을 뽑는다. 이미지는 URL 마커로 보존.
+export function extractArticleBody(joBlock: string): { text: string; imageUrls: string[] } {
+  const urls = [...joBlock.matchAll(/flDownload\.do\?flSeq=(\d+)/g)].map((m) => `${MOLEG_BASE}/DRF/flDownload.do?flSeq=${m[1]}`)
+  const chunks: string[] = []
+  const re = /<!\[CDATA\[([\s\S]*?)\]\]>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(joBlock))) chunks.push(m[1])
+  let text = chunks.length > 0 ? chunks.join("") : joBlock
+  text = text
+    .replace(/<img[^>]*flSeq=(\d+)[^>]*>/gi, (_s, n) => ` [수식이미지→${MOLEG_BASE}/DRF/flDownload.do?flSeq=${n}] `)
+    .replace(/<img\b[^>]*>/gi, " [수식이미지] ")
+  return {
+    text: text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+    imageUrls: [...new Set(urls)],
+  }
+}
+
 export interface AddendaSource { mst: string; units: AddendaUnit[] }
 
 // 여러 시행본의 부칙단위를 공포번호 기준으로 union·dedup(가장 긴 본문 채택)하고, 각 공포번호가 어느 MST에 있었는지 기록.
@@ -2769,8 +2844,81 @@ async function traceArticleApplication(args: TraceArticleArgs): Promise<ToolResp
     lines.push(`── 현행 ${jo} 본문 발췌(앵커, 적용 버전 확정 후 사용) ──`, truncate(currentBody, args.full === true ? 3000 : 1000), "")
   }
   lines.push("── 부칙 적용례 타임라인 ──", ...blocks)
-  lines.push("구버전 본문/수식: korean-law-mcp search_historical_law로 시점별 mst 확보 → get_law_text(mst, jo) / 수식은 flDownload.do 이미지.")
+  lines.push("구버전/시점별 조문 본문·수식이미지는 get_law_article(jo, year 또는 efYd/mst)로 회수(법제처 DRF, korean-law 연혁 회수 결함 보완).")
   return textResponse(truncate(lines.join("\n"), args.full === true ? 70000 : 28000))
+}
+
+async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
+  const jo = requireString("jo", args.jo)
+  const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
+  if (!oc) {
+    throw new TaxlawMcpError(
+      "법제처 Open API 인증키(OC)가 필요합니다. 환경변수 LAW_GO_KR_OC를 설정하거나 oc 파라미터로 전달하세요.",
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  const mstArg = String(args.mst ?? "").trim()
+  const lawName = String(args.lawName ?? "").trim()
+  const efYd = String(args.efYd ?? "").trim() || (typeof args.year === "number" ? `${args.year}1231` : "")
+  if (!mstArg && !lawName) {
+    throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
+  }
+
+  let mst = mstArg
+  let versions: LawVersion[] = []
+  let pickNote = ""
+  if (lawName && (efYd || !mst)) {
+    versions = await fetchEflawVersions(oc, lawName, 40)
+  }
+  if (!mst) {
+    if (efYd && versions.length) {
+      const picked = pickVersionInForce(versions, efYd)
+      if (picked) {
+        mst = picked.mst
+        pickNote = ` (efYd ${efYd} 시점 시행본: 시행 ${formatYmd(picked.enforceDate)})`
+      }
+    }
+    if (!mst) mst = await resolveLawMst(oc, lawName)
+  }
+
+  const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
+  const xml = await fetchMolegXml(url, "법령 조회")
+  const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+  const enforceDate = (xml.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
+
+  const idx = xml.indexOf(`<![CDATA[${jo}(`)
+  if (idx === -1) {
+    return notFoundResponse(
+      `MST ${mst}(${lawTitle || "?"})에서 ${jo} 본문을 찾지 못했습니다.`,
+      [
+        "jo 표기를 법령 그대로 맞추세요(예: '제26조의8').",
+        "다른 시점이면 efYd(YYYYMMDD)/year 또는 정확한 mst를 지정하세요.",
+      ],
+    )
+  }
+  const s = xml.lastIndexOf("<조문단위", idx)
+  const e = xml.indexOf("</조문단위>", idx)
+  const { text, imageUrls } = extractArticleBody(xml.slice(s, e))
+
+  const lines = [
+    "법제처 조문 본문(시점별) — korean-law 연혁/수식 회수 결함 보완",
+    `출처: ${url}`,
+    `법령: ${lawTitle || "N/A"} (MST ${mst}) / 시행일 ${enforceDate ? formatYmd(enforceDate) : "?"}${pickNote}`,
+    `대상 조문: ${jo}`,
+    "⚠ 이 본문은 '이 시점에 시행 중이던' 조문이다. 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙 적용례)로 별도 판정하라.",
+    "",
+    "── 본문 ──",
+    truncate(text, args.full === true ? 16000 : 6000),
+  ]
+  if (imageUrls.length) {
+    lines.push("", `── 수식 이미지(${imageUrls.length}) — 다운로드 후 Read 또는 브라우저로 확인 ──`)
+    imageUrls.forEach((u) => lines.push(u))
+  }
+  if (versions.length) {
+    lines.push("", "── 최근 시행본(시점 선택용: efYd/mst) ──")
+    versions.slice(0, args.full === true ? 20 : 8).forEach((v) => lines.push(`시행 ${formatYmd(v.enforceDate)} | MST ${v.mst}`))
+  }
+  return textResponse(truncate(lines.join("\n"), args.full === true ? 30000 : 14000))
 }
 
 async function listTaxlawBasicRulingLaws(args: BasicRulingLawArgs): Promise<ToolResponse> {
@@ -3375,6 +3523,9 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "trace_article_application") {
       return await traceArticleApplication(input as TraceArticleArgs)
+    }
+    if (name === "get_law_article") {
+      return await getLawArticle(input as LawArticleArgs)
     }
     if (name === "search_taxlaw_interpretations") {
       return await searchTaxlawDocuments(input as DocumentSearchArgs, "reply")

@@ -23,6 +23,8 @@ const {
   extractJoClauses,
   extractEnforceDate,
   mergeAddendaUnits,
+  pickVersionInForce,
+  extractArticleBody,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -363,4 +365,24 @@ test("mergeAddendaUnits: 통합본 누락 부칙을 다른 시행본에서 보�
   // presence 추적
   assert.deepEqual(presence["36342"], ["286209"])
   assert.deepEqual(presence["36127"], ["286143", "286209"])
+})
+
+test("pickVersionInForce: 기준일에 시행 중이던 버전(시행일 ≤ 기준 중 최신)", () => {
+  const vs = [
+    { mst: "C", enforceDate: "20260227" },
+    { mst: "B", enforceDate: "20251128" },
+    { mst: "A", enforceDate: "20250101" },
+  ]
+  assert.equal(pickVersionInForce(vs, "20251231").mst, "B") // 2025 말 → 2025.11.28본
+  assert.equal(pickVersionInForce(vs, "20261231").mst, "C") // 2026 말 → 2026.2.27본
+  assert.equal(pickVersionInForce(vs, "20240101"), null) // 그 이전 버전 없음
+})
+
+test("extractArticleBody: 수식 이미지 URL 회수 + 본문에 URL 마커", () => {
+  const block = '<조문내용><![CDATA[제26조의8(통합고용세액공제)]]><항내용><![CDATA[⑥ 상시근로자 수: <img src="http://www.law.go.kr/DRF/flDownload.do?flSeq=125385447" alt="x">]]></항내용></조문내용>'
+  const { text, imageUrls } = extractArticleBody(block)
+  assert.equal(imageUrls.length, 1)
+  assert.ok(imageUrls[0].includes("flSeq=125385447"))
+  assert.ok(text.includes("[수식이미지→") && text.includes("125385447"))
+  assert.ok(!/<img/i.test(text))
 })

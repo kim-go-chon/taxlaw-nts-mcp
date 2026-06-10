@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.18] - 2026-06-10
+
+### Added — 시점별 조문 본문·수식이미지 회수 `get_law_article` (korean-law 연혁 결함 보완) (`src/index.ts` `fetchEflawVersions`/`pickVersionInForce`/`extractArticleBody`/`getLawArticle`)
+korean-law-mcp의 **시점별(연혁) 조문 회수가 사실상 고장**(이번 세션 실측: `get_historical_law`는 jo 추출 불능으로 메타만 반환, `get_law_text`+과거 mst/efYd는 NOT_FOUND 반복)이라, 구법령 본문을 결국 법제처 DRF raw XML로 우회해야 했다. 또 계산식이 **이미지**라 본문 텍스트에 안 보인다. 이 두 결함을 taxlaw-nts에서 흡수.
+
+- **`get_law_article`**: `year`(예: 2025) 또는 `efYd`(YYYYMMDD)를 주면 eflaw(시행일법령) 목록에서 **그 시점에 시행 중이던 버전(시행일 ≤ 기준 중 최신)을 자동 선택**(`pickVersionInForce`)해 조문 본문을 회수. 계산식 등 **수식은 `flDownload.do` 이미지 URL로 반환**(`extractArticleBody`) → 다운로드 후 Read/브라우저로 확인. 최근 시행본(시행일·MST) 목록도 함께 제공(다른 시점 선택용).
+- **가드**: "이 본문은 '그 시점 시행 중이던' 조문일 뿐, 어느 과세연도 신고에 적용되는지는 `trace_article_application`(부칙)으로 따로 판정"을 응답에 명시. `trace_article_application`의 구버전 본문 안내도 korean-law → `get_law_article`로 변경(자체 회수).
+- 실측 검증: §26의8을 year=2025 → MST 279959(시행 2025.11.28, 매월말 합÷개월수 총량식 이미지), year=2026 → MST 283625(시행 2026.7.1, §11의2제8항 준용=인당)로 정확 해소. 전부 법제처 DRF 단일 출처, korean-law-mcp 미수정.
+
+### Tested
+- `test/utils.test.js` 신규 2건(시점 버전 선택 / 수식 이미지 URL 회수·마커). `npm test` 전체 143건 통과.
+
 ## [0.9.17] - 2026-06-10
 
 ### Fixed — 부칙 consolidation lag 보정(최근 시행본 union) (`src/index.ts` `fetchEflawMsts`/`mergeAddendaUnits`/`prepareMergedAddenda`)
