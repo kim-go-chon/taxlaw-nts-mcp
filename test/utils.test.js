@@ -17,6 +17,8 @@ const {
   tokenizeQuery,
   matchesAllTokens,
   detectHoldingTruncation,
+  parseLawAddenda,
+  extractCdataText,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -255,4 +257,50 @@ test("matchesAllTokens: collapsed form catches spacing/middle-dot variants", () 
   const tokens = tokenizeQuery("연구·인력개발비")
   assert.equal(matchesAllTokens("연구인력개발비 세액공제 대상", tokens), true)
   assert.equal(matchesAllTokens("연구 인력 개발비 세액공제", tokens), true)
+})
+
+// v0.9.15: 법제처 DRF 부칙 파서
+const ADDENDA_SAMPLE_XML = [
+  "<조문단위><조문번호>1</조문번호></조문단위>",
+  "<부칙>",
+  "<부칙단위 부칙키=\"2026052236342\">",
+  "<부칙공포일자>20260522</부칙공포일자>",
+  "<부칙공포번호>36342</부칙공포번호>",
+  "<부칙내용><![CDATA[부칙 <제36342호,2026.5.22>]]>",
+  "<![CDATA[\n]]>",
+  "<![CDATA[제1조(시행일) 이 영은 공포한 날부터 시행한다.]]>",
+  "<![CDATA[\n]]>",
+  "<![CDATA[제2조(상시근로자 수에 관한 적용례) 제11조의2제8항의 개정규정은 <img src=\"http://x/f.png\">이 영 시행 이후 신고하는 경우부터 적용한다.]]>",
+  "</부칙내용>",
+  "</부칙단위>",
+  "<부칙단위 부칙키=\"2025123135999\">",
+  "<부칙공포일자>20251231</부칙공포일자>",
+  "<부칙공포번호>35999</부칙공포번호>",
+  "<부칙내용><![CDATA[제2조(경과조치) 2025년 과세연도는 종전의 규정에 따른다.]]>",
+  "</부칙내용>",
+  "</부칙단위>",
+  "</부칙>",
+].join("\n")
+
+test("parseLawAddenda: 공포번호별 부칙단위 분해 + 일자/번호 추출", () => {
+  const units = parseLawAddenda(ADDENDA_SAMPLE_XML)
+  assert.equal(units.length, 2)
+  const u = units.find((x) => x.promulgationNo === "36342")
+  assert.ok(u)
+  assert.equal(u.promulgationDate, "20260522")
+  assert.match(u.text, /상시근로자|제11조의2제8항/)
+})
+
+test("extractCdataText: CDATA 조각 결합 + 리터럴 꺾쇠(부칙 헤더) 보존 + img 마커 치환", () => {
+  const units = parseLawAddenda(ADDENDA_SAMPLE_XML)
+  const u = units.find((x) => x.promulgationNo === "36342")
+  // <제36342호,...> 같은 리터럴 꺾쇠는 태그로 제거되면 안 됨
+  assert.ok(u.text.includes("<제36342호,2026.5.22>"))
+  // 수식 <img>는 마커로 치환
+  assert.ok(u.text.includes("[수식이미지]"))
+  assert.ok(!/<img/i.test(u.text))
+})
+
+test("parseLawAddenda: <부칙> 노드가 없으면 빈 배열", () => {
+  assert.deepEqual(parseLawAddenda("<법령><조문단위></조문단위></법령>"), [])
 })

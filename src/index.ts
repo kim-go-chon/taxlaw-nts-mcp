@@ -31,7 +31,9 @@ import {
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.9.14"
+// 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
+const MOLEG_BASE = "https://www.law.go.kr"
+const VERSION = "0.9.15"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -242,6 +244,15 @@ interface RawActionArgs {
 
 interface TaxlawPageTextArgs {
   path?: string
+  full?: boolean
+}
+
+interface LawAddendaArgs {
+  mst?: string
+  lawName?: string
+  promulgationNo?: string
+  query?: string
+  oc?: string
   full?: boolean
 }
 
@@ -705,6 +716,23 @@ const tools = [
         full: { type: "boolean", default: false },
       },
       required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_law_addenda",
+    description: "법령 부칙(시행일·적용례·경과조치)을 법제처 국가법령정보 Open API(DRF)에서 조회한다. ⚠ NTS 국세법령정보시스템 DB에는 부칙 본문이 노출되지 않으므로(전용 컬렉션 없음) 이 도구로 보완한다. 부칙 '적용례'는 '○○ 개정규정은 …부터 적용한다'로 구조문(개정 전 본문)과 짝이므로, 계산식·정의·요건의 연도별(귀속) 적용시기를 따질 때 필수. 구조문 자체는 korean-law-mcp의 compare_old_new([개정 전])로 확인. mst는 korean-law-mcp의 search_law/search_historical_law로 확보(현행 MST면 과거 개정 부칙까지 모두 누적 포함). 인증키(OC)는 환경변수 LAW_GO_KR_OC 또는 oc 파라미터.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mst: { type: "string", description: "법령일련번호(MST). korean-law-mcp search_law/search_historical_law로 확보. 현행 MST를 넣으면 과거 개정 부칙까지 누적 포함됨." },
+        lawName: { type: "string", description: "법령명. mst가 없을 때 DRF lawSearch로 현행 MST를 1차 해소. 예: 조세특례제한법 시행령" },
+        promulgationNo: { type: "string", description: "공포번호 필터. 특정 개정령 부칙만. 예: 36342" },
+        query: { type: "string", description: "부칙 본문 키워드 필터(해당 문자열을 포함하는 부칙단위만). 예: 상시근로자, 제11조의2" },
+        oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC 사용." },
+        full: { type: "boolean", default: false, description: "true면 부칙단위·각 본문을 더 길게 반환." },
+      },
+      required: [],
       additionalProperties: false,
     },
   },
@@ -2317,6 +2345,146 @@ async function getTaxlawPageText(args: TaxlawPageTextArgs): Promise<ToolResponse
   return textResponse(lines.join("\n"))
 }
 
+export interface AddendaUnit {
+  promulgationDate: string
+  promulgationNo: string
+  text: string
+}
+
+// 법제처 DRF type=XML 응답의 <부칙내용>은 여러 <![CDATA[...]]> 조각으로 나뉘어 있고
+// 조각 안에는 <제35999호,2025.12.31> 같은 '리터럴 꺾쇠'가 들어있다. 따라서 일반 태그 제거를
+// 적용하면 부칙 헤더가 잘린다. CDATA 조각만 추출해 이어 붙이고, 수식 <img>만 마커로 치환한다.
+export function extractCdataText(block: string): string {
+  const chunks: string[] = []
+  const re = /<!\[CDATA\[([\s\S]*?)\]\]>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(block))) chunks.push(m[1])
+  const joined = (chunks.length > 0 ? chunks.join("") : block)
+    .replace(/<img\b[^>]*>/gi, " [수식이미지] ")
+  return joined
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+// 법령 본문 XML 끝의 <부칙> 노드를 공포번호별 <부칙단위>로 분해한다.
+// 현행 MST를 조회하면 과거 개정 부칙까지 누적 포함된다(개정령마다 1개 부칙단위).
+export function parseLawAddenda(xml: string): AddendaUnit[] {
+  const open = xml.lastIndexOf("<부칙>")
+  const close = xml.indexOf("</부칙>", open)
+  if (open === -1 || close === -1) return []
+  const section = xml.slice(open, close)
+  const units: AddendaUnit[] = []
+  const unitRe = /<부칙단위[^>]*>([\s\S]*?)<\/부칙단위>/g
+  let m: RegExpExecArray | null
+  while ((m = unitRe.exec(section))) {
+    const block = m[1]
+    const date = (block.match(/<부칙공포일자>([\s\S]*?)<\/부칙공포일자>/)?.[1] || "").trim()
+    const no = (block.match(/<부칙공포번호>([\s\S]*?)<\/부칙공포번호>/)?.[1] || "").trim()
+    const contentBlock = block.match(/<부칙내용>([\s\S]*?)<\/부칙내용>/)?.[1] || ""
+    units.push({ promulgationDate: date, promulgationNo: no, text: extractCdataText(contentBlock) })
+  }
+  return units
+}
+
+async function fetchMolegXml(url: string, label: string): Promise<string> {
+  const response = await fetchWithRetry(url, {
+    headers: { accept: "application/xml,text/xml;q=0.9,*/*;q=0.5", "user-agent": userAgent() },
+  })
+  if (!response.ok) {
+    await consume(response)
+    throw new TaxlawMcpError(`법제처 ${label} 실패 (${response.status})`, ErrorCodes.API_ERROR)
+  }
+  return await response.text()
+}
+
+async function resolveLawMst(oc: string, lawName: string): Promise<string> {
+  const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=law&type=XML&display=5&query=${encodeURIComponent(lawName)}`
+  const xml = await fetchMolegXml(url, "법령 검색")
+  const mst = (xml.match(/<법령일련번호>([\s\S]*?)<\/법령일련번호>/)?.[1] || "").trim()
+  if (!mst) {
+    throw new TaxlawMcpError(
+      `'${lawName}' 법령의 MST를 찾지 못했습니다. korean-law-mcp의 search_law로 정확한 mst를 확보해 전달하세요.`,
+      ErrorCodes.NOT_FOUND,
+    )
+  }
+  return mst
+}
+
+async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
+  const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
+  if (!oc) {
+    throw new TaxlawMcpError(
+      "법제처 Open API 인증키(OC)가 필요합니다. 환경변수 LAW_GO_KR_OC를 설정하거나 oc 파라미터로 전달하세요. (korean-law-mcp가 쓰는 것과 동일한 OC 키)",
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  let mst = String(args.mst ?? "").trim()
+  const lawName = String(args.lawName ?? "").trim()
+  if (!mst && !lawName) {
+    throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
+  }
+  let resolvedNote = ""
+  if (!mst) {
+    mst = await resolveLawMst(oc, lawName)
+    resolvedNote = ` — '${lawName}'로 검색해 현행 MST 해소`
+  }
+
+  const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
+  const xml = await fetchMolegXml(url, "법령 조회")
+  const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+
+  const units = parseLawAddenda(xml)
+  if (units.length === 0) {
+    return notFoundResponse(
+      `MST ${mst}의 부칙 노드를 찾지 못했습니다.`,
+      [
+        "MST가 유효한지 korean-law-mcp의 search_law/search_historical_law로 확인하세요.",
+        "lawName으로 호출했다면 더 정확한 mst를 직접 전달하세요.",
+      ],
+    )
+  }
+
+  const no = String(args.promulgationNo ?? "").trim()
+  const q = String(args.query ?? "").trim()
+  let filtered = units
+  if (no) filtered = filtered.filter((u) => u.promulgationNo === no)
+  if (q) filtered = filtered.filter((u) => u.text.includes(q))
+
+  if (filtered.length === 0) {
+    return notFoundResponse(
+      `부칙단위 ${units.length}개 중 필터(${no ? `공포번호=${no} ` : ""}${q ? `query="${q}"` : ""})에 맞는 항목이 없습니다.`,
+      [
+        "공포번호/키워드를 완화하거나 생략하고 전체 부칙을 확인하세요.",
+        "키워드는 부칙 본문에 그대로 등장하는 표현이어야 합니다(예: '상시근로자', '제11조의2').",
+      ],
+    )
+  }
+
+  filtered = [...filtered].sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
+  const maxUnits = args.full === true ? 50 : 12
+  const perUnit = args.full === true ? 8000 : 2500
+  const shown = filtered.slice(0, maxUnits)
+
+  const lines = [
+    "법제처 법령 부칙(시행일·적용례·경과조치)",
+    `출처: ${url}`,
+    `법령: ${lawTitle || "N/A"} (MST ${mst})${resolvedNote}`,
+    `부칙단위: 전체 ${units.length}개${no || q ? ` / 필터 일치 ${filtered.length}개` : ""} / 표시 ${shown.length}개 (최신 공포일순)`,
+    "주의: 적용례는 '○○ 개정규정은 …부터 적용한다'로 구조문(개정 전 본문)과 짝입니다. 구조문은 korean-law-mcp.compare_old_new의 [개정 전]으로 대조하세요. 아래는 법제처 원문이며, 명시되지 않은 사실은 추론·생성하지 마세요.",
+    "",
+  ]
+  shown.forEach((u) => {
+    lines.push(`──────── [제${u.promulgationNo || "?"}호, ${u.promulgationDate || "?"}] ────────`)
+    lines.push(truncate(u.text, perUnit))
+    lines.push("")
+  })
+  if (filtered.length > shown.length) {
+    lines.push(`… 외 ${filtered.length - shown.length}개 부칙단위 생략. promulgationNo/query로 좁히거나 full=true로 더 보세요.`)
+  }
+  return textResponse(truncate(lines.join("\n"), args.full === true ? 60000 : 20000))
+}
+
 async function listTaxlawBasicRulingLaws(args: BasicRulingLawArgs): Promise<ToolResponse> {
   const data = await postTaxlawAction<BasicRulingData>("ASISTD001MR01", {}, "/st/USESTD001M.do")
   const query = cleanText(args.query).toLowerCase()
@@ -2913,6 +3081,9 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "get_taxlaw_page_text") {
       return await getTaxlawPageText(input as TaxlawPageTextArgs)
+    }
+    if (name === "get_law_addenda") {
+      return await getLawAddenda(input as LawAddendaArgs)
     }
     if (name === "search_taxlaw_interpretations") {
       return await searchTaxlawDocuments(input as DocumentSearchArgs, "reply")
