@@ -16,6 +16,7 @@ const {
   isEmptyPayload,
   tokenizeQuery,
   matchesAllTokens,
+  detectHoldingTruncation,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -28,6 +29,36 @@ test("truncate: appends marker when over limit", () => {
   const out = truncate("a".repeat(20), 5)
   assert.equal(out.startsWith("aaaaa"), true)
   assert.match(out, /\[truncated to 5 chars\]/)
+})
+
+test("detectHoldingTruncation: 판례·결정례 잘림 → full=true 재조회 경고", () => {
+  const out = detectHoldingTruncation({
+    code: "08", // 심판청구
+    fullBody: "주 문\n...본문...\n3. 심리 및 판단\n...판단된다",
+    shownBody: "주 문\n...본문...[truncated to 8,000 chars]",
+    isFull: false,
+  }).join("\n")
+  assert.match(out, /판단·결론부 확인/)
+  assert.match(out, /full=true/)
+  assert.match(out, /요지-결과 정합성/)
+})
+
+test("detectHoldingTruncation: 잘리지 않아도 판례면 요지-결과 정합성 가드 부착", () => {
+  const out = detectHoldingTruncation({
+    code: "09", // 판례
+    fullBody: "짧은 본문",
+    shownBody: "짧은 본문",
+    isFull: false,
+  })
+  assert.equal(out.length > 0, true)
+  assert.match(out.join("\n"), /요지-결과 정합성/)
+  assert.equal(/full=true로 재조회/.test(out.join("\n")), false) // 잘림 강제경고는 없음
+})
+
+test("detectHoldingTruncation: 질의·해석례(비-쟁송)·full·빈본문은 무경고", () => {
+  assert.deepEqual(detectHoldingTruncation({ code: "01", fullBody: "x", shownBody: "x", isFull: false }), [])
+  assert.deepEqual(detectHoldingTruncation({ code: "08", fullBody: "x", shownBody: "x", isFull: true }), [])
+  assert.deepEqual(detectHoldingTruncation({ code: "08", fullBody: "", shownBody: "", isFull: false }), [])
 })
 
 test("decodeHtml: standard entities", () => {

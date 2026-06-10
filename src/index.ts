@@ -31,7 +31,7 @@ import {
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
-const VERSION = "0.9.13"
+const VERSION = "0.9.14"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -73,9 +73,8 @@ const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 
 - LLM 자체 지식·실무 팁은 위 1~3섹션과 섞지 말고 별도 단락
 - ⚠ 경고 표시 필수
 
-## 인용/피드백 prompt 2줄
+## 인용 prompt 1줄
 - "인용 본문을 더 부착해드릴까요? '예' 답변 시 본문 부착"
-- "1~5점 + 한 줄 코멘트"
 
 [출처 격리] (1)~(4)는 검증된 출처. 섹션 내용을 다른 섹션과 섞지 말 것.
 [빈 결과 처리] 빈 섹션도 헤더 유지 + "검색 결과 없음" 표기. 추측·생성 금지.
@@ -629,13 +628,13 @@ const tools = [
   },
   {
     name: "get_taxlaw_document_text",
-    description: `국세법령정보시스템 문서 상세 조회. search_taxlaw_documents/search_taxlaw_all 결과의 DOC_ID/id를 사용. ${COMPANION_NOTICE}\n⚠️ 사용자가 특정 연도(예: 2024년) 적용여부를 확인하려는 경우 반드시 targetYear를 지정하세요. 본문 '관련규정' 섹션을 파싱해 인용 법조문의 시점(법률번호·일자·개정단서)을 추출하고 targetYear와 비교하여, 구법조문 기반 예규이면 사문화 가능성을 함께 경고합니다. 그래도 현행 법령과의 최종 대조는 반드시 korean-law-mcp의 get_law_text로 직접 확인해야 합니다.`,
+    description: `국세법령정보시스템 문서 상세 조회. search_taxlaw_documents/search_taxlaw_all 결과의 DOC_ID/id를 사용. ${COMPANION_NOTICE}\n⚠️ 사용자가 특정 연도(예: 2024년) 적용여부를 확인하려는 경우 반드시 targetYear를 지정하세요. 본문 '관련규정' 섹션을 파싱해 인용 법조문의 시점(법률번호·일자·개정단서)을 추출하고 targetYear와 비교하여, 구법조문 기반 예규이면 사문화 가능성을 함께 경고합니다. 그래도 현행 법령과의 최종 대조는 반드시 korean-law-mcp의 get_law_text로 직접 확인해야 합니다.\n⚠️ 판례·결정례(05~10: 과세전적부·이의·심사·심판·판례·헌재)의 결론·판단·결정구분을 인용하거나 분류(인용/기각/에누리/장려금 등)할 때는 full=true로 주문+'심리 및 판단' 결론부를 직접 확인하세요. 기본(false)은 8000자에서 잘려 결론부가 누락될 수 있고, 요지가 실제 주문/결과와 어긋날 수 있습니다.`,
     inputSchema: {
       type: "object",
       properties: {
         id: { type: "string", description: "검색 결과의 DOC_ID 또는 DOCID. 예: 001_200000000000019482 또는 200000000000019482" },
         docType: { type: "string", enum: ["advance", "reply", "tax_standard", "written", "tax_pre_review", "objection", "review", "tribunal", "precedent", "constitutional", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10"], description: "알고 있는 경우 문서유형. 미입력 시 질의/판례 상세를 순차 시도" },
-        full: { type: "boolean", default: false, description: "true면 HTML 원문 변환 텍스트를 더 길게 포함" },
+        full: { type: "boolean", default: false, description: "true면 HTML 원문 변환 텍스트를 더 길게 포함. 판례·결정례(05~10)의 주문·판단(결론부)은 기본(false)에서 8000자 truncate로 잘릴 수 있으니, 결론·판단을 인용/분류할 때는 true 권장." },
         targetYear: { type: "number", minimum: 1990, maximum: 2100, description: "사용자가 적용하려는 연도(예: 2024). 본문 관련규정 섹션을 파싱해 인용 법조문 시점과 비교하고, targetYear보다 앞선 시점의 구법조문 기반이면 경고를 함께 반환합니다." },
       },
       required: ["id"],
@@ -1361,6 +1360,29 @@ function compactBodyText(text: string, full = false): string {
   return truncate(compact, 8000)
 }
 
+// v0.9.14 — 판례·결정례(05~10: 과세전적부·이의·심사·심판·판례·헌재)의 '판단·주문(결론부)'은
+// 본문 뒤쪽에 위치해 기본(full=false) 8000자 truncate에 자주 잘린다. 요지·처분개요만 보고 결론을
+// 단정하면 요지와 실제 주문/판단이 어긋나는 오류가 발생한다(예: 요지 '에누리 해당'↔판결 '에누리 아님·과세').
+// 잘림 시 full=true 재조회를 강제 안내하고, 요지-결과 정합성·결정구분 표기 가드를 함께 부착한다.
+export function detectHoldingTruncation(opts: { code?: string; fullBody: string; shownBody: string; isFull: boolean }): string[] {
+  const { code, fullBody, shownBody, isFull } = opts
+  if (isFull || !fullBody) return []
+  if (!code || !PRECEDENT_CODES.has(code.padStart(2, "0"))) return []
+  const wasCut = shownBody.length < fullBody.length || /\[truncated to/.test(shownBody)
+  const lines = ["── 판단·결론부 확인 (판례·결정례) ──"]
+  if (wasCut) {
+    lines.push(
+      "⚠ 본문이 잘려 '주문·판단(결론부)'이 이번 응답(요약본)에 누락됐을 수 있습니다. 요지·처분개요만으로 결론을 단정하지 마세요.",
+      "  → 결론·판단근거를 인용/분류하기 전 반드시 full=true로 재조회하여 주문 + '3. 심리 및 판단'의 결론 문단을 직접 확인하세요.",
+    )
+  }
+  lines.push(
+    "[요지-결과 정합성] 요지는 손실 요약이라 주문·판단과 어긋날 수 있습니다. 요지가 '에누리/인정' 취지인데 결과가 기각·국승(과세)이거나 그 반대이면 모순 신호 → full=true 본문 필독.",
+    "[결정구분 표기] 인용/기각/각하/재조사는 결정문의 국세기본법 제65조제1항(또는 판결 주문) 기준으로 표기하고, 목록 메타데이터(결정 칸)에만 의존하지 마세요.",
+  )
+  return lines
+}
+
 function detailTextFromHtmlList(list?: TaxlawDetailData["ASIQTB002PR01"]["dcmHwpEditorDVOList"]): string {
   const item = list?.find((entry) => entry.dcmFleTy === "html" && entry.dcmFleByte) ||
     list?.find((entry) => entry.dcmFleByte)
@@ -2028,6 +2050,17 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
       lines.push("  3) 단건이 아닌 주제어로 호출 → 인접 번호대 일괄 수집 (관련 통칙 군집 누락 방지)")
       lines.push("")
     }
+  }
+
+  // v0.9.14 — 판례·결정례 결론부(판단·주문) 잘림 경고 + 요지-결과 정합성 가드
+  if (bodyText) {
+    const holdingWarn = detectHoldingTruncation({
+      code,
+      fullBody: bodyText,
+      shownBody: compactBodyText(bodyText, full),
+      isFull: full,
+    })
+    if (holdingWarn.length > 0) lines.push(...holdingWarn, "")
   }
 
   return truncate(lines.join("\n"), full ? 50000 : 30000)
