@@ -33,7 +33,7 @@ import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.9.15"
+const VERSION = "0.9.16"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -252,6 +252,17 @@ interface LawAddendaArgs {
   lawName?: string
   promulgationNo?: string
   query?: string
+  oc?: string
+  full?: boolean
+}
+
+interface TraceArticleArgs {
+  mst?: string
+  lawName?: string
+  jo?: string
+  hang?: string
+  targetYear?: number
+  filingMonth?: number
   oc?: string
   full?: boolean
 }
@@ -733,6 +744,25 @@ const tools = [
         full: { type: "boolean", default: false, description: "true면 부칙단위·각 본문을 더 길게 반환." },
       },
       required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "trace_article_application",
+    description: "특정 조문의 '연도별(귀속) 적용시점'을 부칙 적용례 기준으로 추적한다. ⚠ 핵심 원칙: 어느 과세연도 신고에 적용되는 조문은 '그 해에 시행 중이던 본문'이 아니라 '부칙 적용례'가 정한다. 특히 '시행 이후 신고하는 경우부터' 같은 신고시점 기준 적용례는 직전 과세연도에 소급 적용된다(예: 2026.2.27 시행·신고기준 → 2025 귀속 신고분에 신법 적용). 이 도구는 해당 조문을 언급하는 모든 개정 부칙의 적용례·경과조치를 원문 그대로 모아 ① 유형(과세연도개시/신고시점/행위시점/최초공제연도/경과조치)으로 태깅하고 ② targetYear에 대한 소급 적용 판단노트와 ③ 부칙 충돌(경과조치 vs 후행 특정 적용례) 경고를 붙인다. 계산방식·정의·요건의 귀속연도별 적용시기를 따질 때 본문/이미지 단정 전에 먼저 호출. 결론은 자동 단정이 아니라 부칙 verbatim과 함께 판단하라.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        jo: { type: "string", description: "추적할 조문. 예: 제26조의8 (필수)" },
+        hang: { type: "string", description: "항으로 더 좁힘. 예: 제6항" },
+        mst: { type: "string", description: "법령일련번호(현행 MST). korean-law-mcp search_law로 확보. 현행 MST면 과거 개정 부칙 누적 포함." },
+        lawName: { type: "string", description: "법령명. mst 없을 때 현행 MST 1차 해소. 예: 조세특례제한법 시행령" },
+        targetYear: { type: "number", description: "적용하려는 과세연도/귀속(예: 2025). 각 적용례에 대한 소급 판단노트 생성." },
+        filingMonth: { type: "number", description: "신고시점 기준 적용례 판단용 신고 월(말일 기준). 법인세=3, 종합소득세=5(기본 3). targetYear+1년의 해당 월로 추정." },
+        oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC." },
+        full: { type: "boolean", default: false, description: "true면 조문 본문 발췌·부칙 적용례를 더 길게." },
+      },
+      required: ["jo"],
       additionalProperties: false,
     },
   },
@@ -2485,6 +2515,189 @@ async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
   return textResponse(truncate(lines.join("\n"), args.full === true ? 60000 : 20000))
 }
 
+// "YYYYMMDD" → "YYYY.M.D"
+function formatYmd(ymd: string): string {
+  const m = String(ymd || "").match(/^(\d{4})(\d{2})(\d{2})$/)
+  return m ? `${m[1]}.${Number(m[2])}.${Number(m[3])}` : (ymd || "")
+}
+
+// 부칙단위 본문의 제1조(시행일)에서 시행일을 뽑는다. "공포한 날부터 시행"이면 공포일.
+export function extractEnforceDate(addendaText: string, promulgationYmd?: string): string {
+  const f = addendaText.replace(/\s/g, "")
+  const m = f.match(/이영은(\d{4})년(\d{1,2})월(\d{1,2})일부터시행/)
+  if (m) return `${m[1]}.${Number(m[2])}.${Number(m[3])}`
+  if (/공포한날부터시행/.test(f)) return promulgationYmd ? `${formatYmd(promulgationYmd)}(공포일)` : "공포일"
+  return promulgationYmd ? formatYmd(promulgationYmd) : ""
+}
+
+// 적용례/경과조치 한 조항을 유형 분류. 순서 중요(경과조치·최초공제·과세연도개시 먼저 검사).
+export function classifyApplicationClause(clause: string): string {
+  const f = clause.replace(/\s/g, "")
+  if (/개정규정에도불구하고[\s\S]*?종전의?규정에따른다/.test(f)) return "경과조치(종전규정)"
+  if (/최초공제연도/.test(f)) return "최초공제연도기준"
+  if (/이후개시하는과세연도/.test(f) || /이후개시하는사업연도/.test(f)) return "과세연도개시기준"
+  if (/시행이후[\s\S]*?신고하는경우/.test(f) || /과세표준(및세액을)?신고/.test(f) || /과세표준을신고/.test(f)) return "신고시점기준"
+  if (/시행이후[\s\S]*?(취득|지급|양도|증여|계약|출자|투자|복직|전환|해지|가입|발생|공급|취업|상장|합병)/.test(f)) return "행위시점기준"
+  if (/이후[\s\S]*?발생하는소득/.test(f) || /속하는과세(연도|기간)/.test(f)) return "소득·기간기준"
+  return "유형미상"
+}
+
+// 부칙 본문에서 jo(+hang)를 언급하는 '적용례/경과조치' 조항만 추출.
+// 타법개정의 자구정정 나열("…를 …로 한다")은 적용례가 아니므로 적용 동사로 걸러낸다.
+const APPLICATION_VERB = /(적용한다|종전의?규정에따른다|으로본다|로본다)/
+export function extractJoClauses(addendaText: string, jo: string, hang?: string): Array<{ title: string; clause: string }> {
+  const joKey = jo.replace(/\s/g, "")
+  const hangKey = (hang || "").replace(/\s/g, "")
+  const out: Array<{ title: string; clause: string }> = []
+  // 부칙은 제N조(제목) 단위로 구성 → 조 블록으로 분해
+  const blocks = addendaText.split(/(?=제\d+조(?:의\d+)?\s*\()/).filter((b) => b.trim())
+  for (const b of blocks) {
+    if (!b.replace(/\s/g, "").includes(joKey)) continue
+    const title = (b.match(/^제\d+조(?:의\d+)?\s*\([^)]*\)/) || [""])[0].trim()
+    // 항(①~⑮)으로 쪼개되, 항이 1개뿐이면 블록 전체를 후보로
+    const parts = b.split(/(?=[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮])/).filter((p) => p.trim())
+    const candidates = parts.length > 1 ? parts : [b]
+    for (const p of candidates) {
+      const flat = p.replace(/\s/g, "")
+      if (!flat.includes(joKey)) continue
+      if (!APPLICATION_VERB.test(flat)) continue // 적용례/경과조치만 (자구정정 제외)
+      if (hangKey) {
+        const adjacent = flat.includes(joKey + hangKey) // 예: 제26조의8제6항
+        const articleLevelTransitional = /종전의?규정에따른다/.test(flat) // 조 단위 경과조치는 충돌 가시화 위해 포함
+        if (!adjacent && !articleLevelTransitional) continue
+      }
+      out.push({ title, clause: p.trim() })
+    }
+  }
+  return out
+}
+
+function targetYearApplicationNote(
+  type: string,
+  clause: string,
+  targetYear: number,
+  enforceDate: string,
+  filingMonth: number,
+): string {
+  const f = clause.replace(/\s/g, "")
+  if (type === "신고시점기준") {
+    const filing = `${targetYear + 1}.${filingMonth}월(말)`
+    const ed = enforceDate || "?"
+    return `${targetYear} 귀속 정기신고(≈${filing}) 시점에 시행일(${ed})이 이미 지났으면 → 개정규정(신법)이 ${targetYear} 귀속 신고분에 **소급 적용**. 시행일 > 신고시점이면 종전규정.`
+  }
+  if (type === "과세연도개시기준") {
+    const ym = f.match(/(\d{4})년\d{0,2}월?\d{0,2}일?이후개시/)?.[1]
+    if (!ym) return `기준 과세연도 미파싱 — 원문 확인.`
+    return `기준: ${ym} 이후 개시 과세연도. targetYear ${targetYear} ${Number(targetYear) >= Number(ym) ? "≥ → 개정규정 적용" : "< → 종전규정"}.`
+  }
+  if (type === "경과조치(종전규정)") {
+    const yrs = [...f.matchAll(/(\d{4})년/g)].map((m) => Number(m[1]))
+    const inRange = yrs.includes(Number(targetYear))
+    return `경과조치 명시연도 ${yrs.join("·") || "?"}. targetYear ${targetYear} ${inRange ? "포함 → 원칙 종전규정. ⚠ 같은 조문에 후행·특정 적용례가 있으면 그쪽이 우선할 수 있으니 충돌 점검 필수" : "미포함"}.`
+  }
+  if (type === "최초공제연도기준") {
+    return `최초 공제연도 기준. ${targetYear}를 최초 공제연도로 신청하면 개정규정 적용. 그 전부터 공제 중이었다면 적용 여부 별도 확인.`
+  }
+  if (type === "행위시점기준" || type === "소득·기간기준") {
+    return `행위·소득 발생시점 기준. ${targetYear} 중 해당 행위/소득이 시행일(${enforceDate || "?"}) 이후면 개정규정.`
+  }
+  return ""
+}
+
+const TRACE_GUARD = [
+  "⚠ 적용시점 판정 규칙(반드시 준수):",
+  "① 어느 과세연도 신고에 적용되는 조문은 '그 해 시행 중이던 본문'이 아니라 '부칙 적용례'가 정한다.",
+  "② '신고시점' 기준 적용례는 직전 과세연도에 소급한다(예: 2026.2.27 시행·신고기준 → 2025 귀속 신고분 적용).",
+  "③ 부칙이 여러 개면 후행·특정 적용례가 일반 경과조치보다 우선할 수 있으니 충돌을 명시 점검하라.",
+  "④ 본문/수식이미지 스냅샷만으로 귀속연도를 단정하지 말고, 결론은 반드시 부칙 verbatim과 함께 적어라.",
+].join("\n")
+
+async function traceArticleApplication(args: TraceArticleArgs): Promise<ToolResponse> {
+  const jo = requireString("jo", args.jo)
+  const hang = String(args.hang ?? "").trim()
+  const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
+  if (!oc) {
+    throw new TaxlawMcpError(
+      "법제처 Open API 인증키(OC)가 필요합니다. 환경변수 LAW_GO_KR_OC를 설정하거나 oc 파라미터로 전달하세요.",
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  let mst = String(args.mst ?? "").trim()
+  const lawName = String(args.lawName ?? "").trim()
+  if (!mst && !lawName) {
+    throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
+  }
+  if (!mst) mst = await resolveLawMst(oc, lawName)
+
+  const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
+  const xml = await fetchMolegXml(url, "법령 조회")
+  const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+
+  const targetYear = typeof args.targetYear === "number" ? args.targetYear : undefined
+  const filingMonth = typeof args.filingMonth === "number" ? args.filingMonth : 3
+
+  // 현행 jo 본문 발췌(앵커용)
+  let currentBody = ""
+  const bodyIdx = xml.indexOf(`<![CDATA[${jo}(`)
+  if (bodyIdx !== -1) {
+    const s = xml.lastIndexOf("<조문단위", bodyIdx)
+    const e = xml.indexOf("</조문단위>", bodyIdx)
+    if (s !== -1 && e !== -1) {
+      currentBody = extractCdataText(xml.slice(s, e)).replace(/\[수식이미지\]/g, "[수식이미지=flDownload.do로 별도 확인]")
+    }
+  }
+
+  const units = parseLawAddenda(xml)
+  const joKey = jo.replace(/\s/g, "")
+  const matched = units
+    .filter((u) => u.text.replace(/\s/g, "").includes(joKey))
+    .sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
+
+  if (matched.length === 0) {
+    return notFoundResponse(
+      `MST ${mst}의 부칙에서 ${jo}${hang ? " " + hang : ""}을(를) 언급하는 적용례/경과조치를 찾지 못했습니다.`,
+      [
+        "jo 표기를 법령 표기와 맞추세요(예: '제26조의8').",
+        "hang 필터가 너무 좁으면 생략하고 조 단위로 보세요.",
+        "부칙 전체는 get_law_addenda로, 구버전 본문은 korean-law-mcp search_historical_law로 확인하세요.",
+      ],
+    )
+  }
+
+  const typesForTarget = new Set<string>()
+  const blocks: string[] = []
+  for (const u of matched) {
+    const enforce = extractEnforceDate(u.text, u.promulgationDate)
+    const clauses = extractJoClauses(u.text, jo, hang)
+    if (clauses.length === 0) continue
+    blocks.push(`──────── [제${u.promulgationNo || "?"}호] 공포 ${formatYmd(u.promulgationDate)} / 시행 ${enforce || "?"} ────────`)
+    for (const c of clauses) {
+      const type = classifyApplicationClause(c.clause)
+      if (targetYear !== undefined) typesForTarget.add(type)
+      blocks.push(`· [${type}] ${truncate(c.clause, args.full === true ? 4000 : 1200)}`)
+      if (targetYear !== undefined) {
+        const note = targetYearApplicationNote(type, c.clause, targetYear, enforce, filingMonth)
+        if (note) blocks.push(`   └▶ ${targetYear} 귀속 판단: ${note}`)
+      }
+    }
+    blocks.push("")
+  }
+
+  const lines: string[] = [TRACE_GUARD, "", "조문 적용시점 추적", `출처: ${url}`, `법령: ${lawTitle || "N/A"} (MST ${mst}) / 대상 조문: ${jo}${hang ? " " + hang : ""}`]
+  if (targetYear !== undefined) lines.push(`targetYear: ${targetYear} 귀속 (신고시점 추정 ${targetYear + 1}.${filingMonth}월)`)
+  // 충돌 경고
+  if (targetYear !== undefined && typesForTarget.has("경과조치(종전규정)") && [...typesForTarget].some((t) => t !== "경과조치(종전규정)" && t !== "유형미상")) {
+    lines.push(`⚠ 부칙 충돌 가능: 같은 조문에 [경과조치(종전규정)]와 [${[...typesForTarget].filter((t) => t !== "경과조치(종전규정)" && t !== "유형미상").join(", ")}]가 공존 → ${targetYear} 귀속에 어느 적용례가 우선하는지(후행·특정 우선) 반드시 판단하라.`)
+  }
+  lines.push(`부칙 적용례: ${jo} 언급 개정 ${matched.length}건 (최신순)`, "")
+  if (currentBody) {
+    lines.push(`── 현행 ${jo} 본문 발췌(앵커, 적용 버전 확정 후 사용) ──`, truncate(currentBody, args.full === true ? 3000 : 1000), "")
+  }
+  lines.push("── 부칙 적용례 타임라인 ──", ...blocks)
+  lines.push("구버전 본문/수식: korean-law-mcp search_historical_law로 시점별 mst 확보 → get_law_text(mst, jo) / 수식은 flDownload.do 이미지.")
+  return textResponse(truncate(lines.join("\n"), args.full === true ? 70000 : 28000))
+}
+
 async function listTaxlawBasicRulingLaws(args: BasicRulingLawArgs): Promise<ToolResponse> {
   const data = await postTaxlawAction<BasicRulingData>("ASISTD001MR01", {}, "/st/USESTD001M.do")
   const query = cleanText(args.query).toLowerCase()
@@ -3084,6 +3297,9 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "get_law_addenda") {
       return await getLawAddenda(input as LawAddendaArgs)
+    }
+    if (name === "trace_article_application") {
+      return await traceArticleApplication(input as TraceArticleArgs)
     }
     if (name === "search_taxlaw_interpretations") {
       return await searchTaxlawDocuments(input as DocumentSearchArgs, "reply")

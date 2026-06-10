@@ -19,6 +19,9 @@ const {
   detectHoldingTruncation,
   parseLawAddenda,
   extractCdataText,
+  classifyApplicationClause,
+  extractJoClauses,
+  extractEnforceDate,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -303,4 +306,37 @@ test("extractCdataText: CDATA 조각 결합 + 리터럴 꺾쇠(부칙 헤더) �
 
 test("parseLawAddenda: <부칙> 노드가 없으면 빈 배열", () => {
   assert.deepEqual(parseLawAddenda("<법령><조문단위></조문단위></법령>"), [])
+})
+
+// v0.9.16: trace_article_application 헬퍼
+test("classifyApplicationClause: 적용례 유형 분류", () => {
+  assert.equal(classifyApplicationClause("제26조의8제6항의 개정규정은 이 영 시행 이후 신고하는 경우부터 적용한다."), "신고시점기준")
+  assert.equal(classifyApplicationClause("제11조의2제8항의 개정규정은 2026년 1월 1일 이후 개시하는 과세연도부터 적용한다."), "과세연도개시기준")
+  assert.equal(classifyApplicationClause("제26조의8의 개정규정에도 불구하고 종전의 규정에 따른다."), "경과조치(종전규정)")
+  assert.equal(classifyApplicationClause("제26조의8제6항의 개정규정은 2025년 1월 1일 이후 개시하는 과세연도를 최초 공제연도로 하여 신청하는 경우부터 적용한다."), "최초공제연도기준")
+  assert.equal(classifyApplicationClause("제27조의6의 개정규정은 이 영 시행 이후 증여받는 경우부터 적용한다."), "행위시점기준")
+})
+
+test("extractEnforceDate: 시행일 추출", () => {
+  assert.equal(extractEnforceDate("부칙 제1조(시행일) 이 영은 공포한 날부터 시행한다.", "20260227"), "2026.2.27(공포일)")
+  assert.equal(extractEnforceDate("제1조(시행일) 이 영은 2026년 1월 1일부터 시행한다.", "20251231"), "2026.1.1")
+})
+
+test("extractJoClauses: jo+hang 적용례 추출 + 자구정정 제외 + 조단위 경과조치 포함", () => {
+  const buchik = [
+    "제5조(다른 조문 적용례) 제17조제2항의 개정규정은 이 영 시행 이후 신고하는 경우부터 적용한다.",
+    "제11조(통합고용세액공제에 관한 적용례 등) ① 제26조의8제4항제1호의 개정규정은 2025년 1월 1일 이후 개시하는 과세연도를 최초 공제연도로 하여 신청하는 경우부터 적용한다. ③ 제26조의8제6항 및 제7항의 개정규정은 이 영 시행 이후 신고하는 경우부터 적용한다.",
+    "제2조(경과조치) 2024년 또는 2025년 과세연도는 제26조의8의 개정규정에도 불구하고 종전의 규정에 따른다.",
+    "제9조(다른 법령의 개정) 제26조의8제6항 중 \"갑\"을 \"을\"로 한다.",
+  ].join(" ")
+  const got = extractJoClauses(buchik, "제26조의8", "제6항")
+  const flat = got.map((c) => c.clause.replace(/\s/g, ""))
+  // ③(제26조의8제6항 신고시점) 포함
+  assert.ok(flat.some((c) => c.includes("제26조의8제6항및제7항") && c.includes("신고하는경우")))
+  // 조단위 경과조치 포함(충돌 가시화)
+  assert.ok(flat.some((c) => c.includes("종전의규정에따른다")))
+  // ①(제4항제1호, hang 불일치) 제외
+  assert.ok(!flat.some((c) => c.includes("제26조의8제4항제1호") && !c.includes("제6항")))
+  // 자구정정("…로 한다") 제외
+  assert.ok(!flat.some((c) => c.includes("\"갑\"을\"을\"로한다") || c.includes("을\"로한다")))
 })
