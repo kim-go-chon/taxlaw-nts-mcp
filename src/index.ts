@@ -33,7 +33,7 @@ import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.9.18"
+const VERSION = "0.9.19"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1194,8 +1194,27 @@ export function normalizeTaxlawPath(value: unknown, fallback = "/index.do"): str
   return path
 }
 
+// null·""·빈 배열·빈 객체를 재귀 제거(0/false는 보존). NTS 원시 JSON은 null 필드가 대다수라
+// 비-full 응답의 신호밀도를 높인다(추가 호출 없는 인메모리 변환). full 모드는 원시 그대로.
+export function pruneEmpty(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const arr = value.map(pruneEmpty).filter((v) => v !== undefined)
+    return arr.length ? arr : undefined
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const pv = pruneEmpty(v)
+      if (pv !== undefined) out[k] = pv
+    }
+    return Object.keys(out).length ? out : undefined
+  }
+  if (value === null || value === "") return undefined
+  return value
+}
+
 function stringifyJson(value: unknown, full = false): string {
-  const json = JSON.stringify(value, null, 2)
+  const json = JSON.stringify(full ? value : pruneEmpty(value) ?? {}, null, 2)
   return truncate(json, full ? 50000 : 15000)
 }
 
@@ -2347,6 +2366,7 @@ async function callTaxlawAction(args: RawActionArgs): Promise<ToolResponse> {
     `actionId: ${actionId}`,
     `paramData: ${JSON.stringify(paramData)}`,
     "주의: 아래 JSON은 NTS action.do의 원시 응답입니다. 응답에 명시되지 않은 사실은 추론·생성하지 말고, 키 이름·값을 그대로 인용해 답변하세요.",
+    ...(args.full === true ? [] : ["참고: 토큰 절감을 위해 null·빈 필드는 생략했습니다. 원시 전체(빈 필드 포함)는 full=true로 재호출하세요."]),
     "",
     stringifyJson(data, args.full === true),
   ]

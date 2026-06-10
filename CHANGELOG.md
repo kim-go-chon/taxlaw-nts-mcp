@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.19] - 2026-06-10
+
+### Changed — `call_taxlaw_action` 비-full 응답 토큰 절감(빈 필드 prune) (`src/index.ts` `pruneEmpty`/`stringifyJson`)
+NTS action.do 원시 JSON은 null·빈 필드가 대다수(예: `ASISTH001MR01`은 각 항목마다 ~20개 null 필드)라 15,000자 truncate 전에 신호밀도가 매우 낮았다. 비-full 모드에서 `pruneEmpty`로 null·""·빈 배열·빈 객체를 재귀 제거(0·false는 보존) → 같은 토큰 예산에 실제 데이터를 더 담는다. 추가 네트워크·지연 없는 인메모리 변환이라 속도 영향 0, full=true는 원시 전체(빈 필드 포함) 그대로 보존. 응답에 "빈 필드 생략 — 원시 전체는 full=true" 안내 부착.
+
+(검토했으나 미반영: 업종코드 6개 도구의 지연노출 그룹화 — discover/execute 2단 라운드트립으로 업종조회가 느려지고 직접호출 워크플로를 깨뜨려 효과성 저하. 현 직접노출 유지.)
+
+### Tested
+- `test/utils.test.js` 신규 1건(null·빈 필드 제거, 0/false·실데이터 보존). `npm test` 전체 144건 통과.
+
 ## [0.9.18] - 2026-06-10
 
 ### Added — 시점별 조문 본문·수식이미지 회수 `get_law_article` (korean-law 연혁 결함 보완) (`src/index.ts` `fetchEflawVersions`/`pickVersionInForce`/`extractArticleBody`/`getLawArticle`)

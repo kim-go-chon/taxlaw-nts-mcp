@@ -25,6 +25,7 @@ const {
   mergeAddendaUnits,
   pickVersionInForce,
   extractArticleBody,
+  pruneEmpty,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -385,4 +386,29 @@ test("extractArticleBody: 수식 이미지 URL 회수 + 본문에 URL 마커", (
   assert.ok(imageUrls[0].includes("flSeq=125385447"))
   assert.ok(text.includes("[수식이미지→") && text.includes("125385447"))
   assert.ok(!/<img/i.test(text))
+})
+
+test("pruneEmpty: null·빈 필드 제거(0/false 보존), 실데이터 유지", () => {
+  const raw = {
+    ASISTH001MR01: {
+      searchKeyword: "통합고용",
+      recordCount: 0,
+      nullField: null,
+      emptyStr: "",
+      emptyArr: [],
+      list: [
+        { ntstNm: "조세특례제한법", ntstBscId: "100", empty: null, gone: "" },
+        { all: null, blank: "" },
+      ],
+      flag: false,
+    },
+  }
+  const out = pruneEmpty(raw)
+  const o = out.ASISTH001MR01
+  assert.equal(o.searchKeyword, "통합고용")
+  assert.equal(o.recordCount, 0) // 0 보존
+  assert.equal(o.flag, false) // false 보존
+  assert.ok(!("nullField" in o) && !("emptyStr" in o) && !("emptyArr" in o))
+  assert.equal(o.list.length, 1) // 전부 빈 두번째 객체 제거
+  assert.deepEqual(o.list[0], { ntstNm: "조세특례제한법", ntstBscId: "100" })
 })
