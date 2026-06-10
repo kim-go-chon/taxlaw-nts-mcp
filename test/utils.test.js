@@ -22,6 +22,7 @@ const {
   classifyApplicationClause,
   extractJoClauses,
   extractEnforceDate,
+  mergeAddendaUnits,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -339,4 +340,27 @@ test("extractJoClauses: jo+hang 적용례 추출 + 자구정정 제외 + 조단�
   assert.ok(!flat.some((c) => c.includes("제26조의8제4항제1호") && !c.includes("제6항")))
   // 자구정정("…로 한다") 제외
   assert.ok(!flat.some((c) => c.includes("\"갑\"을\"을\"로한다") || c.includes("을\"로한다")))
+})
+
+test("mergeAddendaUnits: 통합본 누락 부칙을 다른 시행본에서 보강(union·dedup)", () => {
+  // 현행(286143)엔 36342 없음, 286209엔 있음 → union에 포함되어야
+  const cur = { mst: "286143", units: [
+    { promulgationDate: "20260519", promulgationNo: "36338", text: "부칙 36338 ..." },
+    { promulgationDate: "20260227", promulgationNo: "36127", text: "부칙 36127 ..." },
+  ] }
+  const prev = { mst: "286209", units: [
+    { promulgationDate: "20260522", promulgationNo: "36342", text: "부칙 36342 절사위치 적용례 ..." },
+    { promulgationDate: "20260227", promulgationNo: "36127", text: "부칙 36127 더 긴 본문 ...........(longer)" },
+  ] }
+  const { units, presence } = mergeAddendaUnits([cur, prev])
+  const nos = units.map((u) => u.promulgationNo)
+  assert.ok(nos.includes("36342")) // 보강됨
+  assert.equal(nos.filter((n) => n === "36127").length, 1) // dedup
+  // 최신 공포일순
+  assert.equal(units[0].promulgationNo, "36342")
+  // 더 긴 본문 채택
+  assert.ok(units.find((u) => u.promulgationNo === "36127").text.includes("더 긴 본문"))
+  // presence 추적
+  assert.deepEqual(presence["36342"], ["286209"])
+  assert.deepEqual(presence["36127"], ["286143", "286209"])
 })

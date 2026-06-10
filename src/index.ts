@@ -33,7 +33,7 @@ import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.9.16"
+const VERSION = "0.9.17"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -2441,6 +2441,86 @@ async function resolveLawMst(oc: string, lawName: string): Promise<string> {
   return mst
 }
 
+// 법제처 시행일법령(eflaw) 검색으로 같은 법령의 최근 시행본 MST들을 시행일 내림차순(중복 제거)으로 반환.
+// 타법개정 통합본이 직전 일부개정 부칙을 누락하는 consolidation lag를 메우기 위함.
+async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promise<string[]> {
+  const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=20&query=${encodeURIComponent(lawName)}`
+  const xml = await fetchMolegXml(url, "시행일 법령 검색")
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const m of xml.matchAll(/<법령일련번호>(\d+)<\/법령일련번호>/g)) {
+    const mst = m[1]
+    if (seen.has(mst)) continue
+    seen.add(mst)
+    out.push(mst)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+export interface AddendaSource { mst: string; units: AddendaUnit[] }
+
+// 여러 시행본의 부칙단위를 공포번호 기준으로 union·dedup(가장 긴 본문 채택)하고, 각 공포번호가 어느 MST에 있었는지 기록.
+export function mergeAddendaUnits(sources: AddendaSource[]): { units: AddendaUnit[]; presence: Record<string, string[]> } {
+  const byKey = new Map<string, AddendaUnit>()
+  const presence: Record<string, string[]> = {}
+  for (const src of sources) {
+    for (const u of src.units) {
+      const key = u.promulgationNo || `${u.promulgationDate}:${u.text.length}:${u.text.slice(0, 40)}`
+      if (!presence[key]) presence[key] = []
+      if (!presence[key].includes(src.mst)) presence[key].push(src.mst)
+      const ex = byKey.get(key)
+      if (!ex || u.text.length > ex.text.length) byKey.set(key, u)
+    }
+  }
+  const units = [...byKey.values()].sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
+  return { units, presence }
+}
+
+interface PreparedAddenda {
+  mst: string
+  lawTitle: string
+  url: string
+  xml: string
+  units: AddendaUnit[]
+  sourceMsts: string[]
+  supplementedNos: string[]
+  resolvedNote: string
+}
+
+// 현행 MST + 최근 시행본들의 부칙을 union해 누락 보정한 결과를 준비. get_law_addenda/trace_article_application 공용.
+async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: string, depth: number): Promise<PreparedAddenda> {
+  let primaryMst = mstArg
+  let resolvedNote = ""
+  if (!primaryMst) {
+    primaryMst = await resolveLawMst(oc, lawNameArg)
+    resolvedNote = ` — '${lawNameArg}'로 검색해 현행 MST 해소`
+  }
+  const lawServiceUrl = (m: string) => `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(m)}&type=XML`
+  const primaryXml = await fetchMolegXml(lawServiceUrl(primaryMst), "법령 조회")
+  const lawTitle = (primaryXml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+  const lawName = lawNameArg || lawTitle
+
+  let recent: string[] = []
+  if (lawName && depth > 1) {
+    try { recent = await fetchEflawMsts(oc, lawName, depth) } catch { recent = [] }
+  }
+  const msts = [primaryMst, ...recent.filter((m) => m !== primaryMst)].slice(0, Math.max(1, depth))
+
+  const sources: AddendaSource[] = []
+  for (const m of msts) {
+    const xml = m === primaryMst ? primaryXml : await fetchMolegXml(lawServiceUrl(m), "법령 조회")
+    sources.push({ mst: m, units: parseLawAddenda(xml) })
+  }
+  const { units } = mergeAddendaUnits(sources)
+  const primaryNos = new Set((sources.find((s) => s.mst === primaryMst)?.units || []).map((u) => u.promulgationNo).filter(Boolean))
+  const supplementedNos = units
+    .map((u) => u.promulgationNo)
+    .filter((n): n is string => !!n && !primaryNos.has(n))
+
+  return { mst: primaryMst, lawTitle, url: lawServiceUrl(primaryMst), xml: primaryXml, units, sourceMsts: msts, supplementedNos, resolvedNote }
+}
+
 async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
   if (!oc) {
@@ -2449,22 +2529,13 @@ async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
       ErrorCodes.INVALID_PARAM,
     )
   }
-  let mst = String(args.mst ?? "").trim()
+  const mstArg = String(args.mst ?? "").trim()
   const lawName = String(args.lawName ?? "").trim()
-  if (!mst && !lawName) {
+  if (!mstArg && !lawName) {
     throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
   }
-  let resolvedNote = ""
-  if (!mst) {
-    mst = await resolveLawMst(oc, lawName)
-    resolvedNote = ` — '${lawName}'로 검색해 현행 MST 해소`
-  }
-
-  const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
-  const xml = await fetchMolegXml(url, "법령 조회")
-  const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
-
-  const units = parseLawAddenda(xml)
+  const prep = await prepareMergedAddenda(oc, mstArg, lawName, 4)
+  const { mst, lawTitle, url, units, sourceMsts, supplementedNos, resolvedNote } = prep
   if (units.length === 0) {
     return notFoundResponse(
       `MST ${mst}의 부칙 노드를 찾지 못했습니다.`,
@@ -2500,7 +2571,11 @@ async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
     "법제처 법령 부칙(시행일·적용례·경과조치)",
     `출처: ${url}`,
     `법령: ${lawTitle || "N/A"} (MST ${mst})${resolvedNote}`,
+    `부칙 union 출처 MST: ${sourceMsts.join(", ")} (타법개정 통합본의 직전 일부개정 부칙 누락 보정)`,
     `부칙단위: 전체 ${units.length}개${no || q ? ` / 필터 일치 ${filtered.length}개` : ""} / 표시 ${shown.length}개 (최신 공포일순)`,
+    ...(supplementedNos.length > 0
+      ? [`⚠ 현행 MST(${mst}) 부칙에 없어 다른 시행본에서 보강한 공포번호: ${supplementedNos.join(", ")} — 통합본 consolidation lag. 적용시점 판단 시 이 보강분 누락 주의.`]
+      : []),
     "주의: 적용례는 '○○ 개정규정은 …부터 적용한다'로 구조문(개정 전 본문)과 짝입니다. 구조문은 korean-law-mcp.compare_old_new의 [개정 전]으로 대조하세요. 아래는 법제처 원문이며, 명시되지 않은 사실은 추론·생성하지 마세요.",
     "",
   ]
@@ -2622,16 +2697,13 @@ async function traceArticleApplication(args: TraceArticleArgs): Promise<ToolResp
       ErrorCodes.INVALID_PARAM,
     )
   }
-  let mst = String(args.mst ?? "").trim()
+  const mstArg = String(args.mst ?? "").trim()
   const lawName = String(args.lawName ?? "").trim()
-  if (!mst && !lawName) {
+  if (!mstArg && !lawName) {
     throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
   }
-  if (!mst) mst = await resolveLawMst(oc, lawName)
-
-  const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
-  const xml = await fetchMolegXml(url, "법령 조회")
-  const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+  const prep = await prepareMergedAddenda(oc, mstArg, lawName, 4)
+  const { mst, lawTitle, url, xml, units, sourceMsts, supplementedNos } = prep
 
   const targetYear = typeof args.targetYear === "number" ? args.targetYear : undefined
   const filingMonth = typeof args.filingMonth === "number" ? args.filingMonth : 3
@@ -2647,7 +2719,6 @@ async function traceArticleApplication(args: TraceArticleArgs): Promise<ToolResp
     }
   }
 
-  const units = parseLawAddenda(xml)
   const joKey = jo.replace(/\s/g, "")
   const matched = units
     .filter((u) => u.text.replace(/\s/g, "").includes(joKey))
@@ -2684,6 +2755,10 @@ async function traceArticleApplication(args: TraceArticleArgs): Promise<ToolResp
   }
 
   const lines: string[] = [TRACE_GUARD, "", "조문 적용시점 추적", `출처: ${url}`, `법령: ${lawTitle || "N/A"} (MST ${mst}) / 대상 조문: ${jo}${hang ? " " + hang : ""}`]
+  lines.push(`부칙 union 출처 MST: ${sourceMsts.join(", ")} (통합본 consolidation lag 보정)`)
+  if (supplementedNos.length > 0) {
+    lines.push(`⚠ 현행 MST(${mst}) 부칙에 없어 다른 시행본에서 보강한 공포번호: ${supplementedNos.join(", ")} — 이 보강 적용례가 결론에 영향 줄 수 있으니 반드시 확인.`)
+  }
   if (targetYear !== undefined) lines.push(`targetYear: ${targetYear} 귀속 (신고시점 추정 ${targetYear + 1}.${filingMonth}월)`)
   // 충돌 경고
   if (targetYear !== undefined && typesForTarget.has("경과조치(종전규정)") && [...typesForTarget].some((t) => t !== "경과조치(종전규정)" && t !== "유형미상")) {

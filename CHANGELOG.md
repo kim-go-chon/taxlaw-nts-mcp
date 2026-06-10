@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.17] - 2026-06-10
+
+### Fixed — 부칙 consolidation lag 보정(최근 시행본 union) (`src/index.ts` `fetchEflawMsts`/`mergeAddendaUnits`/`prepareMergedAddenda`)
+법제처 통합본이 **직전 일부개정 부칙을 누락**하는 케이스 발견: 조특령 현행 통합본(타법개정 제36338호, 공포 2026.5.19, 시행 2026.6.3)의 부칙에는 **제36342호(공포 2026.5.22, 시행 2026.5.22)가 빠져 있음**(부칙단위 280 vs 286209의 281). 원인은 286143이 *자기 공포시점(5.19) 기준*으로 누적돼 그 뒤(5.22) 공포된 일부개정 부칙을 못 담은 것. 그래서 `get_law_addenda`/`trace_article_application`이 현행 MST만 보면 통합고용세액공제 상시근로자 수 계산식의 **절사 위치 적용례(제36342호 §2②: "§26의8제6항 준용 시 2026.1.1 이후 개시 과세연도 신고분")를 통째로 놓쳤다.** 부칙 우선을 강제하려는 도구가 정작 부칙 소스 누락에 당하는 구조.
+
+- `fetchEflawMsts`: 법제처 시행일법령(eflaw) 검색으로 같은 법령의 최근 시행본 MST들을 시행일 내림차순(중복 제거)으로 확보.
+- `mergeAddendaUnits`: 여러 시행본의 부칙단위를 공포번호 기준 union·dedup(가장 긴 본문 채택) + 각 공포번호가 어느 MST에 있었는지 presence 추적.
+- `prepareMergedAddenda`: 현행 MST + 최근 4개 시행본 부칙을 union. **현행 MST에 없어 보강된 공포번호를 응답에 ⚠로 노출**(consolidation lag 가시화). `get_law_addenda`/`trace_article_application` 공용.
+- 결과: 제36342호가 286209에서 보강되어 절사 위치 적용례가 정상 회수됨. 전부 법제처 DRF 단일 출처, korean-law-mcp 미수정.
+
+### Tested
+- `test/utils.test.js` 신규 1건(union·dedup·보강·presence). 실데이터 종단 확인: 현행 통합본 누락 제36342호를 union이 보강, §11의2제8항 절사 적용례 회수.
+- `npm test` 전체 141건 통과.
+
 ## [0.9.16] - 2026-06-10
 
 ### Added — 조문 적용시점 추적 `trace_article_application` (`src/index.ts` `extractJoClauses`/`classifyApplicationClause`/`extractEnforceDate`/`traceArticleApplication`)
