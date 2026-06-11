@@ -33,7 +33,7 @@ import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.9.20"
+const VERSION = "0.9.22"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -256,6 +256,16 @@ interface LawAddendaArgs {
   mst?: string
   lawName?: string
   promulgationNo?: string
+  query?: string
+  oc?: string
+  full?: boolean
+}
+
+interface LawRevisionArgs {
+  mst?: string
+  lawName?: string
+  promulgationNo?: string
+  promulgationDate?: string
   query?: string
   oc?: string
   full?: boolean
@@ -768,6 +778,25 @@ const tools = [
         query: { type: "string", description: "부칙 본문 키워드 필터(해당 문자열을 포함하는 부칙단위만). 예: 상시근로자, 제11조의2" },
         oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC 사용." },
         full: { type: "boolean", default: false, description: "true면 부칙단위·각 본문을 더 길게 반환." },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_law_revision_text",
+    description:
+      "특정 개정령(공포번호/공포일자)의 '개정문'(개정 지시문 원문)을 법제처 DRF에서 회수한다. 개정문은 그 개정령이 실제 수행한 문구 수술의 원문('…를 …로 한다')으로 ① 부칙 적용례의 '개정규정'이 가리키는 문구 단위 확정 ② 부칙-of-부칙 자구개정 확인(예: 제36342호가 제36127호 부칙 §11①을 개정 — 통합본 부칙에는 <개정 2026.5.22> 꼬리표만 남고 지시문 원문은 개정문에만 있음)에 필수. get_law_addenda/build_application_timetable/trace_article_application의 [부칙개정⚠] 플래그가 뜨면 그 개정일을 promulgationDate로 지정해 이 도구로 무엇이 어떻게 바뀌었는지 원문 대조하라. ⚠ 개정문은 '그 공포번호 시행본'의 XML에만 있다 — lawName+promulgationNo(또는 promulgationDate)면 최근 시행본에서 자동 해소, 오래된 개정령은 korean-law-mcp search_historical_law로 MST를 확보해 mst로 직접 전달.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lawName: { type: "string", description: "법령명. promulgationNo/promulgationDate와 조합해 해당 개정령 시행본을 자동 선택. 예: 조세특례제한법 시행령" },
+        promulgationNo: { type: "string", description: "개정령 공포번호. 예: 36342" },
+        promulgationDate: { type: "string", description: "개정령 공포일자 YYYYMMDD(부칙개정⚠ 플래그의 개정일). 예: 20260522" },
+        mst: { type: "string", description: "그 개정령 시행본의 MST 직접 지정(최근 시행본 window 밖의 오래된 개정령용)." },
+        query: { type: "string", description: "지시문 키워드 필터(일치 줄 ±1줄만 표시). 예: 부칙, 제26조의8" },
+        oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC." },
+        full: { type: "boolean", default: false, description: "true면 개정문을 더 길게 반환." },
       },
       required: [],
       additionalProperties: false,
@@ -2588,19 +2617,48 @@ export function extractArticleBody(joBlock: string): { text: string; imageUrls: 
   }
 }
 
-export interface AddendaSource { mst: string; units: AddendaUnit[] }
+export interface AddendaSource { mst: string; units: AddendaUnit[]; promDate?: string }
 
-// 여러 시행본의 부칙단위를 공포번호 기준으로 union·dedup(가장 긴 본문 채택)하고, 각 공포번호가 어느 MST에 있었는지 기록.
+// 부칙단위 본문 안의 <개정 YYYY.M.D.> 꼬리표를 추출한다. 부칙 조항이 후행 개정령에 의해
+// 변경되면(부칙-of-부칙 개정) 법제처 통합본은 현행화 문구에 꼬리표를 단다
+// (실사례: 제36342호가 제36127호 부칙 §11①·③을 자구개정 → "…적용한다. <개정 2026.5.22>").
+// 부칙 헤더 리터럴 <제36342호,2026.5.22>는 매칭하지 않는다. 반환: 자기 공포일보다 뒤인
+// 개정일(YYYYMMDD, 오름차순 dedup) — 즉 "이 부칙 문구는 개정 전과 다를 수 있다"는 신호.
+export function detectAddendumRevisionTails(text: string, promulgationDate?: string): string[] {
+  const dates = new Set<string>()
+  for (const m of String(text || "").matchAll(/<\s*개정\s+([^>]*?)>/g)) {
+    for (const d of m[1].matchAll(/(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})/g)) {
+      dates.add(`${d[1]}${d[2].padStart(2, "0")}${d[3].padStart(2, "0")}`)
+    }
+  }
+  const own = (promulgationDate || "").trim()
+  return [...dates].filter((d) => !own || d > own).sort()
+}
+
+// 여러 시행본의 부칙단위를 공포번호 기준으로 union·dedup하고, 각 공포번호가 어느 MST에 있었는지 기록.
+// dedup 우선순위(v0.9.21): ① 빈 본문 배제 ② 최신 통합본(시행본 자체의 공포일 promDate) 우선
+// ③ promDate 동일·미상 시 긴 본문. — 같은 공포번호 부칙이 통합본마다 다른 경우(후행 개정령이 부칙을
+// 자구개정한 케이스: 제36127호 부칙 §11을 제36342호가 개정)에 구문구가 더 길어도 stale 채택을 방지.
 export function mergeAddendaUnits(sources: AddendaSource[]): { units: AddendaUnit[]; presence: Record<string, string[]> } {
   const byKey = new Map<string, AddendaUnit>()
+  const srcMeta = new Map<string, string>() // key -> 채택된 unit의 출처 통합본 공포일
   const presence: Record<string, string[]> = {}
   for (const src of sources) {
+    const srcDate = (src.promDate || "").trim()
     for (const u of src.units) {
       const key = u.promulgationNo || `${u.promulgationDate}:${u.text.length}:${u.text.slice(0, 40)}`
       if (!presence[key]) presence[key] = []
       if (!presence[key].includes(src.mst)) presence[key].push(src.mst)
       const ex = byKey.get(key)
-      if (!ex || u.text.length > ex.text.length) byKey.set(key, u)
+      let take = false
+      if (!ex) take = true
+      else if ((u.text.length > 0) !== (ex.text.length > 0)) take = u.text.length > 0
+      else if (srcDate !== (srcMeta.get(key) || "")) take = srcDate > (srcMeta.get(key) || "")
+      else take = u.text.length > ex.text.length
+      if (take) {
+        byKey.set(key, u)
+        srcMeta.set(key, srcDate)
+      }
     }
   }
   const units = [...byKey.values()].sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
@@ -2640,7 +2698,9 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
   const sources: AddendaSource[] = []
   for (const m of msts) {
     const xml = m === primaryMst ? primaryXml : await fetchMolegXml(lawServiceUrl(m), "법령 조회")
-    sources.push({ mst: m, units: parseLawAddenda(xml) })
+    // 그 통합본 자체의 공포일자(기본정보 첫 등장) — dedup 시 최신 통합본 우선 판정 기준
+    const promDate = (xml.match(/<공포일자>(\d{8})<\/공포일자>/)?.[1] || "").trim()
+    sources.push({ mst: m, units: parseLawAddenda(xml), promDate })
   }
   const { units } = mergeAddendaUnits(sources)
   const primaryNos = new Set((sources.find((s) => s.mst === primaryMst)?.units || []).map((u) => u.promulgationNo).filter(Boolean))
@@ -2651,7 +2711,7 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
   return { mst: primaryMst, lawTitle, url: lawServiceUrl(primaryMst), xml: primaryXml, units, sourceMsts: msts, supplementedNos, resolvedNote }
 }
 
-async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
+export async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
   if (!oc) {
     throw new TaxlawMcpError(
@@ -2711,6 +2771,12 @@ async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
   ]
   shown.forEach((u) => {
     lines.push(`──────── [제${u.promulgationNo || "?"}호, ${u.promulgationDate || "?"}] ────────`)
+    const revs = detectAddendumRevisionTails(u.text, u.promulgationDate)
+    if (revs.length > 0) {
+      lines.push(
+        `⚠ [부칙 자체개정] 이 부칙은 후행 개정령에 의해 변경된 현행화 문구(<개정 ${revs.map(formatYmd).join(", ")}> 꼬리표). 적용시기 anchor 자체가 바뀌었을 수 있다 — 고친 지시문 원문은 get_law_revision_text(promulgationDate=${revs[0]})로 회수하고, 개정 전 문구는 그 개정일 이전 시행본 MST를 mst로 지정해 재호출해 대조하라.`,
+      )
+    }
     lines.push(truncate(u.text, perUnit))
     lines.push("")
   })
@@ -2718,6 +2784,154 @@ async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
     lines.push(`… 외 ${filtered.length - shown.length}개 부칙단위 생략. promulgationNo/query로 좁히거나 full=true로 더 보세요.`)
   }
   return textResponse(truncate(lines.join("\n"), args.full === true ? 60000 : 20000))
+}
+
+// 법령 XML 끝의 <개정문>(없으면 <제정문>) 노드에서 개정 지시문 원문을 추출한다.
+// 부칙-of-부칙 자구개정("…부칙 제N조제M항 중 '…'를 '…'로 한다")은 부칙단위가 아니라 여기에만 나타난다.
+export function parseLawRevisionText(xml: string): { kind: string; text: string } {
+  for (const tag of ["개정문", "제정문"]) {
+    const open = xml.indexOf(`<${tag}>`)
+    if (open === -1) continue
+    const close = xml.indexOf(`</${tag}>`, open)
+    if (close === -1) continue
+    const text = extractCdataText(xml.slice(open, close))
+    if (text) return { kind: tag, text }
+  }
+  return { kind: "", text: "" }
+}
+
+export interface LawVersionDetail { mst: string; promNo: string; promDate: string; enforceDate: string }
+
+// eflaw 검색에서 (MST, 공포번호, 공포일자, 시행일자)를 항목 순서대로 회수. 개정문은 '그 공포번호 시행본'에만 있어 버전 해소가 필요.
+async function fetchEflawVersionsDetailed(oc: string, lawName: string, limit: number): Promise<LawVersionDetail[]> {
+  const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=40&query=${encodeURIComponent(lawName)}`
+  const xml = await fetchMolegXml(url, "시행일 법령 검색")
+  const ids = [...xml.matchAll(/<법령일련번호>(\d+)<\/법령일련번호>/g)].map((m) => m[1])
+  const nos = [...xml.matchAll(/<공포번호>(\d+)<\/공포번호>/g)].map((m) => m[1])
+  const pds = [...xml.matchAll(/<공포일자>(\d+)<\/공포일자>/g)].map((m) => m[1])
+  const enfs = [...xml.matchAll(/<시행일자>(\d+)<\/시행일자>/g)].map((m) => m[1])
+  const out: LawVersionDetail[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < ids.length; i++) {
+    const key = `${ids[i]}:${enfs[i] || ""}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ mst: ids[i], promNo: nos[i] || "", promDate: pds[i] || "", enforceDate: enfs[i] || "" })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+// "2026.5.22" / "2026-05-22" / "20260522" → "20260522" (zero-pad 포함)
+export function normalizeYmdInput(raw: string): string {
+  const s = String(raw || "").trim()
+  const md = s.match(/^(\d{4})\D+(\d{1,2})\D+(\d{1,2})\D*$/)
+  if (md) return `${md[1]}${md[2].padStart(2, "0")}${md[3].padStart(2, "0")}`
+  return s.replace(/\D/g, "")
+}
+
+// 공포번호/공포일자로 시행본 선택. 같은 공포번호가 시행일 분할로 여러 항목이어도 개정문은 동일 → 첫 항목.
+export function pickVersionByPromulgation(versions: LawVersionDetail[], promNo?: string, promDate?: string): LawVersionDetail | null {
+  const no = (promNo || "").trim()
+  const date = normalizeYmdInput(promDate || "")
+  if (!no && !date) return null
+  return versions.find((v) => (!no || v.promNo === no) && (!date || v.promDate === date)) || null
+}
+
+export async function getLawRevisionText(args: LawRevisionArgs): Promise<ToolResponse> {
+  const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
+  if (!oc) {
+    throw new TaxlawMcpError(
+      "법제처 Open API 인증키(OC)가 필요합니다. 환경변수 LAW_GO_KR_OC를 설정하거나 oc 파라미터로 전달하세요. (korean-law-mcp가 쓰는 것과 동일한 OC 키)",
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  const mstArg = String(args.mst ?? "").trim()
+  const lawName = String(args.lawName ?? "").trim()
+  if (!mstArg && !lawName) {
+    throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
+  }
+  const no = String(args.promulgationNo ?? "").trim()
+  const pd = normalizeYmdInput(String(args.promulgationDate ?? ""))
+
+  let mst = mstArg
+  let pickedNote = ""
+  if (!mst) {
+    if (no || pd) {
+      const versions = await fetchEflawVersionsDetailed(oc, lawName, 40)
+      const hit = pickVersionByPromulgation(versions, no, pd)
+      if (!hit) {
+        return notFoundResponse(
+          `'${lawName}' 최근 시행본 ${versions.length}개에서 ${no ? `공포번호 ${no}` : ""}${no && pd ? "·" : ""}${pd ? `공포일자 ${pd}` : ""} 일치 버전을 찾지 못했습니다.`,
+          [
+            "eflaw 검색은 최근 시행본 위주입니다 — 오래된 개정령은 korean-law-mcp search_historical_law로 그 버전 MST를 확보해 mst로 직접 전달하세요.",
+            "promulgationDate는 YYYYMMDD 형식입니다(예: 20260522).",
+          ],
+        )
+      }
+      mst = hit.mst
+      pickedNote = ` — 공포 제${hit.promNo}호(${formatYmd(hit.promDate)}) 시행본 자동 선택`
+    } else {
+      mst = await resolveLawMst(oc, lawName)
+      pickedNote = ` — '${lawName}' 현행 MST 해소(특정 개정령의 개정문은 promulgationNo/promulgationDate 지정)`
+    }
+  }
+
+  const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
+  const xml = await fetchMolegXml(url, "법령 조회")
+  const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+  const headNo = (xml.match(/<공포번호>(\d+)<\/공포번호>/)?.[1] || "").trim()
+  const headDate = (xml.match(/<공포일자>(\d+)<\/공포일자>/)?.[1] || "").trim()
+  const { kind, text } = parseLawRevisionText(xml)
+  if (!text) {
+    return notFoundResponse(
+      `MST ${mst}에서 개정문/제정문 노드를 찾지 못했습니다.`,
+      [
+        "타법개정·폐지제정 등 일부 버전은 개정문 형식이 다를 수 있습니다 — 해당 공포번호의 일부개정 시행본 MST로 재시도하세요.",
+        "korean-law-mcp search_historical_law로 버전 목록을 확인하세요.",
+      ],
+    )
+  }
+
+  let body = text
+  let filterNote = ""
+  const q = String(args.query ?? "").trim()
+  if (q) {
+    const rows = text.split("\n")
+    const hits = rows.map((l, i) => (l.includes(q) ? i : -1)).filter((i) => i >= 0)
+    if (hits.length === 0) {
+      filterNote = `(query "${q}" 일치 줄 없음 — 전체 본문 표시)`
+    } else {
+      const keep = new Set<number>()
+      for (const i of hits) {
+        keep.add(i)
+        if (i > 0) keep.add(i - 1)
+        if (i < rows.length - 1) keep.add(i + 1)
+      }
+      const sorted = [...keep].sort((a, b) => a - b)
+      const parts: string[] = []
+      let prev = -2
+      for (const i of sorted) {
+        if (i !== prev + 1) parts.push("…")
+        parts.push(rows[i])
+        prev = i
+      }
+      parts.push("…")
+      body = parts.join("\n")
+      filterNote = `(query "${q}" 일치 ${hits.length}줄 ±1줄만 표시 — 전체는 query 생략 또는 full=true)`
+    }
+  }
+
+  const lines = [
+    `법제처 ${kind}(개정 지시문 원문)`,
+    `출처: ${url}`,
+    `법령: ${lawTitle || "N/A"} (MST ${mst}) / 이 시행본의 공포: 제${headNo || "?"}호 ${formatYmd(headDate) || "?"}${pickedNote}`,
+    "용도: 개정문은 그 개정령이 실제 수행한 문구 수술 원문('…를 …로 한다')이다. 부칙 적용례의 '개정규정' 결박(문구 단위)과 부칙-of-부칙 자구개정은 여기서만 원문 확인 가능. 적용시기 판정은 get_law_addenda/build_application_timetable과 함께. 아래는 법제처 원문이며, 명시되지 않은 사실은 추론·생성하지 마세요.",
+    ...(filterNote ? [filterNote] : []),
+    "",
+    truncate(body, args.full === true ? 50000 : 9000),
+  ]
+  return textResponse(truncate(lines.join("\n"), args.full === true ? 60000 : 15000))
 }
 
 // "YYYYMMDD" → "YYYY.M.D"
@@ -3007,7 +3221,11 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
       for (const c of clauses.slice(0, 3)) {
         const type = classifyApplicationClause(c.clause)
         allTypes.add(type)
-        jBlocks.push(`  · [제${u.promulgationNo || "?"}호${binding === "개정 흔적 없음" ? "·결박⚠" : binding === "개정함" ? "·결박✓" : ""}][${type}] ${truncate(c.clause, args.full === true ? 1500 : 500)}`)
+        const revs = detectAddendumRevisionTails(c.clause, u.promulgationDate)
+        jBlocks.push(`  · [제${u.promulgationNo || "?"}호${binding === "개정 흔적 없음" ? "·결박⚠" : binding === "개정함" ? "·결박✓" : ""}][${type}]${revs.length ? `[부칙개정⚠ ${revs.map(formatYmd).join("·")}]` : ""} ${truncate(c.clause, args.full === true ? 1500 : 500)}`)
+        if (revs.length) {
+          jBlocks.push(`     └▶ ⚠ 부칙 자체개정: 이 적용례 문구는 후행 개정령(${revs.map(formatYmd).join(", ")})이 부칙을 고친 현행화본 — 개정 전에는 적용 기준(anchor)이 달랐을 수 있다. 지시문 원문은 get_law_revision_text(promulgationDate=${revs[0]})로, 개정 전 문구는 그 개정일 이전 시행본 MST의 부칙으로 대조하라.`)
+        }
         if (targetYear !== undefined) {
           const note = targetYearApplicationNote(type, c.clause, targetYear, extractEnforceDate(u.text, u.promulgationDate), filingMonth)
           if (note) jBlocks.push(`     └▶ ${targetYear} 귀속 판단: ${note}`)
@@ -3209,7 +3427,7 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
   ]
   let anyFirstCredit = false
 
-  interface TtEntry { no: string; date: string; enforce: string; type: string; clause: string; binding: string; via?: string }
+  interface TtEntry { no: string; date: string; enforce: string; type: string; clause: string; binding: string; via?: string; revs: string[] }
   for (const spec of specs) {
     const { jo, hang } = spec
     const own = articleInfo(jo, hang)
@@ -3233,7 +3451,7 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
         const enforce = extractEnforceDate(u.text, u.promulgationDate)
         const binding = checkAmendmentBinding(u.promulgationDate || "", dates)
         for (const c of cls.slice(0, 4)) {
-          entries.push({ no: u.promulgationNo || "?", date: formatYmd(u.promulgationDate), enforce, type: classifyApplicationClause(c.clause), clause: c.clause, binding, via })
+          entries.push({ no: u.promulgationNo || "?", date: formatYmd(u.promulgationDate), enforce, type: classifyApplicationClause(c.clause), clause: c.clause, binding, via, revs: detectAddendumRevisionTails(c.clause, u.promulgationDate) })
         }
       }
     }
@@ -3253,7 +3471,10 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
     const shown = entries.slice(0, full ? 24 : 12)
     lines.push("부칙 적용례(결박검증 포함):")
     for (const e of shown) {
-      lines.push(`· [제${e.no}호 공포 ${e.date} / 시행 ${e.enforce || "?"}]${e.via ? `[${e.via}]` : ""}[${e.type}][결박:${e.binding === "개정함" ? "✓" : e.binding === "개정 흔적 없음" ? "⚠없음" : "?"}] ${truncate(e.clause, clauseCap)}`)
+      lines.push(`· [제${e.no}호 공포 ${e.date} / 시행 ${e.enforce || "?"}]${e.via ? `[${e.via}]` : ""}[${e.type}][결박:${e.binding === "개정함" ? "✓" : e.binding === "개정 흔적 없음" ? "⚠없음" : "?"}]${e.revs.length ? `[부칙개정⚠ ${e.revs.map(formatYmd).join("·")}]` : ""} ${truncate(e.clause, clauseCap)}`)
+      if (e.revs.length) {
+        lines.push(`   └▶ ⚠ 부칙 자체개정: 이 적용례 문구는 후행 개정령(${e.revs.map(formatYmd).join(", ")})이 부칙을 고친 현행화본 — 개정 전에는 적용 기준(anchor)이 달랐을 수 있다(예: 신고시점→최초공제연도). 지시문 원문은 get_law_revision_text(promulgationDate=${e.revs[0]})로, 개정 전 문구는 그 개정일 이전 시행본 MST의 부칙으로 대조하라.`)
+      }
       if (e.type === "경과조치(종전규정)" && e.binding === "개정 흔적 없음") {
         lines.push("   └▶ ⚠ 사정거리: 이 개정령은 대상 조항을 고친 흔적이 없음 — 경과조치는 자기 개정령의 개정규정만 유예하므로 후행 개정을 선제 유예할 수 없다.")
       }
@@ -3891,6 +4112,9 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "get_taxlaw_page_text") {
       return await getTaxlawPageText(input as TaxlawPageTextArgs)
+    }
+    if (name === "get_law_revision_text") {
+      return await getLawRevisionText(input as LawRevisionArgs)
     }
     if (name === "get_law_addenda") {
       return await getLawAddenda(input as LawAddendaArgs)

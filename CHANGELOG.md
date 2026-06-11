@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.22] - 2026-06-11
+
+### Added — 개정문(개정 지시문 원문) 조회 `get_law_revision_text` (`src/index.ts`)
+v0.9.21의 잔여 한계 마감(사용자 요청): `[부칙개정⚠]` 플래그는 부칙이 후행 개정령에 의해 변경됐음을 알리지만, **고치는 지시문 자체**("대통령령 제36127호 … 부칙 제11조제1항 중 '…'를 '…'으로 한다")는 부칙단위가 아니라 법령 XML 끝의 `<개정문>` 노드(개정문내용 CDATA)에만 있어 어느 도구로도 회수되지 않았다.
+- **`parseLawRevisionText`**: `<개정문>`(없으면 `<제정문>` fallback) CDATA 추출 — 리터럴 꺾쇠·수식 img 마커는 `extractCdataText` 재사용.
+- **`fetchEflawVersionsDetailed` + `pickVersionByPromulgation`**: 개정문은 '그 공포번호 시행본'의 XML에만 있으므로, eflaw 검색에서 (MST·공포번호·공포일자·시행일자)를 항목별 회수해 promulgationNo/promulgationDate로 시행본 자동 해소(같은 공포번호의 시행일 분할 항목은 개정문 동일 → 첫 항목). `normalizeYmdInput`("2026.5.22"→"20260522" zero-pad — 플래그가 주는 날짜 표기 그대로 입력 가능).
+- **`getLawRevisionText`**: query 필터(일치 줄 ±1줄 + "…" 구분), 미일치 시 전체 표시 안내. 캡 9,000자(full=50,000) — 연말 대개정 개정문이 수십만 자일 수 있어 query 사용 권장.
+- `[부칙개정⚠]` 경고 3곳(`get_law_addenda`/`trace_article_application`/`build_application_timetable`)에 "지시문 원문은 `get_law_revision_text(promulgationDate=개정일)`" 동선 연결 — 플래그→지시문 원문→개정 전 부칙 대조의 3단 워크플로 완성.
+
+### Tested
+- `test/utils.test.js` 신규 3건(개정문 CDATA 추출+자구개정 지시문 보존 / 제정문 fallback·빈 값 / 공포번호·일자 선택+구분자 날짜 정규화+동시지정 AND). `npm test` 전체 161건 통과. (테스트가 "2026.5.22" 구분자 입력의 zero-pad 누락 버그를 사전 포착 → `normalizeYmdInput` 신설로 수정)
+- 라이브: `promulgationDate='2026.5.22'` → MST 286209(제36342호) 자동 선택 + "대통령령 제36127호 … 부칙 제11조제1항 중 …" 지시문 verbatim 회수 / `promulgationNo='36342'` 경로 동일 확인.
+
+## [0.9.21] - 2026-06-11
+
+### Added — 부칙 자체개정(부칙-of-부칙) 꼬리표 감지 `detectAddendumRevisionTails` (`src/index.ts`)
+배경(사용자 실측 지적): 제36342호(2026.5.22) 개정령이 **제36127호(2026.2.27) 부칙 제11조①·③ 자체를 자구개정**해 §26의8⑥의 적용 anchor를 신고시점 기준(③)에서 최초공제연도 기준(①)으로 옮겼다 — 6/10 오판→6/11 정정의 직접 원인. 법제처 통합본은 이를 36127 부칙단위의 **현행화 문구 + `<개정 2026.5.22>` 꼬리표**로만 노출하고, 고치는 지시문 자체는 개정문 영역이라 부칙단위 파싱에 잡히지 않는다. 종전에는 이 꼬리표의 인지·해석이 전적으로 모델 재량(코드 가드 없음)이었다. 이를 도구가 강제 표시하도록 변경:
+- **`detectAddendumRevisionTails`**: 부칙단위 본문의 `<개정 YYYY.M.D.>` 꼬리표에서 **자기 공포일보다 뒤인 개정일만** 추출(복수 날짜·공백 변형 지원, 부칙 헤더 리터럴 `<제N호,날짜>` 오탐 차단).
+- **`get_law_addenda`**: 해당 부칙단위 상단에 `⚠ [부칙 자체개정]` 경고 — 개정 전 문구는 그 개정일 이전 시행본 MST로 재호출 대조 + 고친 개정령 부칙 동반 조회 안내.
+- **`build_application_timetable` / `trace_article_application`**: 적용례 줄에 `[부칙개정⚠ 날짜]` 태그 + `└▶ ⚠ 부칙 자체개정`(anchor가 달랐을 수 있음 — 예: 신고시점→최초공제연도) 경고. **클로즈 단위 감지**라 36127 §11①에만 붙고 꼬리표 없는 §11②에는 안 붙는다.
+
+### Changed — `mergeAddendaUnits` dedup: 길이 휴리스틱 → 최신 통합본 우선 (`src/index.ts`)
+같은 공포번호 부칙단위가 통합본마다 다를 수 있다(위 자구개정 케이스: 5.19 공포 통합본 286143=개정 전 문구 / 5.22 이후 통합본=현행화 문구). 종전 v0.9.17의 '가장 긴 본문 채택'은 **구문구가 더 길면 stale을 채택할 위험**. 우선순위를 ① 빈 본문 배제 ② 출처 통합본 공포일 최신 우선(`AddendaSource.promDate` — 각 MST lawService XML 기본정보 `<공포일자>`에서 추출, **추가 네트워크 호출 없음**) ③ 동일·미상 시 길이 순으로 변경. promDate 미지정 소스는 종전 길이 동작과 호환(기존 테스트 무수정 통과). `getLawAddenda` export(라이브 검증용).
+
+### Tested
+- `test/utils.test.js` 신규 2건(최신 통합본 우선·빈 본문 배제 / 꼬리표 감지 4케이스 — 헤더 리터럴·자기공포일 제외·복수날짜). `npm test` 전체 158건 통과.
+- 라이브: `build_application_timetable` §26의8⑥×2025 → 제36127호 §11① 줄에 `[부칙개정⚠ 2026.5.22]`+`└▶` 경고 확인 / `get_law_addenda(promulgationNo=36127, full)` → 단위 상단 `⚠ [부칙 자체개정]` + 현행화 문구("및 같은 조 제6항") 채택 확인 / `scripts/verify-timetable.mjs` 11/11 통과.
+
 ## [0.9.20] - 2026-06-11
 
 ### Added — 법령 적용 타임테이블 `build_application_timetable` + trace 4중 가드(인벤토리·결박검증·준용체인·차수플래그) (`src/index.ts`)

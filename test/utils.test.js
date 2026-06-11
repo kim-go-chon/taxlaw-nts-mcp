@@ -23,6 +23,9 @@ const {
   extractJoClauses,
   extractEnforceDate,
   mergeAddendaUnits,
+  detectAddendumRevisionTails,
+  parseLawRevisionText,
+  pickVersionByPromulgation,
   pickVersionInForce,
   extractArticleBody,
   pruneEmpty,
@@ -366,6 +369,75 @@ test("mergeAddendaUnits: 통합본 누락 부칙을 다른 시행본에서 보�
   // presence 추적
   assert.deepEqual(presence["36342"], ["286209"])
   assert.deepEqual(presence["36127"], ["286143", "286209"])
+})
+
+test("mergeAddendaUnits: 같은 공포번호 부칙이 통합본마다 다르면 최신 통합본 우선(길이 아님) + 빈 본문 배제", () => {
+  // 실사례 모델: 제36342호(5.22)가 제36127호 부칙 §11을 자구개정 →
+  // 5.19 공포 통합본(286143)엔 개정 전(더 긴) 문구, 5.22 이후 통합본(286209)엔 현행화 문구.
+  const older = { mst: "286143", promDate: "20260519", units: [
+    { promulgationDate: "20260227", promulgationNo: "36127",
+      text: "제11조 ① 제26조의8제4항제1호의 개정규정은 … ③ 제26조의8제6항 및 제7항의 개정규정은 이 영 시행 이후 신고하는 경우부터 적용한다. (개정 전 — 일부러 길게) ................................................." },
+  ] }
+  const newer = { mst: "286209", promDate: "20260522", units: [
+    { promulgationDate: "20260227", promulgationNo: "36127",
+      text: "제11조 ① 제26조의8제4항제1호 및 같은 조 제6항의 개정규정은 … <개정 2026.5.22> ③ 제26조의8제7항의 개정규정은 …" },
+  ] }
+  const { units } = mergeAddendaUnits([older, newer])
+  const u = units.find((x) => x.promulgationNo === "36127")
+  assert.ok(u.text.includes("같은 조 제6항")) // 구문구가 더 길어도 최신 통합본 채택
+  // 더 최신 통합본이라도 빈 본문은 채택하지 않음
+  const blank = { mst: "286300", promDate: "20260601", units: [
+    { promulgationDate: "20260227", promulgationNo: "36127", text: "" },
+  ] }
+  const r2 = mergeAddendaUnits([older, newer, blank])
+  assert.ok(r2.units.find((x) => x.promulgationNo === "36127").text.includes("같은 조 제6항"))
+})
+
+test("parseLawRevisionText: 개정문 CDATA 추출(부칙-of-부칙 자구개정 지시문 포함)", () => {
+  const xml = `<법령><부칙><부칙단위>…</부칙단위></부칙><개정문><개정문내용>
+<![CDATA[⊙대통령령 제36342호]]>
+<![CDATA[
+]]>
+<![CDATA[조세특례제한법 시행령 일부개정령]]>
+<![CDATA[
+]]>
+<![CDATA[대통령령 제36127호 조세특례제한법 시행령 일부개정령 부칙 제11조제1항 중 "제26조의8제4항제1호"를 "제26조의8제4항제1호 및 같은 조 제6항"으로 하고, 같은 조 제3항 중 "제26조의8제6항 및 제7항"을 "제26조의8제7항"으로 한다.]]>
+</개정문내용></개정문></법령>`
+  const { kind, text } = parseLawRevisionText(xml)
+  assert.equal(kind, "개정문")
+  assert.ok(text.includes("⊙대통령령 제36342호"))
+  assert.ok(text.includes('부칙 제11조제1항 중 "제26조의8제4항제1호"를 "제26조의8제4항제1호 및 같은 조 제6항"으로'))
+})
+
+test("parseLawRevisionText: 개정문 없으면 제정문 fallback, 둘 다 없으면 빈 값", () => {
+  assert.equal(parseLawRevisionText("<법령><제정문><![CDATA[제정 지시문]]></제정문></법령>").kind, "제정문")
+  assert.equal(parseLawRevisionText("<법령></법령>").kind, "")
+  assert.equal(parseLawRevisionText("<법령></법령>").text, "")
+})
+
+test("pickVersionByPromulgation: 공포번호/공포일자로 시행본 선택", () => {
+  const vs = [
+    { mst: "283625", promNo: "36127", promDate: "20260227", enforceDate: "20270101" },
+    { mst: "283625", promNo: "36127", promDate: "20260227", enforceDate: "20260701" },
+    { mst: "286209", promNo: "36342", promDate: "20260522", enforceDate: "20260522" },
+  ]
+  assert.equal(pickVersionByPromulgation(vs, "36342").mst, "286209")
+  assert.equal(pickVersionByPromulgation(vs, undefined, "2026.5.22").mst, "286209") // 구분자 섞인 날짜 허용
+  assert.equal(pickVersionByPromulgation(vs, "36127").mst, "283625") // 시행일 분할 중복은 첫 항목
+  assert.equal(pickVersionByPromulgation(vs, "36127", "20260522"), null) // 둘 다 주면 둘 다 일치해야
+  assert.equal(pickVersionByPromulgation(vs), null) // 둘 다 없으면 null
+})
+
+test("detectAddendumRevisionTails: 부칙 자체개정 <개정> 꼬리표 감지(헤더 리터럴·자기공포일 제외)", () => {
+  // 후행 개정 꼬리표 → 감지
+  const t1 = "제11조(적용례) ① 제26조의8제4항제1호 및 같은 조 제6항의 개정규정은 2025년 1월 1일 이후 … 적용한다. <개정 2026.5.22>"
+  assert.deepEqual(detectAddendumRevisionTails(t1, "20260227"), ["20260522"])
+  // 부칙 헤더 리터럴 <제36342호,2026.5.22>는 오탐 금지
+  assert.deepEqual(detectAddendumRevisionTails("부칙 <제36342호,2026.5.22> 제1조(시행일) …", "20260522"), [])
+  // 자기 공포일 이하 날짜는 후행 개정이 아님 → 제외
+  assert.deepEqual(detectAddendumRevisionTails("… 적용한다. <개정 2026.2.27>", "20260227"), [])
+  // 복수 날짜·공백 변형 모두 추출(자기 공포일 이후만)
+  assert.deepEqual(detectAddendumRevisionTails("… <개정 2026. 2. 27., 2026. 5. 22.> …", "20260101"), ["20260227", "20260522"])
 })
 
 test("pickVersionInForce: 기준일에 시행 중이던 버전(시행일 ≤ 기준 중 최신)", () => {
