@@ -202,7 +202,7 @@ const CLASSIFICATION_LABELS: Record<YearCheckClassification, string> = {
 
 // v0.9.0 — '최근' 문턱값. 환경변수 TAXLAW_RECENT_THRESHOLD_YEARS로 override 가능.
 // 기본 3년 — targetYear=2026이면 2023.01 이후 생산이 적극 라벨링 대상.
-function getRecentThresholdYears(): number {
+export function getRecentThresholdYears(): number {
   const env = process.env.TAXLAW_RECENT_THRESHOLD_YEARS
   if (!env) return 3
   const n = Number(env)

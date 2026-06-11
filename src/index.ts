@@ -16,7 +16,7 @@ import {
   type ClassLevel,
   type UpjongRecord,
 } from "./upjong.js"
-import { checkYearApplicability, formatYearCheck } from "./year-check.js"
+import { checkYearApplicability, formatYearCheck, getRecentThresholdYears } from "./year-check.js"
 import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef, type BasicRulingRef } from "./citation-extract.js"
 import { assessDoctrineValidity, formatAssessment, type DoctrineMeta } from "./doctrine-assess.js"
 import { detectPreRestructureCitations, formatRestructureHits } from "./restructure-map.js"
@@ -29,11 +29,12 @@ import {
   taxLawCodeReference,
 } from "./tax-law-code-map.js"
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
+import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.9.22"
+const VERSION = "0.10.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -859,6 +860,49 @@ const tools = [
     },
   },
   {
+    name: "diff_article_versions",
+    description:
+      "두 시점 시행본의 같은 조문을 단어단위로 기계 대조(diff)해 변경 hunk만 반환한다 — 타임테이블 해석 공리 ①(신구 문구 나란히 대조)·②(개정규정=실제 바뀐 문구 단위)의 기계화 도구. 각 hunk는 【삭제】【신설】 마커+앞뒤 문맥으로 표시하고 실질변경/자구정비/번호이동을 결정적 휴리스틱으로 분류한다(LLM 추정 아님). 용법: build_application_timetable의 개정 인벤토리에서 개정일 2개를 고른 뒤 이 도구로 '그 사이 실제 바뀐 문구'를 확정하고, get_law_revision_text(개정문 '…를 …로 한다')와 교차검증. '변경 없음' 응답은 그 구간 해당 조문 무개정의 적극 신호로 그 자체가 근거가 된다. ⚠ 변경 문구의 개정령 귀속은 개정문·부칙으로 확정 후 단정.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        jo: { type: "string", description: "대조할 조문. 예: 제26조의8 (필수)" },
+        hang: { type: "string", description: "항으로 더 좁힘(①~⑳ 블록 절단). 예: 제6항" },
+        lawName: { type: "string", description: "법령명(yearA/B·efYdA/B 시점 해소용). 예: 조세특례제한법 시행령" },
+        yearA: { type: "number", description: "[구]측 연도 — 그 해 말(12.31) 시행본 자동 선택. 예: 2024" },
+        efYdA: { type: "string", description: "[구]측 기준 시행일 YYYYMMDD. yearA보다 우선." },
+        mstA: { type: "string", description: "[구]측 시행본 MST 직접 지정(eflaw 최근 40건 window 밖의 과거본용)." },
+        yearB: { type: "number", description: "[신]측 연도. 예: 2026" },
+        efYdB: { type: "string", description: "[신]측 기준 시행일 YYYYMMDD. yearB보다 우선." },
+        mstB: { type: "string", description: "[신]측 시행본 MST 직접 지정." },
+        oc: { type: "string", description: "법제처 Open API 인증키(OC). 미입력 시 환경변수 LAW_GO_KR_OC." },
+        full: { type: "boolean", default: false, description: "true면 hunk 12→40건까지 표시." },
+      },
+      required: ["jo"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "research_taxlaw_topic",
+    description:
+      "체인 매크로: search_taxlaw_documents → 관련성 상위 K건(기본 2, 최대 3)의 get_taxlaw_document_text(full, targetYear) 본문 첨부를 1콜로 수행한다(검색→본문→연도검증 다턴 왕복 절감). 첨부는 항상 full 본문 기반(요지만으로 결론 단정 금지 가드 유지)이며 연도검증·통칙검증·결론부 가드가 그대로 부착된다. ⚠ 첨부가 [truncated]로 잘렸으면 결론 인용 전 get_taxlaw_document_text(full=true) 개별 재조회. 복합어 자동 분해 재시도는 search_taxlaw_documents에만 있으므로 결과 없음 시 그쪽으로 재검색. korean-law-mcp 동반 호출(법조문 1차 권위)은 여전히 필수.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "검색 키워드 (필수). 1~3개 핵심 단어 권장." },
+        targetYear: { type: "number", description: "적용하려는 귀속(과세)연도 — 첨부 본문의 연도검증에 사용. 예: 2025" },
+        topK: { type: "number", default: 2, description: "본문 첨부 건수(1~3). 기본 2." },
+        docType: { type: "string", description: "search_taxlaw_documents와 동일(all/interpretations/disputes/reply/tribunal/precedent 등). 기본 all." },
+        taxLawCode: { type: "string", description: "세목 코드 필터(search_taxlaw_documents와 동일)." },
+        fromDate: { type: "string", description: "생산일자 시작 YYYYMMDD." },
+        toDate: { type: "string", description: "생산일자 종료 YYYYMMDD." },
+        full: { type: "boolean", default: false, description: "true면 첨부당 9000→20000자." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "search_taxlaw_interpretations",
     description: "하위호환용: 세법해석례/질의회신 검색. 내부적으로 search_taxlaw_documents를 사용.",
     inputSchema: {
@@ -1320,7 +1364,18 @@ async function fetchTaxlawSession(refererPath: string, force = false): Promise<s
 }
 
 async function postTaxlawAction<T>(actionId: string, paramData: unknown, refererPath: string): Promise<T> {
-  return postTaxlawActionAttempt<T>(actionId, paramData, refererPath, true)
+  const cacheKey = `nts:${actionId}:${JSON.stringify(paramData ?? null)}`
+  const cached = cacheGet(cacheKey)
+  if (cached !== null) return JSON.parse(cached) as T
+  const data = await postTaxlawActionAttempt<T>(actionId, paramData, refererPath, true)
+  try {
+    cacheSet(
+      cacheKey,
+      JSON.stringify(data),
+      NTS_DETAIL_ACTION_IDS.has(actionId) ? NTS_DETAIL_CACHE_TTL_MS : NTS_DEFAULT_CACHE_TTL_MS,
+    )
+  } catch { /* 직렬화 불가 응답은 캐시 생략 */ }
+  return data
 }
 
 async function postTaxlawActionAttempt<T>(
@@ -1439,6 +1494,51 @@ function userAgent(): string {
     `taxlaw-nts-mcp/${VERSION} (+https://github.com/kim-go-chon/taxlaw-nts-mcp)`
 }
 
+// v0.10.0 — 도구결과 캐시(LRU+TTL). 같은 자원을 요지→full=true→targetYear로 2~3회 재조회하는
+// 패턴이 잦은데 법제처 법령 XML·NTS 문서 응답은 세션 내 사실상 불변이라 fetch 관문에서 캐시한다.
+// 성공 응답만 캐시(쿠키 갱신·재시도 경로와 충돌 없음). lawName→MST 해소도 lawSearch URL 캐시로 함께 커버.
+const CACHE_MAX_ENTRIES = 200
+const CACHE_MAX_TOTAL_CHARS = 64_000_000
+const CACHE_MAX_ENTRY_CHARS = 8_000_000
+const MOLEG_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 법령 XML — 사실상 불변
+const NTS_DETAIL_CACHE_TTL_MS = 12 * 60 * 60 * 1000 // 문서 상세 본문
+const NTS_DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000 // 검색 등 — 신규 문서 유입 여지
+const NTS_DETAIL_ACTION_IDS = new Set(["ASIQTB002PR01"])
+
+const responseCache = new Map<string, { value: string; expiresAt: number }>()
+let responseCacheChars = 0
+
+function cacheGet(key: string): string | null {
+  const hit = responseCache.get(key)
+  if (!hit) return null
+  if (Date.now() > hit.expiresAt) {
+    responseCache.delete(key)
+    responseCacheChars -= hit.value.length
+    return null
+  }
+  responseCache.delete(key) // LRU 갱신(재삽입으로 최신화)
+  responseCache.set(key, hit)
+  return hit.value
+}
+
+function cacheSet(key: string, value: string, ttlMs: number): void {
+  if (value.length > CACHE_MAX_ENTRY_CHARS) return
+  const prev = responseCache.get(key)
+  if (prev) {
+    responseCache.delete(key)
+    responseCacheChars -= prev.value.length
+  }
+  responseCache.set(key, { value, expiresAt: Date.now() + ttlMs })
+  responseCacheChars += value.length
+  while (responseCache.size > CACHE_MAX_ENTRIES || responseCacheChars > CACHE_MAX_TOTAL_CHARS) {
+    const oldest = responseCache.keys().next().value
+    if (oldest === undefined) break
+    const entry = responseCache.get(oldest)
+    responseCache.delete(oldest)
+    if (entry) responseCacheChars -= entry.value.length
+  }
+}
+
 export function decodeHtml(text: string): string {
   return text
     .replace(/&nbsp;/g, " ")
@@ -1522,10 +1622,19 @@ export function normalizeDate(value: unknown): string {
   return `${digits.slice(0, 4)}.${digits.slice(4, 6)}.${digits.slice(6, 8)}`
 }
 
-function compactBodyText(text: string, full = false): string {
+function compactBodyText(text: string, full = false, code?: string): string {
   if (full) return truncate(text, 45000)
   const relatedLawIndex = text.search(/\n?3\.\s*관련\s*법령/)
   const compact = relatedLawIndex >= 0 ? text.slice(0, relatedLawIndex).trim() : text
+  // v0.10.0 — 판례·결정례(05~10)는 '주문·판단(결론부)'이 본문 뒤쪽에 있어 head-only 압축이
+  // 결론부를 항상 자른다(→ full=true 45000자 재조회 강제). head+tail 분할로 결론부를 요약본에
+  // 보존해 트리아지 단계의 재조회를 줄인다. 인용 전 full=true 검증 의무는 그대로(가드 유지).
+  if (code && PRECEDENT_CODES.has(String(code).padStart(2, "0")) && compact.length > 8000) {
+    const head = compact.slice(0, 5000)
+    const tail = compact.slice(-2500)
+    const omitted = compact.length - head.length - tail.length
+    return `${head}\n…[중략 ${omitted.toLocaleString()}자 — 전문은 full=true]…\n${tail}`
+  }
   return truncate(compact, 8000)
 }
 
@@ -1916,10 +2025,19 @@ function formatDocumentSearchItem(item: TaxlawDcm, query?: string, requestedTaxL
     `  생산일자: ${normalizeDate(item.DCM_RGT_DTM_S || item.DCM_RGT_DTM)} / 등록일자: ${normalizeDate(item.FRS_RGT_DTM)}`,
   ]
   if (item.NTST_DCM_DCS_CL_NM) lines.push(`  결정: ${item.NTST_DCM_DCS_CL_NM}`)
+  // v0.10.0 — 생산일자 staleness 플래그. 검색 단계에서 구법 기반 위험을 조기 신호(시점검증은 상세조회 몫).
+  const prodDigits = String(item.DCM_RGT_DTM_S || item.DCM_RGT_DTM || "").replace(/\D/g, "")
+  if (prodDigits.length >= 4) {
+    const age = new Date().getFullYear() - Number(prodDigits.slice(0, 4))
+    if (Number.isFinite(age) && age > getRecentThresholdYears()) {
+      lines.push(`  ⚠ 생산 ${age}년 경과 — 구법 기반 가능성. 인용 전 get_taxlaw_document_text(targetYear=귀속연도) 시점검증 필수`)
+    }
+  }
   // v0.9.9 — verbose=false 시 요지·검색근거 생략(메타데이터만). 검증·헬스체크용.
+  // v0.10.0 — 요지 700→450자·검색근거 500→300자(목록은 트리아지용 — 인용 판단은 상세 본문에서).
   if (verbose) {
-    if (gist) lines.push(`  요지: ${truncate(gist, 700)}`)
-    if (snippet && !gist.includes(snippet)) lines.push(`  검색근거: ${truncate(snippet, 500)}`)
+    if (gist) lines.push(`  요지: ${truncate(gist, 450)}`)
+    if (snippet && !gist.includes(snippet)) lines.push(`  검색근거: ${truncate(snippet, 300)}`)
   }
   lines.push("  상세: get_taxlaw_document_text에 위 ID 사용")
   return lines.join("\n")
@@ -2154,7 +2272,7 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   const answer = cleanText(dcm.ntstDcmCntn || dcm.CNTN)
   if (gist) lines.push("요지:", gist, "")
   if (answer) lines.push("본문/회신/결정내용:", answer, "")
-  if (bodyText) lines.push(full ? "원문 변환 텍스트:" : "원문 요약 텍스트:", compactBodyText(bodyText, full), "")
+  if (bodyText) lines.push(full ? "원문 변환 텍스트:" : "원문 요약 텍스트:", compactBodyText(bodyText, full, code), "")
   if (referencePrecedents.length > 0) {
     lines.push("참조 판례:", ...referencePrecedents.slice(0, 20).map((item) => `  - ${item}`), "")
   }
@@ -2226,7 +2344,7 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
     const holdingWarn = detectHoldingTruncation({
       code,
       fullBody: bodyText,
-      shownBody: compactBodyText(bodyText, full),
+      shownBody: compactBodyText(bodyText, full, code),
       isFull: full,
     })
     if (holdingWarn.length > 0) lines.push(...holdingWarn, "")
@@ -2530,6 +2648,9 @@ export function parseLawAddenda(xml: string): AddendaUnit[] {
 }
 
 async function fetchMolegXml(url: string, label: string): Promise<string> {
+  const cacheKey = `moleg:${url}`
+  const cached = cacheGet(cacheKey)
+  if (cached !== null) return cached
   const response = await fetchWithRetry(url, {
     headers: { accept: "application/xml,text/xml;q=0.9,*/*;q=0.5", "user-agent": userAgent() },
   })
@@ -2537,7 +2658,9 @@ async function fetchMolegXml(url: string, label: string): Promise<string> {
     await consume(response)
     throw new TaxlawMcpError(`법제처 ${label} 실패 (${response.status})`, ErrorCodes.API_ERROR)
   }
-  return await response.text()
+  const xml = await response.text()
+  cacheSet(cacheKey, xml, MOLEG_CACHE_TTL_MS)
+  return xml
 }
 
 async function resolveLawMst(oc: string, lawName: string): Promise<string> {
@@ -2570,14 +2693,15 @@ async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promi
   return out
 }
 
-export interface LawVersion { mst: string; enforceDate: string }
+export interface LawVersion { mst: string; enforceDate: string; promDate?: string }
 
-// eflaw 검색으로 (mst, 시행일자) 쌍을 시행일 내림차순으로. 시점별 조문 회수용.
+// eflaw 검색으로 (mst, 시행일자, 공포일자)를 시행일 내림차순으로. 시점별 조문 회수용.
 async function fetchEflawVersions(oc: string, lawName: string, limit: number): Promise<LawVersion[]> {
   const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=40&query=${encodeURIComponent(lawName)}`
   const xml = await fetchMolegXml(url, "시행일 법령 검색")
   const ids = [...xml.matchAll(/<법령일련번호>(\d+)<\/법령일련번호>/g)].map((m) => m[1])
   const enfs = [...xml.matchAll(/<시행일자>(\d+)<\/시행일자>/g)].map((m) => m[1])
+  const proms = [...xml.matchAll(/<공포일자>(\d+)<\/공포일자>/g)].map((m) => m[1])
   const out: LawVersion[] = []
   const seen = new Set<string>()
   for (let i = 0; i < ids.length; i++) {
@@ -2586,17 +2710,20 @@ async function fetchEflawVersions(oc: string, lawName: string, limit: number): P
     const key = `${mst}:${enforceDate}`
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ mst, enforceDate })
+    out.push({ mst, enforceDate, promDate: proms[i] || "" })
     if (out.length >= limit) break
   }
   return out.sort((a, b) => (b.enforceDate || "").localeCompare(a.enforceDate || ""))
 }
 
-// 특정 시점(efYd, YYYYMMDD)에 시행 중이던 버전 = 시행일 ≤ efYd 중 가장 늦은 것.
+// 특정 시점(efYd, YYYYMMDD)에 시행 중이던 버전. v0.10.0 — 공포일자 우선 tie-break:
+// 분할시행(예: 제36127호 2.27 공포본의 7.1 시행 행)은 시행일이 늦어도 '그 공포 시점의 텍스트'라
+// 후행 공포본(예: 5.22 자구개정)을 반영하지 못한다. 시행일 ≤ efYd 후보 중 공포일이 가장 늦은
+// 공포본(=후행 개정 누적 통합본)을 선택해야 그 시점 실제 문구에 가깝다.
 export function pickVersionInForce(versions: LawVersion[], efYd: string): LawVersion | null {
   const cands = versions
     .filter((v) => v.enforceDate && v.enforceDate <= efYd)
-    .sort((a, b) => b.enforceDate.localeCompare(a.enforceDate))
+    .sort((a, b) => (b.promDate || "").localeCompare(a.promDate || "") || b.enforceDate.localeCompare(a.enforceDate))
   return cands[0] || null
 }
 
@@ -3516,6 +3643,269 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
   return textResponse(truncate([...head, ...lines].join("\n"), full ? 80000 : 30000))
 }
 
+// ── v0.10.0: diff_article_versions ──────────────────────────────────────────
+// 두 시점 시행본의 같은 조문을 단어단위로 기계 대조. 타임테이블 공리 ①·②의 기계화.
+
+interface ArticleDiffArgs {
+  jo?: unknown
+  hang?: unknown
+  lawName?: unknown
+  yearA?: unknown
+  efYdA?: unknown
+  mstA?: unknown
+  yearB?: unknown
+  efYdB?: unknown
+  mstB?: unknown
+  oc?: unknown
+  full?: unknown
+}
+
+const DIFF_KIND_LABEL: Record<ChangeKind, string> = {
+  substantive: "실질변경",
+  cosmetic: "자구정비",
+  renumbering: "번호이동",
+}
+
+// 조문 본문에서 특정 항(①~⑳) 블록만 절단. 못 찾으면 전체 본문 유지(found=false).
+function sliceHangBlock(text: string, hang: string): { text: string; found: boolean } {
+  const sym = hangToSymbol(hang)
+  if (!sym) return { text, found: false }
+  const idx = text.indexOf(sym)
+  if (idx === -1) return { text, found: false }
+  const rest = text.slice(idx + sym.length)
+  const next = rest.search(/[①-⑳]/)
+  return { text: sym + (next === -1 ? rest : rest.slice(0, next)), found: true }
+}
+
+export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<ToolResponse> {
+  const jo = requireString("jo", args.jo)
+  const hang = String(args.hang ?? "").trim()
+  const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
+  if (!oc) {
+    throw new TaxlawMcpError(
+      "법제처 Open API 인증키(OC)가 필요합니다. 환경변수 LAW_GO_KR_OC를 설정하거나 oc 파라미터로 전달하세요.",
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  const lawName = String(args.lawName ?? "").trim()
+  const sideSpec = (yearRaw: unknown, efYdRaw: unknown, mstRaw: unknown, label: string) => {
+    const mst = String(mstRaw ?? "").trim()
+    const efYd = String(efYdRaw ?? "").trim() || (typeof yearRaw === "number" ? `${yearRaw}1231` : "")
+    if (!mst && !efYd) {
+      throw new TaxlawMcpError(`${label}측 시점 지정 필요: mst${label} 또는 year${label}/efYd${label}.`, ErrorCodes.INVALID_PARAM)
+    }
+    if (!mst && !lawName) {
+      throw new TaxlawMcpError(`year/efYd로 시점을 해소하려면 lawName이 필요합니다.`, ErrorCodes.INVALID_PARAM)
+    }
+    return { mst, efYd }
+  }
+  const specA = sideSpec(args.yearA, args.efYdA, args.mstA, "A")
+  const specB = sideSpec(args.yearB, args.efYdB, args.mstB, "B")
+
+  let versions: LawVersion[] = []
+  if (!specA.mst || !specB.mst) versions = await fetchEflawVersions(oc, lawName, 40)
+  const resolveSide = (spec: { mst: string; efYd: string }, label: string): { mst: string; pickedEnforce: string } => {
+    if (spec.mst) return { mst: spec.mst, pickedEnforce: "" }
+    const picked = pickVersionInForce(versions, spec.efYd)
+    if (!picked) {
+      throw new TaxlawMcpError(
+        `${label}측 efYd ${spec.efYd} 시점 시행본을 eflaw 목록에서 찾지 못했습니다(최근 40건 window 밖일 수 있음). korean-law-mcp search_historical_law로 mst${label}를 직접 확보하세요.`,
+        ErrorCodes.NOT_FOUND,
+      )
+    }
+    return { mst: picked.mst, pickedEnforce: picked.enforceDate }
+  }
+  let sideA = resolveSide(specA, "A")
+  let sideB = resolveSide(specB, "B")
+
+  if (sideA.mst === sideB.mst) {
+    return textResponse([
+      "신구 조문 단어단위 기계 diff",
+      `두 시점이 같은 시행본(MST ${sideA.mst})으로 해소되었습니다 — 그 사이 ${jo} 시행본 교체 없음.`,
+      "다른 개정 구간을 보려면 yearA/yearB(또는 efYd, mst)를 더 벌려 지정하세요. 시행본 목록은 get_law_article(full=true)의 '최근 시행본' 참조.",
+    ].join("\n"))
+  }
+
+  const fetchSide = async (mst: string) => {
+    const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
+    const xml = await fetchMolegXml(url, "법령 조회")
+    const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+    const enforceDate = (xml.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
+    const idx = xml.indexOf(`<![CDATA[${jo}(`)
+    if (idx === -1) return { lawTitle, enforceDate, text: null as string | null }
+    const s = xml.lastIndexOf("<조문단위", idx)
+    const e = xml.indexOf("</조문단위>", idx)
+    const { text } = extractArticleBody(xml.slice(s, e))
+    return { lawTitle, enforceDate, text: text as string | null }
+  }
+  let [vA, vB] = await Promise.all([fetchSide(sideA.mst), fetchSide(sideB.mst)])
+
+  // A=구(시행일 빠른 쪽) 정렬 보장 — 거꾸로 들어오면 자동 교환.
+  let swapNote = ""
+  if (vA.enforceDate && vB.enforceDate && vA.enforceDate > vB.enforceDate) {
+    ;[vA, vB] = [vB, vA]
+    ;[sideA, sideB] = [sideB, sideA]
+    swapNote = "ℹ A/B 시점이 역순이라 자동 교환했습니다(A=구, B=신)."
+  }
+
+  const header = [
+    "신구 조문 단어단위 기계 diff — 해석 공리 ①(신구 나란히 대조)·②(개정규정=문구단위)의 기계화",
+    `법령: ${vB.lawTitle || vA.lawTitle || lawName || "?"} / 대상: ${jo}${hang ? ` ${hang}` : ""}`,
+    `[구] 시행 ${vA.enforceDate ? formatYmd(vA.enforceDate) : "?"} (MST ${sideA.mst}) ↔ [신] 시행 ${vB.enforceDate ? formatYmd(vB.enforceDate) : "?"} (MST ${sideB.mst})`,
+  ]
+  if (swapNote) header.push(swapNote)
+
+  if (vA.text === null && vB.text === null) {
+    return notFoundResponse(`${jo} 본문을 두 시행본 모두에서 찾지 못했습니다.`, [
+      "jo 표기를 법령 그대로 맞추세요(예: '제26조의8').",
+      "get_law_article로 각 시점 본문 존재를 먼저 확인하세요.",
+    ], { toolName: "diff_article_versions" })
+  }
+  if (vA.text === null || vB.text === null) {
+    const kind = vA.text === null ? "신설" : "삭제"
+    const body = vA.text === null ? vB.text : vA.text
+    return textResponse(truncate([
+      ...header,
+      "",
+      `판정: 조문 전체 ${kind} — ${kind === "신설" ? "[구]에 없고 [신]에만 존재" : "[구]에만 있고 [신]에서 삭제"}.`,
+      "⚠ 신설·삭제 시점과 적용시기는 get_law_addenda(부칙)·get_law_revision_text(개정문)로 확정하라.",
+      "",
+      "── 존재하는 쪽 본문(발췌) ──",
+      truncate(String(body), 3000),
+    ].join("\n"), 12000))
+  }
+
+  let textA = vA.text
+  let textB = vB.text
+  let hangNote = ""
+  if (hang) {
+    const hA = sliceHangBlock(textA, hang)
+    const hB = sliceHangBlock(textB, hang)
+    if (hA.found && hB.found) {
+      textA = hA.text
+      textB = hB.text
+    } else {
+      hangNote = `⚠ ${hang} 블록을 ${hA.found ? "[신]" : hB.found ? "[구]" : "양쪽"}에서 못 찾아 조문 전체를 대조했습니다(항 신설·삭제 가능성 — 부칙 확인).`
+    }
+  }
+
+  const diff = diffArticleTexts(textA, textB)
+  const lines = [...header]
+  if (hangNote) lines.push(hangNote)
+  lines.push("")
+
+  if (diff.identical) {
+    lines.push(`✅ 변경 없음 — 이 두 시행본 사이에 ${jo}${hang ? ` ${hang}` : ""} 문구 개정 없음. (이 구간 개정 부칙은 이 문구와 무관하다는 적극 신호)`)
+    return textResponse(lines.join("\n"))
+  }
+
+  const counts = { substantive: 0, cosmetic: 0, renumbering: 0 } as Record<ChangeKind, number>
+  diff.hunks.forEach((h) => { counts[h.kind]++ })
+  lines.push(`판정: ${DIFF_KIND_LABEL[diff.verdict as ChangeKind]} (hunk ${diff.hunks.length}건 — 실질 ${counts.substantive} / 자구 ${counts.cosmetic} / 번호 ${counts.renumbering})`)
+  if (diff.fallbackNote) lines.push(`ℹ ${diff.fallbackNote}`)
+  lines.push("")
+
+  const maxHunks = args.full === true ? 40 : 12
+  diff.hunks.slice(0, maxHunks).forEach((h, i) => {
+    lines.push(`#${i + 1} [${DIFF_KIND_LABEL[h.kind]}]`)
+    lines.push(`  …${h.contextBefore} 【삭제: ${truncate(h.removed, 600) || "(없음)"}】【신설: ${truncate(h.added, 600) || "(없음)"}】 ${h.contextAfter}…`)
+  })
+  if (diff.hunks.length > maxHunks) lines.push(`(외 ${diff.hunks.length - maxHunks}건 — full=true로 전체 표시)`)
+  lines.push(
+    "",
+    "⚠ 위는 기계적 텍스트 대조다(자동 단정 아님). 각 변경 문구가 '어느 개정령' 소관인지는 get_law_revision_text(개정문 '…를 …로 한다')·get_law_addenda(부칙)로 귀속을 확정한 뒤 단정하라. " + COMPANION_NOTICE,
+  )
+  return textResponse(truncate(lines.join("\n"), args.full === true ? 30000 : 12000))
+}
+
+// ── v0.10.0: research_taxlaw_topic ──────────────────────────────────────────
+// 체인 매크로: 검색 → 관련성 상위 K건 본문 full+연도검증 첨부를 1콜로(다턴 왕복 절감).
+
+interface ResearchTopicArgs {
+  query?: unknown
+  targetYear?: unknown
+  topK?: unknown
+  docType?: unknown
+  taxLawCode?: unknown
+  fromDate?: unknown
+  toDate?: unknown
+  full?: unknown
+}
+
+export async function researchTaxlawTopic(args: ResearchTopicArgs): Promise<ToolResponse> {
+  const query = requireString("query", args.query)
+  if (args.targetYear !== undefined) validateYear(args.targetYear)
+  const targetYear = typeof args.targetYear === "number" ? args.targetYear : undefined
+  const topK = asPositiveInt(args.topK, 2, 3)
+  validateDateRange(args.fromDate, args.toDate)
+  const searchArgs = {
+    query,
+    docType: args.docType || "all",
+    display: 20,
+    taxLawCode: args.taxLawCode,
+    fromDate: args.fromDate,
+    toDate: args.toDate,
+  } as DocumentSearchArgs
+
+  const codes = documentCodes(searchArgs.docType, "all")
+  const groups = splitDocumentCodes(codes)
+  const settled = await Promise.allSettled(groups.map((group) => searchDocumentGroup(group, searchArgs)))
+  const results = settled
+    .filter((s): s is PromiseFulfilledResult<{ group: "question" | "precedent"; codes: string[]; result: TaxlawSearchData["ASIPDI002PR01"] }> => s.status === "fulfilled")
+    .map((s) => s.value)
+  if (results.length === 0) {
+    throw settled.find((s) => s.status === "rejected")?.reason ?? new TaxlawMcpError("Taxlaw document search failed.", ErrorCodes.API_ERROR)
+  }
+  const rawItems = results
+    .flatMap((entry) => (entry.result.body || []).map((row) => row.dcm).filter((d): d is TaxlawDcm => !!d))
+    .sort((a, b) => documentDateValue(b) - documentDateValue(a))
+  const { items: uniqueItems } = uniqueDocuments(rawItems)
+  if (uniqueItems.length === 0) {
+    return notFoundResponse(`'${query}' 검색 결과 없음.`, [
+      "search_taxlaw_documents로 재검색(복합어 자동 분해 재시도 내장 — 본 매크로에는 없음).",
+      "docType·taxLawCode 필터를 풀거나 키워드를 1~2개 핵심 단어로 축소.",
+    ], { toolName: "research_taxlaw_topic" })
+  }
+
+  // 관련성(query 토큰 매칭률) 우선, 동률이면 최신순으로 본문 첨부 대상 선정.
+  const scored = uniqueItems.map((item) => {
+    const haystack = [cleanText(item.TTL), cleanText(item.GIST_CNTN || item.CNTN || ""), cleanText(item.FILE_CN || "")].join(" ")
+    return { item, ratio: judgeRelevance(query, haystack).matchedRatio }
+  })
+  scored.sort((x, y) => y.ratio - x.ratio || documentDateValue(y.item) - documentDateValue(x.item))
+  const picks = scored.slice(0, topK)
+
+  const details = await mapWithConcurrency(picks, 2, async ({ item }) => {
+    const id = normalizeDetailId(String(item.DOC_ID || item.DOCID || ""))
+    const code = String(item.NTST_DCM_CL_CD || "").padStart(2, "0")
+    const referer = refererForDoc(code, id)
+    try {
+      const data = await postTaxlawAction<TaxlawDetailData>("ASIQTB002PR01", { dcmDVO: { ntstDcmId: id } }, referer)
+      const detail = data.ASIQTB002PR01
+      if (!detail.dcmDVO) return `[첨부 실패] ${id} — 상세 응답에 본문 없음. get_taxlaw_document_text로 개별 조회.`
+      return truncate(
+        formatDocumentDetail(id, detail.dcmDVO, detail, true, referer, targetYear),
+        args.full === true ? 20000 : 9000,
+      )
+    } catch (error) {
+      return `[첨부 실패] ${id} — ${error instanceof Error ? error.message : String(error)}. get_taxlaw_document_text로 개별 조회.`
+    }
+  })
+
+  const lines = [
+    "research_taxlaw_topic — 검색 + 본문(full) + 연도검증 1콜 합본(체인 매크로)",
+    `검색어: ${query} / docType: ${String(searchArgs.docType)} / targetYear: ${targetYear ?? "미지정 ⚠(귀속연도 있으면 지정 권장)"} / 본문 첨부 ${picks.length}건(관련성 상위)`,
+    "⚠ 첨부 본문이 [truncated]로 잘렸으면 결론 인용 전 get_taxlaw_document_text(id, full=true)로 개별 재조회. " + COMPANION_NOTICE,
+    "",
+    `── 회수 목록(중복 제거 후 상위 ${Math.min(uniqueItems.length, 10)}건 메타 — 전체는 search_taxlaw_documents) ──`,
+  ]
+  uniqueItems.slice(0, 10).forEach((it) => lines.push(formatDocumentSearchItem(it, query, args.taxLawCode as string | undefined, false), ""))
+  details.forEach((d, i) => {
+    lines.push(`━━ 첨부 #${i + 1}/${picks.length} (query 토큰 매칭률 ${Math.round(picks[i].ratio * 100)}%) ━━`, d, "")
+  })
+  return textResponse(truncate(lines.join("\n"), 50000))
+}
+
 async function listTaxlawBasicRulingLaws(args: BasicRulingLawArgs): Promise<ToolResponse> {
   const data = await postTaxlawAction<BasicRulingData>("ASISTD001MR01", {}, "/st/USESTD001M.do")
   const query = cleanText(args.query).toLowerCase()
@@ -4127,6 +4517,12 @@ async function handleToolCall(name: string, args: unknown): Promise<ToolResponse
     }
     if (name === "build_application_timetable") {
       return await buildApplicationTimetable(input as TimetableArgs)
+    }
+    if (name === "diff_article_versions") {
+      return await diffArticleVersionsTool(input as ArticleDiffArgs)
+    }
+    if (name === "research_taxlaw_topic") {
+      return await researchTaxlawTopic(input as ResearchTopicArgs)
     }
     if (name === "search_taxlaw_interpretations") {
       return await searchTaxlawDocuments(input as DocumentSearchArgs, "reply")

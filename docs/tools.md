@@ -140,6 +140,31 @@ These tools make menu-backed NTS data reachable even before a dedicated formatte
 
 Current menu fallback coverage includes the public NTS sitemap menus, including tax calendar (`ASECMC001MR01`) and tax-law suggestion guidance (`/cm/USECMJ001M.do`). User-specific local-storage pages such as bookmarks/recent history are intentionally not treated as authoritative tax-law sources.
 
+## `diff_article_versions` (v0.10.0)
+
+두 시점 시행본의 같은 조문을 단어단위로 기계 대조해 **변경 hunk만** 반환 (【삭제】【신설】 마커 + 앞뒤 문맥). 타임테이블 해석 공리 ①(신구 나란히 대조)·②(개정규정=문구단위)의 기계화.
+
+- 분류는 결정적 휴리스틱: `실질변경` / `자구정비`(문장부호만) / `번호이동`(번호·날짜 패턴만). LLM 추정 아님.
+- Key arguments: `jo`(필수), `hang`, `lawName`, `yearA`/`efYdA`/`mstA`(구), `yearB`/`efYdB`/`mstB`(신), `full`.
+- "✅ 변경 없음"은 그 구간 해당 조문 무개정의 **적극 신호** (예: 조특령 §26의8⑥ 2024↔2026 무개정 확인).
+- ⚠ 변경 문구의 개정령 귀속은 `get_law_revision_text`(개정문)·`get_law_addenda`(부칙)로 확정 후 단정. 부칙-of-부칙 개정(본문 미변경)은 이 도구에 안 잡힌다.
+- 시점 해소는 공포일자 우선 tie-break(v0.10.0): 분할시행 행(시행일만 늦은 구 공포본)이 후행 공포본(자구개정 누적)을 가리는 문제 수정 — `get_law_article`에도 동일 적용.
+
+## `research_taxlaw_topic` (v0.10.0)
+
+체인 매크로: `search_taxlaw_documents` → 관련성 상위 K건(기본 2, 최대 3)의 `get_taxlaw_document_text(full, targetYear)` 본문 첨부를 1콜로. 검색→본문→연도검증 다턴 왕복 절감.
+
+- 첨부는 항상 full 본문 기반(요지≠결론 가드 유지) + 연도검증·통칙검증·결론부 가드 부착.
+- Key arguments: `query`(필수), `targetYear`, `topK`, `docType`(기본 all), `taxLawCode`, `fromDate`/`toDate`, `full`.
+- 복합어 자동 분해 재시도는 없음 — 결과 없으면 `search_taxlaw_documents`로 재검색.
+
+## 토큰·성능 메모 (v0.10.0)
+
+- **도구결과 캐시**: 법제처 XML 24h / NTS 문서상세 12h / NTS 검색 1h, LRU 200건. 같은 자원 재조회(요지→full→targetYear)가 ms 단위로 단축. lawName→MST 해소도 자동 커버.
+- **검색결과 staleness 플래그**: 생산일자가 `TAXLAW_RECENT_THRESHOLD_YEARS`(기본 3년) 초과 경과 시 "⚠ 생산 N년 경과" 자동 부착.
+- **판례·결정례(05~10) 요약본**: head 5000 + tail 2500자 분할(결론부 보존)로 full=true 재조회 필요성 축소. 인용 전 full=true 검증 의무는 유지.
+- 검색 목록 요지 450자·검색근거 300자(트리아지용 — 인용 판단은 상세 본문에서).
+
 ## Compatibility Aliases
 
 - `search_taxlaw_interpretations`
