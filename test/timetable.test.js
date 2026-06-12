@@ -5,6 +5,7 @@ process.env.TAXLAW_MCP_TEST_MODE = "1"
 
 const {
   hangToSymbol,
+  sliceHangBlock,
   parseJoSpec,
   extractAmendmentInventory,
   checkAmendmentBinding,
@@ -20,6 +21,31 @@ test("hangToSymbol: 제6항 → ⑥", () => {
 test("hangToSymbol: 범위 밖이면 null", () => {
   assert.equal(hangToSymbol("제21항"), null)
   assert.equal(hangToSymbol("항"), null)
+})
+
+// ── sliceHangBlock ──
+// 회귀: 직렬화 본문의 중복 항 마커("⑥⑥")에서 빈 블록("⑥" 1자)으로 절단돼
+// 양쪽이 동일해지고 거짓 '변경 없음'이 나던 버그(0.10.0, 조특령 §26의8 실측).
+test("sliceHangBlock: 중복 항 마커(①①…⑥⑥…⑦⑦) 본문에서 해당 항 블록만 절단", () => {
+  const text = "제26조의8(통합고용세액공제)①① 1항 내용⑥⑥ 제11조의2제8항을 준용한다.⑦⑦ 7항 내용"
+  const r = sliceHangBlock(text, "제6항")
+  assert.equal(r.found, true)
+  assert.ok(r.text.includes("준용한다"))
+  assert.ok(!r.text.includes("1항 내용"))
+  assert.ok(!r.text.includes("7항 내용"))
+})
+
+test("sliceHangBlock: 단일 마커 본문도 동일 동작", () => {
+  const r = sliceHangBlock("① 일항 내용⑥ 육항 본문⑦ 칠항 내용", "제6항")
+  assert.equal(r.found, true)
+  assert.equal(r.text, "⑥ 육항 본문")
+})
+
+test("sliceHangBlock: 없는 항이면 found=false + 전체 유지", () => {
+  const text = "① 일항 내용"
+  const r = sliceHangBlock(text, "제6항")
+  assert.equal(r.found, false)
+  assert.equal(r.text, text)
 })
 
 // ── parseJoSpec ──

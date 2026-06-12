@@ -34,7 +34,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.10.0"
+const VERSION = "0.11.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -53,6 +53,7 @@ const ADMIN_RULE_STALE_NOTICE =
 
 const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 자료를 검색·조회한다.
 세법·법령 질의에서 korean-law-mcp(법제처 Open API)와 항상 짝으로 호출한다.
+★ get_law_article 응답의 "── 후행 개정 확인" 블록(⚠)은 무시 금지 — 절차는 말미 [구버전 조문 현행성] 참조.
 
 [필수 응답 구조 — 5단]
 사용자에게 보낼 답변은 아래 5단을 순서대로 출력. 섹션 간 내용 섞기 금지.
@@ -112,7 +113,15 @@ const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 
 훈령·예규·고시·지침(행정규칙)이 근거인 질의는 본 NTS DB만 신뢰하지 말 것. NTS statute/별표 컬렉션은 행정규칙 개정 후 색인 갱신이 지연될 수 있다(구버전 보유 가능). 두 MCP는 자동 교차검증이 아니라 서로 다른 DB를 보는 상호보완 관계이므로, 다음을 반드시 수행:
 1. search_taxlaw_all 응답에 "⚠ 행정규칙 … stale 가능" 안내가 있으면 무시하지 말 것.
 2. 법제처 현행본을 1차로 확인: korean-law-mcp.search_law는 행정규칙을 NOT_FOUND 반환하므로 discover_tools(intent="행정규칙") → search_admin_rule(knd="1"훈령/"2"예규/"3"고시) → get_admin_rule로 전문 조회.
-3. 공포일·시행일·문서번호 3종을 NTS 결과와 교차 확인. 다르면 법제처 현행본을 1차로 채택하고 조문 번호·내용을 1:1 대조(개정으로 조문 체계가 재편됐을 수 있음).`
+3. 공포일·시행일·문서번호 3종을 NTS 결과와 교차 확인. 다르면 법제처 현행본을 1차로 채택하고 조문 번호·내용을 1:1 대조(개정으로 조문 체계가 재편됐을 수 있음).
+
+[구버전 조문 현행성 — 후행 개정 강제 절차]
+get_law_article로 과거 시점본(year/efYd/구버전 mst)을 회수하면 응답의 "── 후행 개정 확인" 블록을 무시하지 말 것:
+1. "본문이 변경" 경고 → 현재·미래 귀속연도에 대한 결론(요건·단가·사후관리·추징 등)을 쓰기 전에 제시된 diff_article_versions(mstA/mstB) 또는 현행본 get_law_article(mst=현행MST, full=true)로 변경 내용을 직접 확인.
+2. "삭제됨"/"찾지 못함" 경고 → 삭제 또는 조문 이동. diff_article_versions(구MST↔현행MST) 1콜로 신설/삭제를 확정하고, 삭제 시점·적용시기는 get_law_revision_text·get_law_addenda로 확인. 확정 전에는 그 조문 존재를 전제로 한 결론 금지.
+3. "공포-미시행(시행예정)" 경고 → 법령 단위 신호(이 조문과 무관할 수 있음). 미래 귀속연도 결론 전 해당 시행본의 이 조문 변경 여부를 diff_article_versions로 확인 후 반영.
+4. "대조에 실패" 경고 → 제시된 diff_article_versions 호출을 그대로 수행해 변경 여부를 직접 확정(실패 상태로 결론 금지).
+확인 비용은 1콜이다 — 확인을 미루고 "별도 확인 필요" 류 hedge로 결론을 대체하지 말 것(검증깊이 미루기 금지).`
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -824,7 +833,7 @@ const tools = [
   },
   {
     name: "get_law_article",
-    description: "특정 시점(연도/시행일/MST)의 조문 본문과 '수식 이미지 URL'을 법제처 국가법령정보 DRF에서 회수한다. ⚠ korean-law-mcp의 연혁(시점별 조문) 회수가 사실상 고장(get_historical_law jo 추출 불능, efYd NOT_FOUND)이고 계산식이 이미지라 본문에 안 보이는 문제를 보완. year(예: 2025) 또는 efYd(YYYYMMDD)를 주면 그 시점에 시행 중이던 버전을 자동 선택(시행일 ≤ 기준 중 최신). 수식(계산식)은 flDownload.do 이미지 URL로 반환 — 다운로드 후 Read/브라우저로 확인. 주의: 이 본문은 '그 시점 시행 중이던' 조문일 뿐, 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙)으로 따로 판정.",
+    description: "특정 시점(연도/시행일/MST)의 조문 본문과 '수식 이미지 URL'을 법제처 국가법령정보 DRF에서 회수한다. ⚠ korean-law-mcp의 연혁(시점별 조문) 회수가 사실상 고장(get_historical_law jo 추출 불능, efYd NOT_FOUND)이고 계산식이 이미지라 본문에 안 보이는 문제를 보완. year(예: 2025) 또는 efYd(YYYYMMDD)를 주면 그 시점에 시행 중이던 버전을 자동 선택(시행일 ≤ 기준 중 최신). 수식(계산식)은 flDownload.do 이미지 URL로 반환 — 다운로드 후 Read/브라우저로 확인. 주의: 이 본문은 '그 시점 시행 중이던' 조문일 뿐, 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙)으로 따로 판정. v0.11.0: 과거본 회수 시 '── 후행 개정 확인 ──' 블록 자동 부착 — 현행본의 같은 조문을 자동 대조해 변경/삭제/동일을 판정하고 공포-미시행(시행예정) 개정도 경고한다. 이 블록의 ⚠는 무시 금지: 변경·삭제 경고가 있으면 현재·미래 귀속 결론 전에 현행본을 확인하라('별도 확인 필요' hedge 금지).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2693,24 +2702,41 @@ async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promi
   return out
 }
 
-export interface LawVersion { mst: string; enforceDate: string; promDate?: string }
+export interface LawVersion { mst: string; enforceDate: string; promDate?: string; lawName?: string }
 
-// eflaw 검색으로 (mst, 시행일자, 공포일자)를 시행일 내림차순으로. 시점별 조문 회수용.
+// 법령명 정규화 키(공백 제거) — eflaw 행 필터·법령명 동일성 비교용.
+export function lawNameKey(s: string): string {
+  return String(s || "").replace(/\s+/g, "")
+}
+
+// eflaw 검색 결과에서 lawName과 정확히 일치하는 행만(공백 무시). 일치 0건이면 원본 그대로(기존 동작 보존).
+// v0.11.0 — eflaw lawSearch(query=법령명)는 이름이 '포함'된 모든 법령(시행령·시행규칙 등)을 반환하므로,
+// 이력이 적은 법령은 타법 행이 섞여 '현행본' 오판(교차법령 대조)을 일으킨다(리뷰 실증: 가상자산법 ↔ 시행령).
+export function filterVersionsByName(versions: LawVersion[], lawName: string): LawVersion[] {
+  const key = lawNameKey(lawName)
+  if (!key) return versions
+  const hit = versions.filter((v) => v.lawName && lawNameKey(v.lawName) === key)
+  return hit.length ? hit : versions
+}
+
+// eflaw 검색으로 (mst, 시행일자, 공포일자, 법령명)을 시행일 내림차순으로. 시점별 조문 회수용.
+// v0.11.0 — 행(law 요소) 단위 파싱으로 전환: 필드별 3-pass index-zip의 어긋남 위험 제거 + 법령명한글 캡처.
 async function fetchEflawVersions(oc: string, lawName: string, limit: number): Promise<LawVersion[]> {
   const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=40&query=${encodeURIComponent(lawName)}`
   const xml = await fetchMolegXml(url, "시행일 법령 검색")
-  const ids = [...xml.matchAll(/<법령일련번호>(\d+)<\/법령일련번호>/g)].map((m) => m[1])
-  const enfs = [...xml.matchAll(/<시행일자>(\d+)<\/시행일자>/g)].map((m) => m[1])
-  const proms = [...xml.matchAll(/<공포일자>(\d+)<\/공포일자>/g)].map((m) => m[1])
   const out: LawVersion[] = []
   const seen = new Set<string>()
-  for (let i = 0; i < ids.length; i++) {
-    const mst = ids[i]
-    const enforceDate = enfs[i] || ""
+  for (const row of xml.matchAll(/<law(?:\s[^>]*)?>([\s\S]*?)<\/law>/g)) {
+    const block = row[1]
+    const mst = (block.match(/<법령일련번호>(\d+)<\/법령일련번호>/)?.[1] || "").trim()
+    if (!mst) continue
+    const enforceDate = (block.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
+    const promDate = (block.match(/<공포일자>(\d+)<\/공포일자>/)?.[1] || "").trim()
+    const name = (block.match(/<법령명한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명한글>/)?.[1] || "").trim()
     const key = `${mst}:${enforceDate}`
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ mst, enforceDate, promDate: proms[i] || "" })
+    out.push({ mst, enforceDate, promDate, lawName: name })
     if (out.length >= limit) break
   }
   return out.sort((a, b) => (b.enforceDate || "").localeCompare(a.enforceDate || ""))
@@ -2725,6 +2751,117 @@ export function pickVersionInForce(versions: LawVersion[], efYd: string): LawVer
     .filter((v) => v.enforceDate && v.enforceDate <= efYd)
     .sort((a, b) => (b.promDate || "").localeCompare(a.promDate || "") || b.enforceDate.localeCompare(a.enforceDate))
   return cands[0] || null
+}
+
+export function todayYmd(d = new Date()): string {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`
+}
+
+// v0.11.0 — 구버전 조문 회수 시 '후행 개정' 능동 경고.
+// 실측 사고(2026-06-12, 통합고용 조서): get_law_article(year=2025)가 구법(MST 279739)을 반환하며
+// 말미 '최근 시행본' 목록에 신법(MST 286597)을 수동 나열했지만, "이 조문이 후행 개정본에서
+// 변경·삭제됐다"는 조문 단위 능동 신호가 없어 호출자가 '신법 사후관리 별도 확인 필요' hedge로
+// 도피 → §29의8③ 삭제<2025.12.23> 누락. 목록의 수동 나열만으로는 부족하다는 교훈의 구현.
+// currentArticleVerdict: 현행본 같은 조문 자동 대조 결과(공백 무시 비교) — getLawArticle이 계산해 전달.
+export type ArticleDiffVerdict = "same" | "differs" | "missing" | "unknown"
+
+// 조문 대조용 정규화: 수식 이미지 마커는 flSeq(파일 일련번호)가 통합본마다 달라질 수 있어
+// 중립 마커로 치환(동일 수식의 false 'differs' 방지) 후 공백 제거.
+export function normalizeArticleForCompare(t: string): string {
+  return String(t || "").replace(/\[수식이미지→[^\]]*\]/g, "[수식이미지]").replace(/\s+/g, "")
+}
+
+// 법령 XML에서 조문단위 블록을 찾는다. v0.11.0 — 종전 indexOf('<![CDATA[제N조(')는
+// 부칙내용의 bare CDATA(조 단위 분할, '제9조(자기관리…)' 류 1,293개 실측)에 오매칭되어
+// 삭제 조문이 부칙 garbage와 대조되는 결함이 있었다(리뷰 실증). <조문내용> 래퍼로 앵커링해 배제.
+// 전부 삭제된 조문은 '<조문내용><![CDATA[제9조 삭제 <2019.12.31>]]>' 형태(괄호 없음) → deleted로 적극 보고.
+export function findArticleInXml(
+  xml: string,
+  jo: string,
+): { status: "found" | "deleted" | "missing"; block?: string; deletedDate?: string } {
+  const joEsc = jo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const open = new RegExp(`<조문내용>\\s*<!\\[CDATA\\[\\s*${joEsc}\\(`).exec(xml)
+  if (open) {
+    const s = xml.lastIndexOf("<조문단위", open.index)
+    const e = xml.indexOf("</조문단위>", open.index)
+    if (s !== -1 && e !== -1) return { status: "found", block: xml.slice(s, e) }
+    return { status: "missing" } // 구조 파손 — 안전 측으로 미발견 처리
+  }
+  const del = new RegExp(`<조문내용>\\s*<!\\[CDATA\\[\\s*${joEsc}\\s*삭제\\s*<([^>]*)>`).exec(xml)
+  if (del) return { status: "deleted", deletedDate: del[1].trim() }
+  return { status: "missing" }
+}
+export function buildLaterRevisionGuard(opts: {
+  versions: LawVersion[]
+  usedMst: string
+  usedEnforceDate: string
+  today: string // YYYYMMDD
+  jo: string
+  currentArticleVerdict?: ArticleDiffVerdict
+  currentDeletedDate?: string // verdict=missing이면서 현행본에 '삭제 <날짜>' 표기가 확인된 경우
+  hasFormulaImages?: boolean // 대조 본문에 수식 이미지 포함(이미지 내용은 대조 범위 밖)
+}): string[] {
+  const { versions, usedMst, usedEnforceDate, today, jo } = opts
+  if (!versions.length || !usedMst) return []
+  const current = pickVersionInForce(versions, today)
+  // 시행예정(pending): eflaw는 (MST×시행일) 행을 옛 공포본까지 보존하므로 시행일별로
+  // 최신 공포본 행만 채택(superseded 행 혼입 시 건수 과대 + 구버전 텍스트 유도 — 리뷰 실증).
+  const pendingByDate = new Map<string, LawVersion>()
+  for (const v of versions) {
+    if (!v.enforceDate || v.enforceDate <= today) continue
+    const prev = pendingByDate.get(v.enforceDate)
+    if (!prev || (v.promDate || "") > (prev.promDate || "")) pendingByDate.set(v.enforceDate, v)
+  }
+  const pending = [...pendingByDate.values()].sort((a, b) => a.enforceDate.localeCompare(b.enforceDate))
+  const isCurrent = !current || current.mst === usedMst
+  if (isCurrent && pending.length === 0) return []
+  const fmt = (d?: string) => (d ? formatYmd(d) : "?")
+  const lines = ["── 후행 개정 확인 ──"]
+  if (!isCurrent && current) {
+    if (usedEnforceDate && usedEnforceDate > today) {
+      // 공포-미시행본을 의도 조회한 경우 — '구버전' 프레임은 방향이 반대다.
+      lines.push(
+        `ℹ [조문 단위] 조회본은 시행예정본(시행 ${fmt(usedEnforceDate)} — 오늘 ${fmt(today)} 기준 미시행)이다. 현재 시점 결론에는 현행본(시행 ${fmt(current.enforceDate)}, MST ${current.mst})을, 시행일 이후 귀속연도에는 이 본문을 적용하라.`,
+      )
+    } else {
+      lines.push(
+        `⚠ [조문 단위] 조회본(시행 ${fmt(usedEnforceDate)}, MST ${usedMst})은 오늘(${fmt(today)}) 기준 현행본이 아니다 — 현행: 시행 ${fmt(current.enforceDate)}, MST ${current.mst}${current.promDate ? ` (공포 ${fmt(current.promDate)})` : ""}.`,
+      )
+      const verdict = opts.currentArticleVerdict ?? "unknown"
+      if (verdict === "differs") {
+        lines.push(
+          `⚠ ${jo}는 현행본에서 본문이 변경됨(자동 대조 결과 — 삭제·신설 항 포함 가능). 이 구버전 문구로 현재·미래 귀속연도의 결론(요건·단가·사후관리 등)을 단정하지 마라.`,
+          `  → 변경 hunk: diff_article_versions(jo="${jo}", mstA="${usedMst}", mstB="${current.mst}") / 현행 전문: get_law_article(mst="${current.mst}", jo="${jo}", full=true)`,
+        )
+      } else if (verdict === "missing") {
+        lines.push(
+          opts.currentDeletedDate
+            ? `⚠ ${jo}는 현행본(MST ${current.mst})에서 삭제됨(현행본에 "삭제 <${opts.currentDeletedDate}>" 명시). 이 조문의 존재를 전제로 현재·미래 귀속연도 결론을 쓰지 마라.`
+            : `⚠ ${jo}를 현행본(MST ${current.mst})에서 찾지 못함 — 삭제 또는 조문 이동. 확정 전에는 이 조문의 존재를 전제로 결론을 쓰지 마라.`,
+          `  → 1콜 확정: diff_article_versions(jo="${jo}", mstA="${usedMst}", mstB="${current.mst}")(한쪽 부재 시 '조문 전체 신설/삭제' 판정). 삭제 시점·적용시기는 get_law_revision_text·get_law_addenda로 확인.`,
+        )
+      } else if (verdict === "same") {
+        lines.push(
+          `${jo}는 현행본(MST ${current.mst})과 문구 동일(자동 대조 — 변경 없음의 적극 신호). 단, 적용 시기는 부칙이 정한다.${opts.hasFormulaImages ? " 수식 이미지 내용은 대조 범위 밖(이미지 직접 확인 필요)." : ""}`,
+        )
+      } else {
+        lines.push(
+          `⚠ ${jo}의 현행본 대조에 실패 — diff_article_versions(jo="${jo}", mstA="${usedMst}", mstB="${current.mst}")로 변경 여부를 직접 확인하라.`,
+        )
+      }
+    }
+  }
+  if (pending.length) {
+    const shown = pending
+      .slice(0, 4)
+      .map((v) => `시행 ${fmt(v.enforceDate)} | MST ${v.mst}${v.promDate ? ` (공포 ${fmt(v.promDate)})` : ""}`)
+      .join(" / ")
+    lines.push(
+      `${isCurrent ? "ℹ" : "⚠"} [법령 단위 신호 — 이 조문과 무관할 수 있음] 공포-미시행(시행예정) 개정 ${pending.length}건: ${shown}${pending.length > 4 ? " …" : ""}`,
+      `  → 미래 귀속연도 결론 전 이 조문 관련 여부를 diff_article_versions(jo="${jo}", mstA=현행MST, mstB=해당MST)로 확인. 분할시행 행은 그 공포본 텍스트 기준이라 후행 공포본 미반영 가능.`,
+    )
+  }
+  return lines
 }
 
 // 조문단위 블록에서 본문 텍스트 + 수식 이미지(flDownload) URL을 뽑는다. 이미지는 URL 마커로 보존.
@@ -3401,7 +3538,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   return textResponse(truncate(lines.join("\n"), args.full === true ? 80000 : 32000))
 }
 
-async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
+export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
   const jo = requireString("jo", args.jo)
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
   if (!oc) {
@@ -3420,15 +3557,29 @@ async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
   let mst = mstArg
   let versions: LawVersion[] = []
   let pickNote = ""
-  if (lawName && (efYd || !mst)) {
-    versions = await fetchEflawVersions(oc, lawName, 40)
+  if (lawName) {
+    if (!mst) {
+      versions = await fetchEflawVersions(oc, lawName, 40) // 해소에 필수 — 실패 시 호출 실패가 맞다
+    } else {
+      // v0.11.0 — mst 직접 지정이면 버전 목록은 후행 개정 가드 전용(soft-fail: 실패 시 가드만 생략).
+      try {
+        versions = await fetchEflawVersions(oc, lawName, 40)
+      } catch {
+        /* 가드 생략 — 본 응답은 정상 */
+      }
+    }
   }
   if (!mst) {
-    if (efYd && versions.length) {
-      const picked = pickVersionInForce(versions, efYd)
+    const ownVersions = filterVersionsByName(versions, lawName) // 교차법령 행 배제(일치 0건이면 원본)
+    if (efYd && ownVersions.length) {
+      const picked = pickVersionInForce(ownVersions, efYd)
       if (picked) {
         mst = picked.mst
         pickNote = ` (efYd ${efYd} 시점 시행본: 시행 ${formatYmd(picked.enforceDate)})`
+      } else {
+        // v0.11.0 — 최근 40행 윈도우에 efYd 이전 시행본이 없으면 현행본 fallback을 침묵시키지 않는다
+        // (무경고 fallback이 '요청 시점본을 받았다'로 오독되는 역방향 누락 — 리뷰 실증).
+        pickNote = ` (⚠ efYd ${efYd} 시점 시행본을 최근 40행 윈도우에서 찾지 못해 현행본을 반환 — 요청 시점 텍스트 아님. 구버전 MST는 korean-law-mcp search_historical_law로 확보해 mst로 전달하라)`
       }
     }
     if (!mst) mst = await resolveLawMst(oc, lawName)
@@ -3439,19 +3590,77 @@ async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
   const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
   const enforceDate = (xml.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
 
-  const idx = xml.indexOf(`<![CDATA[${jo}(`)
-  if (idx === -1) {
+  // v0.11.0 — 부칙 CDATA 오매칭 배제(<조문내용> 앵커) + 삭제 조문 적극 보고.
+  const lookup = findArticleInXml(xml, jo)
+  if (lookup.status === "deleted") {
     return notFoundResponse(
-      `MST ${mst}(${lawTitle || "?"})에서 ${jo} 본문을 찾지 못했습니다.`,
+      `MST ${mst}(${lawTitle || "?"})에서 ${jo}는 삭제된 조문입니다(본문에 "삭제 <${lookup.deletedDate}>" 명시).${pickNote}`,
+      [
+        "삭제 전 본문은 삭제 이전 시점의 mst를 직접 지정해 조회하세요(구버전 MST는 korean-law-mcp search_historical_law로 확보).",
+        "삭제 시점·적용시기는 get_law_revision_text(개정문)·get_law_addenda(부칙)로 확인하세요.",
+      ],
+    )
+  }
+  if (lookup.status !== "found") {
+    return notFoundResponse(
+      `MST ${mst}(${lawTitle || "?"})에서 ${jo} 본문을 찾지 못했습니다.${pickNote}`,
       [
         "jo 표기를 법령 그대로 맞추세요(예: '제26조의8').",
         "다른 시점이면 efYd(YYYYMMDD)/year 또는 정확한 mst를 지정하세요.",
       ],
     )
   }
-  const s = xml.lastIndexOf("<조문단위", idx)
-  const e = xml.indexOf("</조문단위>", idx)
-  const { text, imageUrls } = extractArticleBody(xml.slice(s, e))
+  const { text, imageUrls } = extractArticleBody(lookup.block || "")
+
+  // v0.11.0 — 후행 개정 능동 가드: 조회본이 오늘 기준 현행본이 아니면 현행본의 같은 조문을
+  // 자동 대조(공백·flSeq 무시)해 변경/삭제/동일을 판정한다. 현행본 XML은 fetchMolegXml 캐시(24h) 공유.
+  const today = todayYmd()
+  // 가드용 버전 목록은 응답 XML의 공식 법령명 기준으로 교차법령 행을 배제하고,
+  // 비었으면(mst 단독 호출 등) 공식 법령명으로 재회수 — '가드 무음 생략 = 현행' 오독 방지.
+  let guardVersions = lawTitle
+    ? versions.filter((v) => v.lawName && lawNameKey(v.lawName) === lawNameKey(lawTitle))
+    : versions
+  if (!guardVersions.length && lawTitle) {
+    try {
+      guardVersions = (await fetchEflawVersions(oc, lawTitle, 40)).filter(
+        (v) => v.lawName && lawNameKey(v.lawName) === lawNameKey(lawTitle),
+      )
+    } catch {
+      /* 가드 생략 */
+    }
+  }
+  let currentArticleVerdict: ArticleDiffVerdict | undefined
+  let currentDeletedDate: string | undefined
+  let hasFormulaImages = text.includes("[수식이미지")
+  const currentVer = guardVersions.length ? pickVersionInForce(guardVersions, today) : null
+  if (currentVer && currentVer.mst !== mst && !(enforceDate && enforceDate > today)) {
+    try {
+      const curUrl = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(currentVer.mst)}&type=XML`
+      const curXml = await fetchMolegXml(curUrl, "법령 조회(현행본 대조)")
+      const found = findArticleInXml(curXml, jo)
+      if (found.status === "found") {
+        const curText = extractArticleBody(found.block || "").text
+        hasFormulaImages = hasFormulaImages || curText.includes("[수식이미지")
+        currentArticleVerdict =
+          normalizeArticleForCompare(curText) === normalizeArticleForCompare(text) ? "same" : "differs"
+      } else {
+        currentArticleVerdict = "missing"
+        currentDeletedDate = found.deletedDate
+      }
+    } catch {
+      currentArticleVerdict = "unknown"
+    }
+  }
+  const revisionGuard = buildLaterRevisionGuard({
+    versions: guardVersions,
+    usedMst: mst,
+    usedEnforceDate: enforceDate,
+    today,
+    jo,
+    currentArticleVerdict,
+    currentDeletedDate,
+    hasFormulaImages,
+  })
 
   const lines = [
     "법제처 조문 본문(시점별) — korean-law 연혁/수식 회수 결함 보완",
@@ -3459,17 +3668,21 @@ async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
     `법령: ${lawTitle || "N/A"} (MST ${mst}) / 시행일 ${enforceDate ? formatYmd(enforceDate) : "?"}${pickNote}`,
     `대상 조문: ${jo}`,
     "⚠ 이 본문은 '이 시점에 시행 중이던' 조문이다. 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙 적용례)로 별도 판정하라.",
+  ]
+  if (revisionGuard.length) lines.push("", ...revisionGuard)
+  lines.push(
     "",
     "── 본문 ──",
     truncate(text, args.full === true ? 16000 : 6000),
-  ]
+  )
   if (imageUrls.length) {
     lines.push("", `── 수식 이미지(${imageUrls.length}) — 다운로드 후 Read 또는 브라우저로 확인 ──`)
     imageUrls.forEach((u) => lines.push(u))
   }
-  if (versions.length) {
+  const footerVersions = guardVersions.length ? guardVersions : versions // 교차법령 행 배제본 우선
+  if (footerVersions.length) {
     lines.push("", "── 최근 시행본(시점 선택용: efYd/mst) ──")
-    versions.slice(0, args.full === true ? 20 : 8).forEach((v) => lines.push(`시행 ${formatYmd(v.enforceDate)} | MST ${v.mst}`))
+    footerVersions.slice(0, args.full === true ? 20 : 8).forEach((v) => lines.push(`시행 ${formatYmd(v.enforceDate)} | MST ${v.mst}`))
   }
   return textResponse(truncate(lines.join("\n"), args.full === true ? 30000 : 14000))
 }
@@ -3667,12 +3880,16 @@ const DIFF_KIND_LABEL: Record<ChangeKind, string> = {
 }
 
 // 조문 본문에서 특정 항(①~⑳) 블록만 절단. 못 찾으면 전체 본문 유지(found=false).
-function sliceHangBlock(text: string, hang: string): { text: string; found: boolean } {
+// 직렬화 본문은 항번호+항내용 CDATA 결합으로 마커가 "⑥⑥"처럼 중복된다 — 선두 마커 연속
+// 구간을 건너뛰지 않으면 두 번째 마커에서 즉시 절단돼 양쪽 모두 "⑥"만 남아 거짓 '변경 없음'이 된다.
+export function sliceHangBlock(text: string, hang: string): { text: string; found: boolean } {
   const sym = hangToSymbol(hang)
   if (!sym) return { text, found: false }
   const idx = text.indexOf(sym)
   if (idx === -1) return { text, found: false }
-  const rest = text.slice(idx + sym.length)
+  let bodyStart = idx + sym.length
+  while (text.startsWith(sym, bodyStart)) bodyStart += sym.length
+  const rest = text.slice(bodyStart)
   const next = rest.search(/[①-⑳]/)
   return { text: sym + (next === -1 ? rest : rest.slice(0, next)), found: true }
 }

@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.11.0] - 2026-06-12
+
+### Added — `get_law_article` 후행 개정 능동 가드 (`src/index.ts`)
+배경(사용자 실측, 통합고용 조서): get_law_article(조특법 §29의8, year=2025)가 구법(MST 279739, 시행 2025.11.11)을 반환하면서 말미 '최근 시행본' 목록에 신법(MST 286597, 시행 2026.6.2)을 **수동 나열만** 했고, "이 조문이 후행 개정본에서 변경·삭제됐다"는 조문 단위 능동 신호가 없었다. 호출자는 신법을 조회하지 않은 채 "신법 사후관리 규정은 별도 확인 필요" hedge로 도피 → §29의8③ 삭제<2025.12.23>(신법 사이클 추징 없음) 사실이 산출물에서 누락. 사후 검증 비용은 단 1콜(약 1.5초)이었다 — 수동 목록 나열은 hedge 도피를 막지 못한다는 교훈의 구현.
+- `buildLaterRevisionGuard()` (순수함수, export): eflaw 버전 목록 + 조회본 MST + 오늘 날짜로 ① 조회본이 현행본이 아니면 "── 후행 개정 확인 (조문 단위) ──" 경고 블록 생성(현행 MST·공포일 명기 + 다음 행동을 도구·파라미터로 직접 지시) ② 공포됐으나 미시행(시행예정) 개정 존재 시 별도 경고(시행일 | MST 목록).
+- 조문 단위 자동 대조: 조회본 ≠ 현행본이면 현행본 XML(fetchMolegXml 24h 캐시 공유)에서 같은 조문을 추출해 공백 무시 비교 → `differs`(변경 — diff_article_versions 지시) / `missing`(삭제·이동 가능) / `same`(변경 없음의 적극 신호) / `unknown`(대조 실패 — 직접 확인 지시) 4분기. soft-fail: 대조 실패해도 본 응답 정상.
+- mst 직접 지정 호출도 lawName이 있으면 가드용 버전 목록을 try/catch로 회수(실패 시 가드만 생략).
+- 서버 INSTRUCTIONS에 "[구버전 조문 현행성 — 후행 개정 강제 절차]" 신설(+서두 1줄 포인터 — 클라이언트 truncation 대비): 경고 블록 무시 금지 + "확인 비용은 1콜 — '별도 확인 필요' hedge로 결론 대체 금지". 도구 description에도 동일 명시(응답 데이터 레이어 + 행동 레이어 이중화, ADMIN_RULE_STALE_NOTICE 패턴).
+- `todayYmd()` export(로컬 시간 YYYYMMDD), `getLawArticle` export(라이브 검증용).
+
+### Fixed — 적대적 리뷰(3렌즈: 정합성·회귀·행동유도력) 검출분 동일 릴리스 반영
+- **교차법령 오염(라이브 실증)**: eflaw lawSearch는 이름이 '포함'된 모든 법령(시행령 등)을 반환 — 이력이 적은 법령은 타법 행이 섞여 시행령을 '현행본'으로 오판, 거짓 "변경됨" 경고(실증: 가상자산법 §10 ↔ 시행령). → fetchEflawVersions를 행(law 요소) 단위 파싱으로 전환(3-pass index-zip 위험 제거)해 `법령명한글` 캡처, `filterVersionsByName`(공백 무시 정확 일치, 0건이면 원본 보존)으로 efYd 해소·가드·푸터 모두 자기 법령 행만 사용. 가드용 목록은 응답 XML의 공식 법령명 기준 + 비었으면 재회수 — **mst 단독 호출도 가드 부착**(무음 생략='현행' 오독 방지).
+- **삭제 조문 부칙 garbage 대조(라이브 실증)**: `indexOf('<![CDATA[제N조(')`가 부칙내용의 bare CDATA(제목형 시작 1,293개 실측)에 오매칭 + `</조문단위>` 미발견(-1) 무가드 → 삭제 조문이 부칙 39만자와 대조되어 differs 오판. → `findArticleInXml()` 신설: `<조문내용>` 앵커 regex(공백 변형 허용)로 부칙 배제, '제N조 삭제 <날짜>' 형태를 deleted로 적극 보고(본 응답 경로도 "삭제된 조문입니다" 메시지로 개선 — 0.9.18부터 잠복하던 garbage 본문 반환 해소).
+- **pending(시행예정) 목록 과대·구버전 유도**: (MST×시행일) 행이 옛 공포본까지 보존돼 8건 과대 보고 + superseded MST 확인 유도. → 시행일별 최신 공포본만 dedup(8→4건), 각 행에 공포일 병기, 자기모순 지시 'efYd=시행일' 제거(promDate tie-break상 분할시행 미래 행은 efYd로 도달 불가), diff_article_versions 확인 경로로 교체.
+- **diff_article_versions 파라미터 오기**: 가드가 존재하지 않는 mst1/mst2를 지시(실제 스키마 mstA/mstB, additionalProperties:false) — '1콜 확인'이 첫 시도에 반드시 실패. → mstA/mstB로 정정 + 회귀 테스트(mst1/mst2 부재 assert).
+- **윈도우 밖 year 무음 fallback(라이브 실증)**: year=2018처럼 40행 윈도우보다 과거면 경고 없이 현행본 반환 — '가드 침묵=요청 시점본' 역방향 오독. → pickNote에 "⚠ … 윈도우에서 찾지 못해 현행본을 반환 — 요청 시점 텍스트 아님" 강제 삽입(NOT_FOUND 경로 포함).
+- **시행예정본 의도 조회 방향 역전**: 미래본 조회에 '구버전' 프레임 경고가 붙던 분기 → ℹ "시행일 이후 귀속연도에는 이 본문을 적용" 안내로 교체.
+- **alarm fatigue 완화**: 헤더에서 '(조문 단위)' 과잉 주장 제거, verdict 줄 [조문 단위]·pending 줄 [법령 단위 신호 — 이 조문과 무관할 수 있음] 라벨 분리, 현행본 조회 시 pending은 ⚠→ℹ. missing 분기에 1콜 확정 경로 추가(금지+무경로 조합이 hedge를 유발하는 패턴 차단). same+수식 이미지 시 "수식 내용은 대조 범위 밖" 단서. INSTRUCTIONS 앵커 문구를 응답 verbatim과 정렬 + "대조에 실패" 4호 추가.
+- **VERSION 상수 0.10.1→0.11.0 동기화**(serverInfo·User-Agent 자기보고).
+
+### Tested
+- `test/utils.test.js` 신규 10블록(무경고/실측 사고 재현(differs·mstA/mstB)/missing·deleted·same·unknown/ℹ pending·dedup·efYd 지시 제거/시행예정본 의도 조회/filterVersionsByName 교차법령/findArticleInXml 부칙 오매칭·삭제/normalizeArticleForCompare flSeq/todayYmd) — 전체 183건 통과.
+- 라이브 7케이스: ① §29의8 year=2025 → differs+mstA/mstB ② 현행 → ℹ pending 4건 ③ §1 무변경 → same ④ 가상자산법 mst 지정 → 거짓 경고 없음 ⑤ §9 현행 → "삭제된 조문(삭제 <2019.12.31>)" ⑥ §9 year=2018 → fallback ⚠ 명시 ⑦ mst 단독 → 가드 부착.
+
+## [0.10.1] - 2026-06-11
+
+### Fixed — `diff_article_versions` hang(항 지정) 거짓 '변경 없음' (`src/index.ts`)
+배경(사용자 실측): 통합고용세액공제 3개년 리뷰에서 hang 지정 diff 4건(조특령 §26의8 제2·3·6항, §11의2 제8항)이 전부 "✅ 변경 없음"을 반환 — 같은 MST쌍의 조 단위 diff는 실질 hunk 다수. "변경 없음=무개정 적극 신호" 안내와 결합하면 무개정 오판을 적극 유도하는 거짓 음성.
+- 원인: DRF 조문 직렬화가 항번호+항내용 CDATA 결합으로 항 마커를 "⑥⑥"처럼 중복 출력하는데, `sliceHangBlock`이 첫 마커 직후의 다음 원문자(=두 번째 "⑥")에서 즉시 절단 → 블록이 "⑥" 1자 → 양쪽 동일 → identical 판정(found=true라 경고도 없음).
+- 수정: 선두 마커 연속 구간을 건너뛴 뒤 다음 항 마커를 탐색. 단일 마커 본문은 종전 동작 유지. `sliceHangBlock` export(회귀 테스트용).
+
+### Tested
+- `test/timetable.test.js` 신규 3건(중복 마커 회귀 / 단일 마커 호환 / 미존재 항 found=false+전체 유지). `npm test` 전체 173건 통과.
+- 라이브: §26의8 hang=제6항(2025↔2026.2.27) → "변경 없음"(버그) 대신 실질 hunk 1건(총량식→제11조의2제8항 준용) / §11의2 hang=제8항(2.27↔5.22) → ⑧ 범위 hunk 7건(절사위치 "수(…)의 합"→"수의 합(…)") — 조 단위 결과와 정합.
+
 ## [0.9.22] - 2026-06-11
 
 ### Added — 개정문(개정 지시문 원문) 조회 `get_law_revision_text` (`src/index.ts`)

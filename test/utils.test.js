@@ -17,6 +17,12 @@ const {
   tokenizeQuery,
   matchesAllTokens,
   detectHoldingTruncation,
+  buildLaterRevisionGuard,
+  normalizeArticleForCompare,
+  findArticleInXml,
+  filterVersionsByName,
+  lawNameKey,
+  todayYmd,
   parseLawAddenda,
   extractCdataText,
   classifyApplicationClause,
@@ -449,6 +455,141 @@ test("pickVersionInForce: 기준일에 시행 중이던 버전(시행일 ≤ 기
   assert.equal(pickVersionInForce(vs, "20251231").mst, "B") // 2025 말 → 2025.11.28본
   assert.equal(pickVersionInForce(vs, "20261231").mst, "C") // 2026 말 → 2026.2.27본
   assert.equal(pickVersionInForce(vs, "20240101"), null) // 그 이전 버전 없음
+})
+
+test("buildLaterRevisionGuard: 현행본 조회 + 시행예정 없음 → 무경고", () => {
+  const vs = [
+    { mst: "B", enforceDate: "20251111", promDate: "20251111" },
+    { mst: "A", enforceDate: "20250101", promDate: "20241231" },
+  ]
+  assert.deepEqual(
+    buildLaterRevisionGuard({ versions: vs, usedMst: "B", usedEnforceDate: "20251111", today: "20260612", jo: "제29조의8" }),
+    [],
+  )
+  // versions 미회수(빈 배열) → 가드 생략(soft-skip)
+  assert.deepEqual(
+    buildLaterRevisionGuard({ versions: [], usedMst: "B", usedEnforceDate: "20251111", today: "20260612", jo: "제29조의8" }),
+    [],
+  )
+})
+
+test("buildLaterRevisionGuard: 구버전 조회 + 조문 변경 감지 → 능동 경고(실측 사고 재현 케이스)", () => {
+  // 2026-06-12 실측: year=2025 → MST 279739(시행 2025.11.11) 반환, 현행은 MST 286597(시행 2026.6.2, §29의8③ 삭제)
+  const vs = [
+    { mst: "286597", enforceDate: "20260602", promDate: "20260602" },
+    { mst: "279739", enforceDate: "20251111", promDate: "20251111" },
+  ]
+  const out = buildLaterRevisionGuard({
+    versions: vs, usedMst: "279739", usedEnforceDate: "20251111", today: "20260612",
+    jo: "제29조의8", currentArticleVerdict: "differs",
+  })
+  assert.ok(out[0].includes("── 후행 개정 확인"))
+  assert.ok(out.some((l) => l.includes("현행본이 아니다") && l.includes("286597")))
+  assert.ok(out.some((l) => l.includes("본문이 변경") && l.includes("단정하지 마라")))
+  // diff_article_versions 실제 스키마는 mstA/mstB (mst1/mst2 아님 — 리뷰 검출 회귀 방지)
+  assert.ok(out.some((l) => l.includes("diff_article_versions") && l.includes('mstA="279739"') && l.includes('mstB="286597"')))
+  assert.ok(!out.some((l) => l.includes("mst1=") || l.includes("mst2=")))
+})
+
+test("buildLaterRevisionGuard: missing(삭제·이동)/deleted(날짜 명시)/same(동일)/대조 실패 분기", () => {
+  const vs = [
+    { mst: "NEW", enforceDate: "20260101", promDate: "20251223" },
+    { mst: "OLD", enforceDate: "20250101", promDate: "20241231" },
+  ]
+  const base = { versions: vs, usedMst: "OLD", usedEnforceDate: "20250101", today: "20260612", jo: "제10조" }
+  const missing = buildLaterRevisionGuard({ ...base, currentArticleVerdict: "missing" })
+  assert.ok(missing.some((l) => l.includes("찾지 못함") && l.includes("삭제 또는 조문 이동")))
+  assert.ok(missing.some((l) => l.includes("1콜 확정") && l.includes("diff_article_versions"))) // 금지+무경로 조합 방지
+  const deleted = buildLaterRevisionGuard({ ...base, currentArticleVerdict: "missing", currentDeletedDate: "2019.12.31" })
+  assert.ok(deleted.some((l) => l.includes("삭제됨") && l.includes("2019.12.31")))
+  const same = buildLaterRevisionGuard({ ...base, currentArticleVerdict: "same", hasFormulaImages: true })
+  assert.ok(same.some((l) => l.includes("문구 동일") && l.includes("적극 신호") && l.includes("수식 이미지 내용은 대조 범위 밖")))
+  // verdict 미전달(대조 실패) → 직접 확인 지시
+  assert.ok(buildLaterRevisionGuard(base).some((l) => l.includes("대조에 실패") && l.includes("diff_article_versions")))
+})
+
+test("buildLaterRevisionGuard: 현행본 조회여도 공포-미시행(시행예정) 개정 존재 시 ℹ 법령 단위 경고", () => {
+  // 실측 데이터 형태: 조특법 MST 280409(공포 2025.12.23)가 시행 2026.7.1/2027.1.1로 분할 수록
+  const vs = [
+    { mst: "X27", enforceDate: "20270101", promDate: "20251223" },
+    { mst: "X26", enforceDate: "20260701", promDate: "20251223" },
+    { mst: "CUR", enforceDate: "20260602", promDate: "20260602" },
+  ]
+  const out = buildLaterRevisionGuard({ versions: vs, usedMst: "CUR", usedEnforceDate: "20260602", today: "20260612", jo: "제29조의8" })
+  assert.ok(out[0].includes("── 후행 개정 확인"))
+  assert.ok(out.some((l) => l.startsWith("ℹ") && l.includes("공포-미시행(시행예정) 개정 2건") && l.includes("법령 단위")))
+  assert.ok(out.some((l) => l.includes("시행 2026.7.1") && l.includes("X26") && l.includes("공포 2025.12.23")))
+  assert.ok(out.some((l) => l.includes("미래 귀속연도 결론 전")))
+  // 현행본이 아니라는 오경고는 없어야 함
+  assert.ok(!out.some((l) => l.includes("현행본이 아니다")))
+})
+
+test("buildLaterRevisionGuard: pending은 시행일별 최신 공포본만(superseded 옛 통합본 행 배제 — 리뷰 검출)", () => {
+  // 실측: 시행 2027.1.1 행이 5개 MST로 중복(280409=2025.12.23 공포가 최신, 나머지는 옛 공포본)
+  const vs = [
+    { mst: "212779", enforceDate: "20270101", promDate: "20191231" },
+    { mst: "280409", enforceDate: "20270101", promDate: "20251223" },
+    { mst: "267555", enforceDate: "20270101", promDate: "20241231" },
+    { mst: "CUR", enforceDate: "20260602", promDate: "20260602" },
+  ]
+  const out = buildLaterRevisionGuard({ versions: vs, usedMst: "CUR", usedEnforceDate: "20260602", today: "20260612", jo: "제29조의8" })
+  assert.ok(out.some((l) => l.includes("개정 1건") && l.includes("280409"))) // 3행 → 1건(최신 공포본)
+  assert.ok(!out.some((l) => l.includes("212779") || l.includes("267555"))) // 옛 공포본 미노출
+  assert.ok(!out.some((l) => l.includes("efYd=시행일"))) // 자기모순 지시 제거(분할시행은 efYd로 도달 불가)
+})
+
+test("buildLaterRevisionGuard: 시행예정본을 의도 조회 → '구버전' 프레임 대신 ℹ 적용 방향 안내(리뷰 검출)", () => {
+  const vs = [
+    { mst: "FUT", enforceDate: "20270101", promDate: "20251223" },
+    { mst: "CUR", enforceDate: "20260602", promDate: "20260602" },
+  ]
+  const out = buildLaterRevisionGuard({ versions: vs, usedMst: "FUT", usedEnforceDate: "20270101", today: "20260612", jo: "제29조의8" })
+  assert.ok(out.some((l) => l.startsWith("ℹ") && l.includes("시행예정본") && l.includes("시행일 이후 귀속연도에는 이 본문을 적용")))
+  assert.ok(!out.some((l) => l.includes("현행본이 아니다") || l.includes("단정하지 마라")))
+})
+
+test("lawNameKey/filterVersionsByName: 교차법령(시행령) 행 배제, 일치 0건이면 원본 보존(리뷰 검출)", () => {
+  const vs = [
+    { mst: "1", enforceDate: "20250423", promDate: "20250422", lawName: "가상자산 이용자 보호 등에 관한 법률 시행령" },
+    { mst: "2", enforceDate: "20240719", promDate: "20230718", lawName: "가상자산 이용자 보호 등에 관한 법률" },
+  ]
+  const own = filterVersionsByName(vs, "가상자산 이용자 보호 등에 관한 법률")
+  assert.equal(own.length, 1)
+  assert.equal(own[0].mst, "2") // 시행령 행 배제 — 시행령을 '현행본'으로 오판하던 결함
+  assert.equal(filterVersionsByName(vs, "전혀 다른 법").length, 2) // 일치 0건 → 원본(기존 동작 보존)
+  assert.equal(lawNameKey("조세특례제한법  시행령"), "조세특례제한법시행령")
+})
+
+test("findArticleInXml: 본문/삭제/부칙 오매칭 배제(리뷰 검출 — 부칙 bare CDATA에 제목형 시작 패턴 존재)", () => {
+  const xml = [
+    '<조문단위><조문내용><![CDATA[제8조(다른 조문)]]></조문내용></조문단위>',
+    '<조문단위><조문내용><![CDATA[제9조 삭제 <2019.12.31>]]></조문내용></조문단위>',
+    '<조문단위><조문내용><![CDATA[제10조(존치 조문)]]><항내용><![CDATA[① 내용]]></항내용></조문단위>',
+    '<부칙단위><부칙내용><![CDATA[제9조(자기관리 부동산투자회사 등에 대한 과세특례) 부칙 본문…]]></부칙내용></부칙단위>',
+  ].join("\n")
+  const found = findArticleInXml(xml, "제10조")
+  assert.equal(found.status, "found")
+  assert.ok(found.block.includes("존치 조문"))
+  const del = findArticleInXml(xml, "제9조") // 부칙 CDATA의 '제9조(…' 에 오매칭되면 안 됨
+  assert.equal(del.status, "deleted")
+  assert.equal(del.deletedDate, "2019.12.31")
+  assert.equal(findArticleInXml(xml, "제99조").status, "missing")
+  // 제10조 탐색이 제100조류에 오매칭되지 않는지
+  const xml2 = '<조문단위><조문내용><![CDATA[제100조(다른 조)]]></조문내용></조문단위>'
+  assert.equal(findArticleInXml(xml2, "제10조").status, "missing")
+})
+
+test("normalizeArticleForCompare: flSeq 상이한 동일 수식은 동일 판정, 실질 변경은 검출", () => {
+  const a = "① 계산식 [수식이미지→https://www.law.go.kr/DRF/flDownload.do?flSeq=111] 에 따른다."
+  const b = "① 계산식  [수식이미지→https://www.law.go.kr/DRF/flDownload.do?flSeq=999] 에\n따른다."
+  assert.equal(normalizeArticleForCompare(a), normalizeArticleForCompare(b)) // flSeq·공백 차이는 무시
+  const c = "① 계산식 [수식이미지→…flSeq=111] 에 따르되, 단서를 둔다."
+  assert.notEqual(normalizeArticleForCompare(a), normalizeArticleForCompare(c)) // 실질 변경은 검출
+})
+
+test("todayYmd: YYYYMMDD 로컬 포맷", () => {
+  assert.equal(todayYmd(new Date(2026, 5, 12)), "20260612") // month는 0-base
+  assert.equal(todayYmd(new Date(2026, 0, 3)), "20260103")
 })
 
 test("extractArticleBody: 수식 이미지 URL 회수 + 본문에 URL 마커", () => {
