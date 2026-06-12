@@ -22,6 +22,7 @@ const {
   findArticleInXml,
   filterVersionsByName,
   lawNameKey,
+  extractNtsCitations,
   todayYmd,
   parseLawAddenda,
   extractCdataText,
@@ -518,8 +519,10 @@ test("buildLaterRevisionGuard: 현행본 조회여도 공포-미시행(시행예
   const out = buildLaterRevisionGuard({ versions: vs, usedMst: "CUR", usedEnforceDate: "20260602", today: "20260612", jo: "제29조의8" })
   assert.ok(out[0].includes("── 후행 개정 확인"))
   assert.ok(out.some((l) => l.startsWith("ℹ") && l.includes("공포-미시행(시행예정) 개정 2건") && l.includes("법령 단위")))
-  assert.ok(out.some((l) => l.includes("시행 2026.7.1") && l.includes("X26") && l.includes("공포 2025.12.23")))
-  assert.ok(out.some((l) => l.includes("미래 귀속연도 결론 전")))
+  // v0.12.0 — 현행본 조회의 상시 신호는 1줄 압축(최단 시행분만 표기)
+  assert.ok(out.some((l) => l.includes("시행 2026.7.1") && l.includes("X26")))
+  assert.ok(out.some((l) => l.includes("미래 귀속 결론 전") && l.includes("diff_article_versions")))
+  assert.equal(out.filter((l) => l.includes("공포-미시행")).length, 1)
   // 현행본이 아니라는 오경고는 없어야 함
   assert.ok(!out.some((l) => l.includes("현행본이 아니다")))
 })
@@ -585,6 +588,29 @@ test("normalizeArticleForCompare: flSeq 상이한 동일 수식은 동일 판정
   assert.equal(normalizeArticleForCompare(a), normalizeArticleForCompare(b)) // flSeq·공백 차이는 무시
   const c = "① 계산식 [수식이미지→…flSeq=111] 에 따르되, 단서를 둔다."
   assert.notEqual(normalizeArticleForCompare(a), normalizeArticleForCompare(c)) // 실질 변경은 검출
+})
+
+test("extractNtsCitations: 해석례 신형/구형/부서형·심판례·법원·기본통칙 추출 + 일반어 오탐 차단 + dedup", () => {
+  const text = [
+    "서면-2024-법규부가-4804 및 서면-2024-법규부가-4804(중복)에 따르면,",
+    "부가46015-2833(1997)과 서면법규과-1284도 참조. 기획재정부 부가가치세제과-456 회신.",
+    "조심2013서1471, 국심2005서1234 및 대법원 2021두39997, 수원고법 2023누15045 판결.",
+    "부가가치세법 기본통칙 10-0-5(옛 표기) 및 기본통칙 10-0…5.",
+    "검토 결과-12건이 나왔고 업무 성과-3을 기록했다.", // 오탐 차단 대상
+  ].join("\n")
+  const cits = extractNtsCitations(text)
+  const raws = cits.map((c) => c.raw)
+  assert.equal(raws.filter((r) => r.includes("법규부가")).length, 1) // dedup
+  assert.ok(raws.includes("부가46015-2833"))
+  assert.ok(raws.includes("서면법규과-1284"))
+  assert.ok(raws.includes("부가가치세제과-456"))
+  assert.ok(raws.includes("조심2013서1471") && raws.includes("국심2005서1234"))
+  assert.ok(raws.includes("2021두39997") && raws.includes("2023누15045"))
+  assert.equal(cits.filter((c) => c.kind === "basic_rule").length, 2)
+  assert.ok(!raws.some((r) => r.includes("결과") || r.includes("성과"))) // 일반어 '결과-12' 차단
+  const court = cits.find((c) => c.raw === "2021두39997")
+  assert.equal(court.kind, "court")
+  assert.equal(court.normalized, "2021두39997")
 })
 
 test("todayYmd: YYYYMMDD 로컬 포맷", () => {

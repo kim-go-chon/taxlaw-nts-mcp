@@ -34,7 +34,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.11.0"
+const VERSION = "0.12.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -51,77 +51,27 @@ const ADMIN_RULE_STALE_NOTICE =
   "현행본은 법제처 국가법령정보센터 행정규칙에서 교차 확인하세요: korean-law-mcp.discover_tools(intent=\"행정규칙\") → search_admin_rule(knd=\"1\"훈령/\"2\"예규/\"3\"고시) → get_admin_rule. " +
   "공포일·시행일·문서번호가 NTS 결과와 다르면 법제처 현행본을 1차로 채택하세요."
 
-const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 자료를 검색·조회한다.
-세법·법령 질의에서 korean-law-mcp(법제처 Open API)와 항상 짝으로 호출한다.
-★ get_law_article 응답의 "── 후행 개정 확인" 블록(⚠)은 무시 금지 — 절차는 말미 [구버전 조문 현행성] 참조.
+// v0.12.0 — 치명도순 재배치: 호스트가 instructions를 ~2,000자 부근에서 절단하는 실측에 따라
+// 환각 방지 강제 절차를 앞에, 응답 포맷·워크플로를 뒤에 둔다. 내용은 압축만, 의미 변경 없음.
+const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 자료를 검색·조회한다. 세법·법령 질의에서 korean-law-mcp(법제처)와 짝으로 호출한다. 분담: 현행 조문·법원 판례 전문·행정규칙 현행본=korean-law 1차 / 해석례·기본통칙·시점본(year/efYd)·부칙·조문 diff·심판례 검색=본 MCP 1차. ⚠ 계산식이 든 조문(조특법 고용공제류 등)은 korean-law get_law_text가 수식을 무언 누락하므로 본 MCP get_law_article(full=true)을 반드시 동반.
 
-[필수 응답 구조 — 5단]
-사용자에게 보낼 답변은 아래 5단을 순서대로 출력. 섹션 간 내용 섞기 금지.
-단순 사실 1~2문장 단답형 질문은 생략 가능.
+[강제 절차 — 응답 내 ⚠ 무시 금지]
+1. 후행 개정(get_law_article): "── 후행 개정 확인" 블록의 "본문이 변경"/"삭제됨"/"찾지 못함" → 결론(요건·단가·사후관리 등) 작성 전에 제시된 diff_article_versions(mstA/mstB) 또는 현행본 get_law_article(mst=현행MST, full=true) 1콜로 직접 확인. "공포-미시행(시행예정)" → 미래 귀속 결론 전 해당 시행본의 이 조문 변경 여부 확인. "대조에 실패" → 제시된 호출을 그대로 수행. 확인 비용은 1콜 — "별도 확인 필요" 류 hedge로 결론 대체 금지(검증깊이 미루기 금지).
+2. 연도 검증: 특정 귀속연도 질문이면 get_taxlaw_document_text(targetYear=YYYY) 필수. 구법조문 기반 예규는 ⚠ 사문화 가능성 경고 동봉.
+3. 기본통칙: 해석례 본문 속 "기본통칙 N-N"은 옛 번호 — 그대로 옮기지 말고 list_taxlaw_basic_ruling_laws→get_taxlaw_basic_ruling_text(주제 키워드로 인접 번호대 일괄 수집)로 현행 번호("N-N…M") 확인. 미확인 시 "현행 번호 미확인" ⚠ 표기, 통칙 도구 NOT_FOUND면 통칙 인용 제거.
+4. 행정규칙(훈령·예규·고시·지침) stale: NTS 컬렉션은 개정 후 갱신 지연 가능 — korean-law discover_tools(intent="행정규칙")→search_admin_rule(knd 1훈령/2예규/3고시)→get_admin_rule로 현행본 1차 확인, 공포일·시행일·문서번호 3종 대조 후 다르면 법제처 채택(search_law는 행정규칙 NOT_FOUND).
+5. NOT_FOUND: [RETRY_CANDIDATES] L1(쿼리 조정)→L2(도구 변경)→L3(외부 MCP) 순 재시도. 판례·심판례는 두 MCP 모두 NOT_FOUND여도 공개DB 미수록일 수 있음 — "미존재/할루시네이션" 단정 금지, 외부 교차확인 전까지 "공개DB 미발견"까지만 기재.
+6. 인용 실존 검증: 산출물(문서·표)에 해석례·심판례·판례 번호를 인용하기 전 verify_nts_citations(text)로 일괄 실존 확인.
 
-## 결론 (요지)
-- 사용자 이해와 어긋나면 맨 앞에서 명시
-- 핵심 판정·조치를 1~2문장으로
+[적용시기 — 타임테이블 우선] 귀속연도가 제시된 법령·세액공제 질문은 본문 단정 전에 build_application_timetable(다조문×다연도) 또는 trace_article_application(단일 조문)부터. 해석 공리: ①신구 문구 나란히 대조(단일 시점본 단정 금지) ②부칙 "개정규정"=그 개정령이 실제 바꾼 문구 단위만 ③경과조치는 자기 개정령만 사정거리 ④후행·특정 적용례>일반 경과조치 ⑤적극 문언 우선(fallback 창작 금지) ⑥서식·별지<부칙·법령 문언. 적용례 anchor가 '최초공제연도'·'신고시점'형이면 차수(1차/추가공제)·신고시점을 사용자에게 질문(통합고용 §29의8 등 다년 사이클은 귀속연도만으로 판정 불가).
 
-## 매트릭스 (케이스별 처리)
-- 분기 기준(소득구성·신고유형·거래유형 등)을 표(table)로 정리
-- 각 행에 결론 + 근거 법령 함께 표기
+[표준 워크플로] 키워드 추출 → korean-law search_law+get_law_text(법률·시행령 1차 권위) → 본 MCP search_taxlaw_all/search_taxlaw_documents(해석례·통칙 보완) → 인용 전 연도 검증 → 5단 응답.
 
-## 법령 래퍼 (Citation) — 출처별 분리
-(1) 법률 — korean-law-mcp.get_law_text 결과 (예: 소득세법 §27)
-(2) 시행령/시행규칙 — MST·시행일 명시
-(3) 기본통칙 — list/get_taxlaw_basic_ruling 또는 본문 인용
-(4) 국세청 해석례 / 심판례 / 판례 — 문서번호·일자·핵심 인용문
+[응답 5단] ①결론(요지 1~2문장) ②매트릭스(케이스별 표 — 행마다 결론+근거 법령) ③법령 래퍼(법률/시행령/기본통칙/해석례·심판례·판례 — 문서번호·일자·인용문, 출처별 분리) ④AI 보충 해석(⚠ 미검증 표시, ①~③과 섞기 금지) ⑤"인용 본문을 더 부착해드릴까요?" 1줄. 빈 섹션도 헤더 유지+"검색 결과 없음"(추측·생성 금지). 단답형은 5단 생략 가능.
 
-## AI 보충 해석 (⚠ 검증되지 않음)
-- LLM 자체 지식·실무 팁은 위 1~3섹션과 섞지 말고 별도 단락
-- ⚠ 경고 표시 필수
+[중복 처리] 두 MCP 동일 사건은 문서번호(공백·하이픈 제거)/생산일자/제목 기준 병합 + 양쪽 출처 ID 병기.
 
-## 인용 prompt 1줄
-- "인용 본문을 더 부착해드릴까요? '예' 답변 시 본문 부착"
-
-[출처 격리] (1)~(4)는 검증된 출처. 섹션 내용을 다른 섹션과 섞지 말 것.
-[빈 결과 처리] 빈 섹션도 헤더 유지 + "검색 결과 없음" 표기. 추측·생성 금지.
-[NOT_FOUND 자가복구] 응답에 [RETRY_CANDIDATES] 블록이 있으면 L1(쿼리 조정) → L2(도구 변경) → L3(외부 MCP) 순서대로 재시도. L1만으로 회수되면 L2/L3 생략.
-
-[표준 워크플로]
-1. 키워드 추출
-2. korean-law-mcp.search_law + get_law_text로 법률·시행령 조회 (1차 권위)
-3. 본 MCP의 search_taxlaw_all 또는 search_taxlaw_documents로 해석례·통칙·발간책자 보완
-4. 해석례 인용 시 get_taxlaw_document_text(targetYear=YYYY)로 연도 검증 필수
-5. 5단 포맷으로 응답 작성
-
-[법령 적용시기 — 타임테이블 우선]
-사용자가 귀속연도를 제시한 법령·세액공제 질문은 본문 단정 전에 build_application_timetable(다조문×다연도) 또는 trace_article_application(단일 조문)로 신구버전·부칙 타임테이블부터 생성한다.
-해석 공리: ① 신구 문구 나란히 대조(단일 시점본 단정 금지) ② 부칙의 "개정규정"=그 개정령이 실제 바꾼 문구 단위만(타 개정령 신설분은 그쪽 부칙 관할) ③ 경과조치는 자기 개정령 개정규정만 사정거리(미래 개정 선제유예 불가) ④ 후행·특정 적용례 > 일반 경과조치 ⑤ 적극 문언 우선(문언에 없는 fallback 창작 금지) ⑥ 서식·별지 작성방법 < 부칙·법령 문언.
-적용례 anchor가 '최초공제연도'·'신고시점'형이면 답변 전에 사용자에게 차수(1차공제/추가공제)·신고시점을 질문한다(다년 사이클 공제: 통합고용 §29의8, 구 고용증대 §29의7 등은 귀속연도만으로 판정 불가).
-
-[중복 처리] 두 MCP 양쪽에서 회수된 동일 사건은 문서번호(공백·하이픈 제거)/생산일자/제목으로 합치고 양쪽 출처 ID 병기.
-
-[연도 검증] 사용자가 특정 연도(예: 2025년 귀속) 적용 여부를 확인하려는 경우 get_taxlaw_document_text에 targetYear 필수. 구법조문 기반 예규는 ⚠ 사문화 가능성 경고 동봉.
-
-[기본통칙 인용 검증 — 환각·누락 방지 강제 절차]
-질의회신·해석례 본문에 인용된 "기본통칙 N-N" 표기는 옛 번호일 가능성이 높다(통칙 번호 체계가 "N-N…M" 형식으로 재편됨). 그대로 답변에 옮기지 말 것. 다음 절차를 반드시 수행:
-1. get_taxlaw_document_text 응답의 "⚠ 통칙 인용 검증 필요" 안내를 무시하지 말 것. 안내가 있으면 답변 작성 전에 아래 2~4단계 실행.
-2. list_taxlaw_basic_ruling_laws(query="해당 세법")로 lawId 확보.
-3. get_taxlaw_basic_ruling_text(lawId, query="주제 키워드")로 현행 본문/번호 1차 확인. 단건이 아닌 주제 키워드로 호출하여 인접 번호대(예: 27-55…5~13)를 일괄 수집할 것 — 관련 통칙 군집 누락 방지.
-4. 옛 번호("N-N")는 절대 답변에 노출 금지. 본문에 옛 번호가 있으면 (a) 현행 번호로 정정하거나, (b) "본문 인용 — 현행 번호 미확인" 형태로 ⚠ 표기.
-
-위 절차는 통칙 도구가 호출 가능한 경우에 한해 자동 적용. 통칙 도구 응답이 NOT_FOUND이면 답변에서 통칙 인용 자체를 제거하거나 "현행 번호 미확인" ⚠ 표기 유지.
-
-[행정규칙 현행성 — stale 경고 강제 절차]
-훈령·예규·고시·지침(행정규칙)이 근거인 질의는 본 NTS DB만 신뢰하지 말 것. NTS statute/별표 컬렉션은 행정규칙 개정 후 색인 갱신이 지연될 수 있다(구버전 보유 가능). 두 MCP는 자동 교차검증이 아니라 서로 다른 DB를 보는 상호보완 관계이므로, 다음을 반드시 수행:
-1. search_taxlaw_all 응답에 "⚠ 행정규칙 … stale 가능" 안내가 있으면 무시하지 말 것.
-2. 법제처 현행본을 1차로 확인: korean-law-mcp.search_law는 행정규칙을 NOT_FOUND 반환하므로 discover_tools(intent="행정규칙") → search_admin_rule(knd="1"훈령/"2"예규/"3"고시) → get_admin_rule로 전문 조회.
-3. 공포일·시행일·문서번호 3종을 NTS 결과와 교차 확인. 다르면 법제처 현행본을 1차로 채택하고 조문 번호·내용을 1:1 대조(개정으로 조문 체계가 재편됐을 수 있음).
-
-[구버전 조문 현행성 — 후행 개정 강제 절차]
-get_law_article로 과거 시점본(year/efYd/구버전 mst)을 회수하면 응답의 "── 후행 개정 확인" 블록을 무시하지 말 것:
-1. "본문이 변경" 경고 → 현재·미래 귀속연도에 대한 결론(요건·단가·사후관리·추징 등)을 쓰기 전에 제시된 diff_article_versions(mstA/mstB) 또는 현행본 get_law_article(mst=현행MST, full=true)로 변경 내용을 직접 확인.
-2. "삭제됨"/"찾지 못함" 경고 → 삭제 또는 조문 이동. diff_article_versions(구MST↔현행MST) 1콜로 신설/삭제를 확정하고, 삭제 시점·적용시기는 get_law_revision_text·get_law_addenda로 확인. 확정 전에는 그 조문 존재를 전제로 한 결론 금지.
-3. "공포-미시행(시행예정)" 경고 → 법령 단위 신호(이 조문과 무관할 수 있음). 미래 귀속연도 결론 전 해당 시행본의 이 조문 변경 여부를 diff_article_versions로 확인 후 반영.
-4. "대조에 실패" 경고 → 제시된 diff_article_versions 호출을 그대로 수행해 변경 여부를 직접 확정(실패 상태로 결론 금지).
-확인 비용은 1콜이다 — 확인을 미루고 "별도 확인 필요" 류 hedge로 결론을 대체하지 말 것(검증깊이 미루기 금지).`
+[저빈도 도구] 업종코드·KSIC 매핑(lookup_upjong_code 등 7종)·해석례 별칭·홈택스 상담·발간책자·사이트 메뉴/원시액션은 call_taxlaw_extra(name, args)로 호출 — 목록·용법은 그 도구 설명 참조.`
 
 export const ErrorCodes = {
   NOT_FOUND: "NOT_FOUND",
@@ -682,7 +632,7 @@ const tools = [
           enum: ["all", "interpretations", "disputes", "advance", "reply", "tax_standard", "written", "tax_pre_review", "objection", "review", "tribunal", "precedent", "constitutional", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10"],
           default: "reply",
         },
-        display: { type: "number", minimum: 1, maximum: 50, default: 20 },
+        display: { type: "number", minimum: 1, maximum: 50, default: 10, description: "v0.12.0 — 기본 10(토큰 절감, 건당 평균 ~480자). 더 필요하면 명시 지정." },
         page: { type: "number", minimum: 1, default: 1 },
         sort: { type: "string", enum: ["date_desc", "date_asc", "reg_desc", "reg_asc"], default: "date_desc" },
         fromDate: { type: "string", pattern: "^\\d{8}$", description: "검색 시작일 YYYYMMDD" },
@@ -1113,7 +1063,60 @@ const tools = [
     description: "내장된 업종코드↔KSIC 매핑 DB의 생성 시각, 원본 CSV 경로, 귀속연도, 레코드 수를 반환합니다. DB 신선도 확인용.",
     inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
+  {
+    name: "verify_nts_citations",
+    description:
+      "v0.12.0 — 산출물 텍스트에서 해석례·질의회신 문서번호(서면-2024-법규부가-4804, 부가46015-2833, 서면법규과-1284 등)·심판례 청구번호(조심2013서1471 등)·법원 사건번호(2021두39997 등)를 일괄 추출해 NTS 공개DB 실존 여부를 검색으로 확인한다. docx·표·메모에 인용을 넣기 전 마지막 게이트. 결과: ✓ 실존 확인(제목·생산일자·ID 병기) / ✗ 공개DB 미발견(⚠ 미존재 단정 금지 — 외부 DB 교차확인 안내) / 기본통칙 번호는 현행번호 확인 경로 안내. ⚠ 실존 확인 ≠ 명제 적합성 — 그 문서가 결론을 지지하는지는 full 본문으로 별도 대조 필요.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "검증할 본문/인용 목록(초안 전체를 넣어도 됨 — 번호 패턴만 추출)" },
+        maxCitations: { type: "number", minimum: 1, maximum: 20, default: 12, description: "검증할 최대 인용 수(추출 순)" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "call_taxlaw_extra",
+    description:
+      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(url) / call_taxlaw_action(actionId, payload).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "호출할 저빈도 도구명" },
+        args: { type: "object", description: "그 도구의 인자 객체", additionalProperties: true },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
 ]
+
+// v0.12.0 — 저빈도 도구 15종은 tools/list에서 비노출(세션 고정 토큰 ~6.9K chars 절감).
+// call_taxlaw_extra(name, args) 게이트웨이로 여전히 호출 가능. 환경변수 TAXLAW_EXPOSE_ALL=1이면 전부 노출.
+export const HIDDEN_TOOL_NAMES = new Set([
+  "lookup_upjong_code",
+  "lookup_ksic_code",
+  "lookup_ksic_prefix",
+  "search_industry_by_keyword",
+  "resolve_industry_class",
+  "classify_industry_for_article",
+  "upjong_db_info",
+  "search_taxlaw_interpretations",
+  "get_taxlaw_interpretation_text",
+  "get_taxlaw_hometax_counsel_text",
+  "search_taxlaw_publications",
+  "list_taxlaw_publication_categories",
+  "list_taxlaw_site_menus",
+  "get_taxlaw_page_text",
+  "call_taxlaw_action",
+])
+
+export function visibleTools(): typeof tools {
+  if (process.env.TAXLAW_EXPOSE_ALL === "1") return tools
+  return tools.filter((t) => !HIDDEN_TOOL_NAMES.has(t.name))
+}
 
 function textResponse(text: string, isError = false): ToolResponse {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) }
@@ -1919,7 +1922,8 @@ async function searchDocumentGroup(
   group: { kind: "question" | "precedent"; codes: string[] },
   args: DocumentSearchArgs,
 ): Promise<{ group: "question" | "precedent"; codes: string[]; result: TaxlawSearchData["ASIPDI002PR01"] }> {
-  const display = asPositiveInt(args.display, 20, 50)
+  const display = asPositiveInt(args.display, 10, 50) // v0.12.0 — 기본 20→10
+
   const page = asPositiveInt(args.page, 1)
   const sort = sortField(args.sort)
   const params = {
@@ -1969,6 +1973,111 @@ function uniqueDocuments(items: TaxlawDcm[]): { items: TaxlawDcm[]; duplicatesRe
     unique.push(item)
   }
   return { items: unique, duplicatesRemoved: items.length - unique.length }
+}
+
+// v0.12.0 — 인용 번호 일괄 추출(verify_nts_citations용). 기존 검증기 간극(korean-law
+// verify_citations=조문만, cite_check=법원 판례만)을 메우는 1차 패턴 레이어 — 해석례 문서번호·
+// 심판례 청구번호·법원 사건번호·기본통칙 번호를 텍스트에서 뽑는다. 순수함수(단위테스트 대상).
+export interface NtsCitation {
+  raw: string
+  normalized: string // 공백·하이픈·마침표 제거 소문자
+  kind: "interpretation" | "tribunal" | "court" | "basic_rule"
+}
+const DEPT_FALSE_PREFIXES = new Set(["결과", "효과", "성과", "통과", "초과", "경과", "부과"])
+export function extractNtsCitations(text: string): NtsCitation[] {
+  const src = String(text || "")
+  const out: NtsCitation[] = []
+  const seen = new Set<string>()
+  const norm = (s: string) => s.replace(/[\s\-–—.·]/g, "").toLowerCase()
+  const push = (raw: string, kind: NtsCitation["kind"]) => {
+    const trimmed = raw.trim()
+    const key = `${kind}:${norm(trimmed)}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ raw: trimmed, normalized: norm(trimmed), kind })
+  }
+  // 신형 해석례: 서면-2024-법규부가-4804 / 사전-2023-법규법인-123 / 기준-2020-법령해석소득-67
+  for (const m of src.matchAll(/(?:서면|사전|기준)\s?-\s?\d{4}\s?-\s?[가-힣]{2,12}\s?-\s?\d{1,6}/g)) push(m[0], "interpretation")
+  // 구형 해석례: 부가46015-2833, 법인46012-123, 소득22601-1234
+  for (const m of src.matchAll(/[가-힣]{2,6}\d{4,5}\s?-\s?\d{1,6}/g)) push(m[0], "interpretation")
+  // 부서형: 서면법규과-1284, 부가가치세제과-456, 법인세과-789 (일반어 '결과-12' 류는 차단)
+  for (const m of src.matchAll(/([가-힣]{2,14}(?:과|팀))\s?-\s?\d{1,6}/g)) {
+    if (DEPT_FALSE_PREFIXES.has(m[1])) continue
+    push(m[0], "interpretation")
+  }
+  // 심판·심사: 조심2013서1471, 국심2005서1234 / 감심2010-123, 심사소득2019-0012
+  for (const m of src.matchAll(/(?:조심|국심)\s?\d{4}\s?[가-힣]{1,2}\s?\d{1,5}/g)) push(m[0], "tribunal")
+  for (const m of src.matchAll(/(?:감심|심사[가-힣]{0,4})\s?\d{4}\s?-\s?\d{1,5}/g)) push(m[0], "tribunal")
+  // 법원: 2021두39997, 2023누15045, 2020구합1234, 2019헌바73
+  for (const m of src.matchAll(/\d{4}\s?(?:두|누|구합|구단|헌바|헌가|헌마)\s?\d{2,7}/g)) push(m[0], "court")
+  // 기본통칙: "기본통칙 10-0…5" / 옛 "기본통칙 10-0-5"
+  for (const m of src.matchAll(/기본통칙\s?\d{1,3}\s?-\s?\d{1,3}(?:\s?(?:…|\.\.\.|-)\s?\d{1,3})?/g)) push(m[0], "basic_rule")
+  return out
+}
+
+// v0.12.0 — NTS 인용 실존 일괄 검증 도구. 산출물에 들어갈 번호의 실존을 검색으로 확인.
+// ⚠ 실존 확인 ≠ 명제 적합성(그 문서가 결론을 지지하는가) — 후자는 full 본문 대조가 별도 필요.
+export async function verifyNtsCitations(args: { text?: string; maxCitations?: number }): Promise<ToolResponse> {
+  const text = requireString("text", args.text)
+  const cap = asPositiveInt(args.maxCitations, 12, 20)
+  const all = extractNtsCitations(text)
+  if (all.length === 0) {
+    return textResponse(
+      "인용 번호 패턴이 검출되지 않았습니다(해석례 문서번호·심판례 청구번호·법원 사건번호·기본통칙). 번호 표기를 확인하거나 인용 목록만 따로 전달하세요.",
+    )
+  }
+  const cits = all.slice(0, cap)
+  const lines = [
+    "── NTS 인용 실존 일괄 검증 ──",
+    `검출 ${all.length}건 중 ${cits.length}건 검증${all.length > cap ? ` (초과 ${all.length - cap}건은 maxCitations 확대 후 재호출)` : ""}.`,
+    "⚠ 실존 확인 ≠ 명제 적합성 — 결론 인용 전 full 본문(주문·판단)으로 그 문서가 명제를 실제 지지하는지 별도 대조하라.",
+    "",
+  ]
+  let confirmed = 0
+  let notFound = 0
+  let failed = 0
+  const GROUPS = [
+    { kind: "question" as const, codes: ["01", "02", "03", "04"] },
+    { kind: "precedent" as const, codes: ["05", "06", "07", "08", "09", "10"] },
+  ]
+  for (const cit of cits) {
+    if (cit.kind === "basic_rule") {
+      lines.push(
+        `◇ ${cit.raw} [기본통칙] — 본 도구의 검색 대상 아님. list_taxlaw_basic_ruling_laws→get_taxlaw_basic_ruling_text(주제 키워드)로 현행 번호("N-N…M") 확인 필수(옛 "N-N" 표기 가능성).`,
+      )
+      continue
+    }
+    try {
+      const settled = await Promise.allSettled(
+        GROUPS.map((g) => searchDocumentGroup(g, { query: cit.raw, display: 10 } as DocumentSearchArgs)),
+      )
+      const items: TaxlawDcm[] = settled
+        .filter((s): s is PromiseFulfilledResult<Awaited<ReturnType<typeof searchDocumentGroup>>> => s.status === "fulfilled")
+        .flatMap((s) => (s.value.result.body || []).map((row) => row.dcm).filter((d): d is TaxlawDcm => !!d))
+      const hit = items.find((d) => {
+        const hay = `${cleanText(d.NTST_DCM_DSCM_CNTN)}|${cleanText(d.NTST_DCM_RPLY_CNTN)}|${cleanText(d.TTL)}`
+          .replace(/[\s\-–—.·]/g, "")
+          .toLowerCase()
+        return hay.includes(cit.normalized)
+      })
+      if (hit) {
+        confirmed++
+        const date = cleanText(String(hit.DCM_RGT_DTM_S || hit.DCM_RGT_DTM || "")).slice(0, 12)
+        const id = hit.DOC_ID || hit.DOCID || "?"
+        lines.push(`✓ ${cit.raw} — 실존 확인: ${cleanText(hit.TTL).slice(0, 60)} (생산 ${date || "?"}, ID ${id})`)
+      } else {
+        notFound++
+        lines.push(
+          `✗ ${cit.raw} — NTS 공개DB 미발견. ⚠ 미존재/할루시네이션 단정 금지 — 공개DB는 선별·익명화 수록이므로 외부 DB(casenote 등) 교차확인 전까지 산출물에는 "공개DB 미발견"으로만 기재.${cit.kind === "court" ? " 법원 판례는 korean-law-mcp search_decisions(domain=precedent)·cite_check 병행." : ""}`,
+        )
+      }
+    } catch (e) {
+      failed++
+      lines.push(`? ${cit.raw} — 검색 실패(${e instanceof Error ? e.message : String(e)}). 재시도 필요.`)
+    }
+  }
+  lines.push("", `요약: ✓ 확인 ${confirmed} / ✗ 미발견 ${notFound} / ? 실패 ${failed} / 검출 ${all.length}`)
+  return textResponse(truncate(lines.join("\n"), 20000))
 }
 
 // v0.9.3 — 검색 결과의 query 관련성 판정. NTS 검색 엔진이 query 토큰 중 일부만
@@ -2082,7 +2191,7 @@ async function searchTaxlawDocuments(
     .flatMap((entry) => (entry.result.body || []).map((row) => row.dcm).filter((d): d is TaxlawDcm => !!d))
     .sort((a, b) => documentDateValue(b) - documentDateValue(a))
   const { items: uniqueItems, duplicatesRemoved } = uniqueDocuments(rawItems)
-  const items = uniqueItems.slice(0, asPositiveInt(args.display, 20, 50))
+  const items = uniqueItems.slice(0, asPositiveInt(args.display, 10, 50))
 
   if (total === 0 || items.length === 0) {
     // v0.9.5 — 복합어 NOT_FOUND 자동 분해 재시도 (1회만)
@@ -2852,14 +2961,22 @@ export function buildLaterRevisionGuard(opts: {
     }
   }
   if (pending.length) {
-    const shown = pending
-      .slice(0, 4)
-      .map((v) => `시행 ${fmt(v.enforceDate)} | MST ${v.mst}${v.promDate ? ` (공포 ${fmt(v.promDate)})` : ""}`)
-      .join(" / ")
-    lines.push(
-      `${isCurrent ? "ℹ" : "⚠"} [법령 단위 신호 — 이 조문과 무관할 수 있음] 공포-미시행(시행예정) 개정 ${pending.length}건: ${shown}${pending.length > 4 ? " …" : ""}`,
-      `  → 미래 귀속연도 결론 전 이 조문 관련 여부를 diff_article_versions(jo="${jo}", mstA=현행MST, mstB=해당MST)로 확인. 분할시행 행은 그 공포본 텍스트 기준이라 후행 공포본 미반영 가능.`,
-    )
+    if (isCurrent) {
+      // v0.12.0 — 현행본 조회의 상시 신호는 1줄 압축(개정 잦은 세법에서 alarm fatigue·토큰 비대 방지).
+      const first = pending[0]
+      lines.push(
+        `ℹ 공포-미시행(시행예정) 개정 ${pending.length}건 [법령 단위 — 이 조문과 무관할 수 있음]: 최단 시행 ${fmt(first.enforceDate)} MST ${first.mst}${pending.length > 1 ? " 외" : ""} — 미래 귀속 결론 전 diff_article_versions(jo="${jo}", mstA=현행MST, mstB=해당MST)로 관련 여부 확인.`,
+      )
+    } else {
+      const shown = pending
+        .slice(0, 4)
+        .map((v) => `시행 ${fmt(v.enforceDate)} | MST ${v.mst}${v.promDate ? ` (공포 ${fmt(v.promDate)})` : ""}`)
+        .join(" / ")
+      lines.push(
+        `⚠ [법령 단위 신호 — 이 조문과 무관할 수 있음] 공포-미시행(시행예정) 개정 ${pending.length}건: ${shown}${pending.length > 4 ? " …" : ""}`,
+        `  → 미래 귀속연도 결론 전 이 조문 관련 여부를 diff_article_versions(jo="${jo}", mstA=현행MST, mstB=해당MST)로 확인. 분할시행 행은 그 공포본 텍스트 기준이라 후행 공포본 미반영 가능.`,
+      )
+    }
   }
   return lines
 }
@@ -4693,9 +4810,22 @@ function upjongDbInfoTool(): ToolResponse {
   return textResponse(lines.join("\n"))
 }
 
-async function handleToolCall(name: string, args: unknown): Promise<ToolResponse> {
+export async function handleToolCall(name: string, args: unknown): Promise<ToolResponse> {
   try {
     const input = (args || {}) as AnyRecord
+    if (name === "call_taxlaw_extra") {
+      const sub = requireString("name", input.name)
+      if (sub === "call_taxlaw_extra" || !HIDDEN_TOOL_NAMES.has(sub)) {
+        throw new TaxlawMcpError(
+          `'${sub}'는 call_taxlaw_extra 대상이 아닙니다. 대상: ${[...HIDDEN_TOOL_NAMES].join(", ")}`,
+          ErrorCodes.INVALID_PARAM,
+        )
+      }
+      return await handleToolCall(sub, input.args ?? {})
+    }
+    if (name === "verify_nts_citations") {
+      return await verifyNtsCitations(input as { text?: string; maxCitations?: number })
+    }
     if (name === "search_taxlaw_all") {
       return await searchTaxlawAll(input as IntegratedSearchArgs)
     }
@@ -4794,7 +4924,7 @@ const server = new Server(
   { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
 )
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: visibleTools() }))
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params

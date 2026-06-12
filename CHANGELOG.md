@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.0] - 2026-06-12
+
+두 세법 MCP 동시사용 리뷰(토큰효율·효과성, 8세션 정량 마이닝+라이브 A/B+효과성 감사)의 권고 반영.
+
+### Added — `verify_nts_citations` 인용 실존 일괄 검증 (`src/index.ts`)
+배경: 기존 검증기 간극 — korean-law verify_citations는 법령 조문만, cite_check는 법원 판례만 커버. "서면-NNNN"·"조심20XX..."류 해석례·심판례 번호는 어떤 검증기도 패턴 매칭조차 안 해 날조 번호가 /tb verify 게이트를 통과 가능(효과성 감사 벡터⑦, HIGH).
+- `extractNtsCitations()` (순수함수, export): 해석례 신형(서면-2024-법규부가-4804)/구형(부가46015-2833)/부서형(서면법규과-1284, '결과-12' 류 일반어 오탐 차단)·심판례(조심/국심/감심/심사)·법원 사건번호(두/누/구합/헌바 등)·기본통칙 번호 추출+dedup.
+- `verifyNtsCitations(text, maxCitations=12)`: 번호별 NTS 검색(question+precedent 그룹 병렬)→문서번호·회신번호·제목 정규화 매칭 → ✓ 실존(제목·생산일자·ID) / ✗ 공개DB 미발견(⚠ 미존재 단정 금지 — "공개DB 미발견"까지만 기재, 법원 건은 korean-law 병행 안내) / 기본통칙은 현행번호 확인 경로 안내. 헤더에 "실존 확인 ≠ 명제 적합성" 경고 고정.
+
+### Changed — 토큰 효율 (리뷰 절감 레버 반영)
+- **저빈도 도구 15종 tools/list 비노출**(세션 고정 ~6.9K chars 절감): 업종코드·KSIC 7종 + 별칭 2종(search_taxlaw_interpretations·get_taxlaw_interpretation_text) + 홈택스상담·발간책자 2종·사이트 3종·call_taxlaw_action. 신설 게이트웨이 `call_taxlaw_extra(name, args)`로 전부 호출 가능(HIDDEN_TOOL_NAMES). env `TAXLAW_EXPOSE_ALL=1`로 전체 노출 복원.
+- **search_taxlaw_documents 기본 display 20→10**(검색콜당 ~4.3K chars 절감, 건당 평균 ~480자 실측). 필요 시 display 명시.
+- **INSTRUCTIONS 치명도순 재배치+압축**(3,707→약 2,900 chars): 호스트가 ~2,000자 부근에서 절단하는 실측에 따라 [강제 절차](후행개정·연도검증·기본통칙·행정규칙 stale·NOT_FOUND·인용 실존) 6항을 서두로, 5단 응답 포맷·워크플로를 후미로. NOT_FOUND 항에 "판례·심판례 미발견≠미존재(공개DB 미발견까지만)" 명문화, 서두에 "계산식 조문은 korean-law 단독 인용 금지(수식 무언 누락 실측)" 분담 명시.
+- **현행본 응답의 공포-미시행 신호 1줄 압축**(콜당 ~390 chars 절감): isCurrent면 최단 시행분 1건+확인 경로만. 구버전 조회(!isCurrent)는 기존 상세 유지.
+
+### Tested
+- `test/utils.test.js`: extractNtsCitations 신규 1블록(신형/구형/부서형/심판/법원/통칙/dedup/오탐 차단) + pending 압축 반영. 전체 통과.
+- 라이브: verify_nts_citations(실존 4건+미수록 1건 혼합), call_taxlaw_extra(lookup_upjong_code), display 기본 10, visibleTools 15종 제외 확인.
+
 ## [0.11.0] - 2026-06-12
 
 ### Added — `get_law_article` 후행 개정 능동 가드 (`src/index.ts`)
