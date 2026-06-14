@@ -34,7 +34,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.12.0"
+const VERSION = "0.12.1"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -2033,19 +2033,20 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
     "⚠ 실존 확인 ≠ 명제 적합성 — 결론 인용 전 full 본문(주문·판단)으로 그 문서가 명제를 실제 지지하는지 별도 대조하라.",
     "",
   ]
-  let confirmed = 0
-  let notFound = 0
-  let failed = 0
+  // v0.12.1 — 인용별 처리를 동시성 상한(4) 청크 병렬로(종전 순차 for: N건=N회 직렬 왕복).
+  //   순서 보존: 각 인용을 인덱스 그대로 결과 배열에 채운 뒤 합산. NTS API 과부하 방지로 상한 절제.
   const GROUPS = [
     { kind: "question" as const, codes: ["01", "02", "03", "04"] },
     { kind: "precedent" as const, codes: ["05", "06", "07", "08", "09", "10"] },
   ]
-  for (const cit of cits) {
+  type CitResult = { tally: "confirmed" | "notFound" | "failed" | "basic"; line: string }
+
+  async function processCit(cit: NtsCitation): Promise<CitResult> {
     if (cit.kind === "basic_rule") {
-      lines.push(
-        `◇ ${cit.raw} [기본통칙] — 본 도구의 검색 대상 아님. list_taxlaw_basic_ruling_laws→get_taxlaw_basic_ruling_text(주제 키워드)로 현행 번호("N-N…M") 확인 필수(옛 "N-N" 표기 가능성).`,
-      )
-      continue
+      return {
+        tally: "basic",
+        line: `◇ ${cit.raw} [기본통칙] — 본 도구의 검색 대상 아님. list_taxlaw_basic_ruling_laws→get_taxlaw_basic_ruling_text(주제 키워드)로 현행 번호("N-N…M") 확인 필수(옛 "N-N" 표기 가능성).`,
+      }
     }
     try {
       const settled = await Promise.allSettled(
@@ -2061,20 +2062,34 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
         return hay.includes(cit.normalized)
       })
       if (hit) {
-        confirmed++
         const date = cleanText(String(hit.DCM_RGT_DTM_S || hit.DCM_RGT_DTM || "")).slice(0, 12)
         const id = hit.DOC_ID || hit.DOCID || "?"
-        lines.push(`✓ ${cit.raw} — 실존 확인: ${cleanText(hit.TTL).slice(0, 60)} (생산 ${date || "?"}, ID ${id})`)
-      } else {
-        notFound++
-        lines.push(
-          `✗ ${cit.raw} — NTS 공개DB 미발견. ⚠ 미존재/할루시네이션 단정 금지 — 공개DB는 선별·익명화 수록이므로 외부 DB(casenote 등) 교차확인 전까지 산출물에는 "공개DB 미발견"으로만 기재.${cit.kind === "court" ? " 법원 판례는 korean-law-mcp search_decisions(domain=precedent)·cite_check 병행." : ""}`,
-        )
+        return { tally: "confirmed", line: `✓ ${cit.raw} — 실존 확인: ${cleanText(hit.TTL).slice(0, 60)} (생산 ${date || "?"}, ID ${id})` }
+      }
+      return {
+        tally: "notFound",
+        line: `✗ ${cit.raw} — NTS 공개DB 미발견. ⚠ 미존재/할루시네이션 단정 금지 — 공개DB는 선별·익명화 수록이므로 외부 DB(casenote 등) 교차확인 전까지 산출물에는 "공개DB 미발견"으로만 기재.${cit.kind === "court" ? " 법원 판례는 korean-law-mcp search_decisions(domain=precedent)·cite_check 병행." : ""}`,
       }
     } catch (e) {
-      failed++
-      lines.push(`? ${cit.raw} — 검색 실패(${e instanceof Error ? e.message : String(e)}). 재시도 필요.`)
+      return { tally: "failed", line: `? ${cit.raw} — 검색 실패(${e instanceof Error ? e.message : String(e)}). 재시도 필요.` }
     }
+  }
+
+  const CONCURRENCY = 4
+  const results: CitResult[] = new Array(cits.length)
+  for (let i = 0; i < cits.length; i += CONCURRENCY) {
+    const chunk = cits.slice(i, i + CONCURRENCY)
+    const settled = await Promise.all(chunk.map(processCit))
+    settled.forEach((r, j) => (results[i + j] = r))
+  }
+  let confirmed = 0
+  let notFound = 0
+  let failed = 0
+  for (const r of results) {
+    if (r.tally === "confirmed") confirmed++
+    else if (r.tally === "notFound") notFound++
+    else if (r.tally === "failed") failed++
+    lines.push(r.line)
   }
   lines.push("", `요약: ✓ 확인 ${confirmed} / ✗ 미발견 ${notFound} / ? 실패 ${failed} / 검출 ${all.length}`)
   return textResponse(truncate(lines.join("\n"), 20000))
@@ -2900,6 +2915,26 @@ export function findArticleInXml(
   if (del) return { status: "deleted", deletedDate: del[1].trim() }
   return { status: "missing" }
 }
+
+// v0.12.1 — getLawArticle의 현행본 대조 판정을 순수 함수로 추출(네트워크 분리 → 단위 테스트 가능).
+//   curXml(현행본 XML)에서 같은 조문을 찾아 oldText와 공백·flSeq 무시 비교 →
+//   same/differs/missing(+삭제일) 판정. fetch 실패는 호출부에서 unknown 처리.
+export function classifyAgainstCurrent(
+  curXml: string,
+  jo: string,
+  oldText: string,
+): { verdict: ArticleDiffVerdict; deletedDate?: string; hasFormulaImages: boolean } {
+  const found = findArticleInXml(curXml, jo)
+  if (found.status === "found") {
+    const curText = extractArticleBody(found.block || "").text
+    return {
+      verdict: normalizeArticleForCompare(curText) === normalizeArticleForCompare(oldText) ? "same" : "differs",
+      hasFormulaImages: curText.includes("[수식이미지"),
+    }
+  }
+  return { verdict: "missing", deletedDate: found.deletedDate, hasFormulaImages: false }
+}
+
 export function buildLaterRevisionGuard(opts: {
   versions: LawVersion[]
   usedMst: string
@@ -3754,16 +3789,10 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
     try {
       const curUrl = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(currentVer.mst)}&type=XML`
       const curXml = await fetchMolegXml(curUrl, "법령 조회(현행본 대조)")
-      const found = findArticleInXml(curXml, jo)
-      if (found.status === "found") {
-        const curText = extractArticleBody(found.block || "").text
-        hasFormulaImages = hasFormulaImages || curText.includes("[수식이미지")
-        currentArticleVerdict =
-          normalizeArticleForCompare(curText) === normalizeArticleForCompare(text) ? "same" : "differs"
-      } else {
-        currentArticleVerdict = "missing"
-        currentDeletedDate = found.deletedDate
-      }
+      const c = classifyAgainstCurrent(curXml, jo, text)
+      currentArticleVerdict = c.verdict
+      currentDeletedDate = c.deletedDate
+      hasFormulaImages = hasFormulaImages || c.hasFormulaImages
     } catch {
       currentArticleVerdict = "unknown"
     }

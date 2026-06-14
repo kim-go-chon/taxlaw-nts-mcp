@@ -20,6 +20,7 @@ const {
   buildLaterRevisionGuard,
   normalizeArticleForCompare,
   findArticleInXml,
+  classifyAgainstCurrent,
   filterVersionsByName,
   lawNameKey,
   extractNtsCitations,
@@ -611,6 +612,29 @@ test("extractNtsCitations: 해석례 신형/구형/부서형·심판례·법원�
   const court = cits.find((c) => c.raw === "2021두39997")
   assert.equal(court.kind, "court")
   assert.equal(court.normalized, "2021두39997")
+})
+
+test("classifyAgainstCurrent: 현행본 대조 — same/differs/deleted/missing 분기(v0.12.1 추출)", () => {
+  const cur = (jo, body) => `<조문단위><조문내용><![CDATA[${jo}(제목)]]><항내용><![CDATA[${body}]]></항내용></조문단위>`
+  // oldText는 실사용처럼 extractArticleBody 출력(제목 CDATA 포함)을 모사 — 제목 접두 동일
+  // same — 공백·flSeq 차이만(중립화)
+  const oldSame = "제29조의8(제목)① 내용 [수식이미지→…flSeq=111] 입니다."
+  const r1 = classifyAgainstCurrent(cur("제29조의8", "① 내용  [수식이미지→…flSeq=999] 입니다."), "제29조의8", oldSame)
+  assert.equal(r1.verdict, "same")
+  assert.equal(r1.hasFormulaImages, true)
+  // differs — 실질 변경
+  const r2 = classifyAgainstCurrent(cur("제29조의8", "① 내용이 바뀌었고 단서를 둔다."), "제29조의8", "제29조의8(제목)① 내용 입니다.")
+  assert.equal(r2.verdict, "differs")
+  assert.equal(r2.hasFormulaImages, false)
+  // deleted — 현행본에 '삭제 <날짜>' 표기
+  const delXml = '<조문단위><조문내용><![CDATA[제9조 삭제 <2019.12.31>]]></조문내용></조문단위>'
+  const r3 = classifyAgainstCurrent(delXml, "제9조", "① 옛 본문")
+  assert.equal(r3.verdict, "missing")
+  assert.equal(r3.deletedDate, "2019.12.31")
+  // missing — 현행본에 조문 없음
+  const r4 = classifyAgainstCurrent(cur("제100조", "다른 조"), "제29조의8", "① 옛 본문")
+  assert.equal(r4.verdict, "missing")
+  assert.equal(r4.deletedDate, undefined)
 })
 
 test("todayYmd: YYYYMMDD 로컬 포맷", () => {

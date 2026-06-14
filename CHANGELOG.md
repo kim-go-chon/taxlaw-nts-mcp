@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.1] - 2026-06-14
+
+코드 리뷰 피드백 반영(기능 변경 없음 — 성능·테스트·라이선스 명료성).
+
+### Changed
+- **`verifyNtsCitations` 병렬화**(`src/index.ts`): 인용별 순차 `for await`(N건=N회 직렬 왕복)를 동시성 상한 4의 청크 병렬로 전환. 출력 순서는 인덱스 보존으로 동일. NTS API 과부하 방지로 상한 절제. 라이브 재확인(순서보존·✓3/✗1/통칙1 동일).
+- **`classifyAgainstCurrent` 순수 함수 추출**: `getLawArticle`의 현행본 대조 verdict 분기(same/differs/missing+삭제일/hasFormulaImages)를 네트워크와 분리해 단위 테스트 가능화. 호출부는 fetch 후 이 함수만 호출.
+- **`text-diff.ts` 라이선스 disclaimer 복원**: "자체 구현" → "독자 구현(의존성 0, lexdiff 등 BSL-1.1 라이선스 코드 미참조)" — v0.11.0에서 의도치 않게 제거됐던 비참조 명시 복구.
+
+### Tested
+- `test/utils.test.js` 신규 1블록(classifyAgainstCurrent same/differs/deleted/missing). 전체 185건 통과.
+
 ## [0.12.0] - 2026-06-12
 
 두 세법 MCP 동시사용 리뷰(토큰효율·효과성, 8세션 정량 마이닝+라이브 A/B+효과성 감사)의 권고 반영.
