@@ -3016,6 +3016,29 @@ export function buildLaterRevisionGuard(opts: {
   return lines
 }
 
+// v0.12.2 — 해석 분기 가드: 세액공제 사후관리·추징형 조문의 "제N호/제N항을 적용하지 아니한다"류 문언은
+// '해당 증가분 공제가 소멸'이 아니라 '낮은 호의 단가로 전환(강등)'을 뜻할 수 있다(삭제 vs 단가전환 = 해석 분기점).
+// 실측 사고(2026-06-14): 조특법 §29의7② "청년 감소 → 제1항제1호 미적용"을 "제2호 = 원래 청년외 증가분만"으로
+// 오독 → 정답은 전체 증가인원 전부 제2호(일반)단가(기재부 조특제도과-215·서면-2023-법인-0978). 추징식
+// (시행령 §26의7⑤: 감소인원 × (상위호 − 하위호) = '프리미엄만 환수')과 forward 공제식의 정합성을 대조했으면
+// 잡혔을 오류 — 문언 단정 전 해석례 확인 + 추징식 교차검증을 능동 강제한다. 본문 휴리스틱(순수 함수, 단위 테스트 대상).
+export function buildInterpretiveForkGuard(text: string, jo: string): string[] {
+  if (!text) return []
+  const hasExclusion = /적용하지\s*(?:아니|않)/.test(text) // 적용하지 아니한다/아니하고/아니하며/않는다/않으며
+  const refsClause = /제\d+호|제\d+항/.test(text)
+  const isCredit = /공제/.test(text)
+  const isSunset = /감소|추징|사후관리/.test(text)
+  if (!(hasExclusion && refsClause && isCredit && isSunset)) return []
+  return [
+    "── 해석 분기 가드(세액공제 사후관리) ──",
+    `⚠ ${jo}는 사후관리·추징형 문언("제N호/제N항을 적용하지 아니한다" 등)을 포함한다. 이 문언은 '해당 증가분 공제가 소멸'이 아니라 '낮은 호의 단가로 전환(강등)'을 의미할 수 있다(삭제 vs 단가전환 = 해석 분기점). 문언만으로 공제액·추징액·산식을 단정하지 마라.`,
+    "  ① 해석례 확정: search_taxlaw_all/search_taxlaw_documents(해석례·질의)로 '해당 호 미적용 시 잔여연도 공제 산식'을 직접 확인하라. 온포인트 해석이 안 나오면 '해석 미확인'으로 hedge하고 literal로 메우지 마라(검색 실패 ≠ 해석 부재).",
+    "  ② 추징식 정합성 교차검증: forward 공제식과 추징 산식(시행령: 감소인원 × (상위호 − 하위호) = '프리미엄만 환수' 구조)이 서로 모순되지 않는지 대조하라. 추징이 프리미엄만 환수하면 forward도 하위 호 단가는 유지되는 것이 정합 — 두 식이 충돌하면 레드플래그.",
+    "  ③ 숫자 예시를 제도취지로 스트레스테스트: '전체 유지인데 공제가 줄면 말이 되나?' 1줄 점검.",
+    "(실측: 조특법 §29의7② '청년 감소 → 제1항제1호 미적용'을 '제2호 = 원래 청년외 증가분만'으로 오독 → 정답은 전체 증가인원 전부 제2호 단가 / 기재부 조특제도과-215·서면-2023-법인-0978)",
+  ]
+}
+
 // 조문단위 블록에서 본문 텍스트 + 수식 이미지(flDownload) URL을 뽑는다. 이미지는 URL 마커로 보존.
 export function extractArticleBody(joBlock: string): { text: string; imageUrls: string[] } {
   const urls = [...joBlock.matchAll(/flDownload\.do\?flSeq=(\d+)/g)].map((m) => `${MOLEG_BASE}/DRF/flDownload.do?flSeq=${m[1]}`)
@@ -3816,6 +3839,8 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
     "⚠ 이 본문은 '이 시점에 시행 중이던' 조문이다. 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙 적용례)로 별도 판정하라.",
   ]
   if (revisionGuard.length) lines.push("", ...revisionGuard)
+  const forkGuard = buildInterpretiveForkGuard(text, jo)
+  if (forkGuard.length) lines.push("", ...forkGuard)
   lines.push(
     "",
     "── 본문 ──",

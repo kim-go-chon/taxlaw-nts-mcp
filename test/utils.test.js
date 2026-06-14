@@ -18,6 +18,7 @@ const {
   matchesAllTokens,
   detectHoldingTruncation,
   buildLaterRevisionGuard,
+  buildInterpretiveForkGuard,
   normalizeArticleForCompare,
   findArticleInXml,
   classifyAgainstCurrent,
@@ -674,4 +675,30 @@ test("pruneEmpty: null·빈 필드 제거(0/false 보존), 실데이터 유지",
   assert.ok(!("nullField" in o) && !("emptyStr" in o) && !("emptyArr" in o))
   assert.equal(o.list.length, 1) // 전부 빈 두번째 객체 제거
   assert.deepEqual(o.list[0], { ntstNm: "조세특례제한법", ntstBscId: "100" })
+})
+
+// v0.12.2 — 해석 분기 가드(buildInterpretiveForkGuard)
+test("interpretiveForkGuard: 고용 세액공제 사후관리 '적용하지 아니한다' → 가드 발화", () => {
+  const t =
+    "청년등상시근로자의 수가 최초로 공제를 받은 과세연도에 비하여 감소한 경우에는 감소한 과세연도부터 제1항제1호를 적용하지 아니한다. 이 경우 공제받은 세액에 상당하는 금액을 납부하여야 한다."
+  const g = buildInterpretiveForkGuard(t, "제29조의7")
+  assert.ok(g.length > 0)
+  assert.ok(g[0].includes("해석 분기 가드"))
+  assert.ok(g.some((l) => l.includes("제29조의7")))
+  assert.ok(g.some((l) => l.includes("단가로 전환")))
+  assert.ok(g.some((l) => l.includes("추징식 정합성")))
+})
+
+test("interpretiveForkGuard: 무관 조문(공제·감소·호 없음) → 미발화", () => {
+  assert.equal(buildInterpretiveForkGuard("① 상시근로자 수는 매월 말일 현재 인원을 합하여 계산한다.", "제26조의7").length, 0)
+})
+
+test("interpretiveForkGuard: '적용하지 아니' 없으면(추징 산식 본문만) → 미발화", () => {
+  // 시행령 추징 산식 본문은 '적용하지 아니한다'가 없어 1차 진입점(법 조문)에서만 발화하도록 절제
+  const t = "법 제29조의7제2항에 따라 납부하여야 할 세액은 청년등 상시근로자의 감소한 인원 수에 공제액을 곱한 금액으로 한다."
+  assert.equal(buildInterpretiveForkGuard(t, "제26조의7").length, 0)
+})
+
+test("interpretiveForkGuard: 빈 본문 → 미발화", () => {
+  assert.equal(buildInterpretiveForkGuard("", "제29조의7").length, 0)
 })
