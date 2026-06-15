@@ -30,11 +30,12 @@ import {
 } from "./tax-law-code-map.js"
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
+import { computeEmploymentCredit, type EmpCreditArgs } from "./employment-credit.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.12.1"
+const VERSION = "0.13.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1080,7 +1081,7 @@ const tools = [
   {
     name: "call_taxlaw_extra",
     description:
-      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(url) / call_taxlaw_action(actionId, payload).",
+      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [고용공제계산] compute_employment_credit(고용증대 §29의7·통합고용 §29의8구법·사회보험료 §30의4 forward 공제+추징 산정 — 손계산 대신 사용). [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(url) / call_taxlaw_action(actionId, payload).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1088,6 +1089,35 @@ const tools = [
         args: { type: "object", description: "그 도구의 인자 객체", additionalProperties: true },
       },
       required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "compute_employment_credit",
+    description:
+      "[HIDDEN — call_taxlaw_extra 경유] 고용 세액공제 forward 공제 + 추징을 한 출처에서 산정(고용증대 §29의7 · 통합고용 §29의8 구법=2024·2025귀속 · 중소기업 사회보험료 §30의4 + COVID §29의7⑤⑥⑦). LLM 손계산(법령회수+장문추론)·forward↔추징 모순 오류를 차단. ⚠ '저자 산식 기반 계산값'이며 1차 근거 아님 — 인용·신고 전 조문·해석례 원문 및 사용 단가 확인. 단가는 코드 상수(시행일 기준)라 개정 시 stale(결과에 단가·기준 동봉). 통합고용 2026 귀속~ 신법(직전3년·단년공제·최소고용·A+B+C 구간식)은 NOT_SUPPORTED → build_application_timetable 라우팅. 다년 사이클이라 first_year(=최초공제연도=차수) 필수.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        credit_type: { type: "string", enum: ["고용증대", "통합고용", "사회보험료"], description: "공제 종류(기본 고용증대)" },
+        size: { type: "string", enum: ["중소", "중견", "대기업"], description: "기업규모(고용증대/통합고용 필수). 사회보험료는 중소 전제." },
+        region: { type: "string", enum: ["수도권내", "수도권밖"], description: "증가 지역(고용증대/통합고용 필수)" },
+        first_year: { type: "number", description: "최초공제연도(=차수 기준=증가연도). 다년 사이클은 귀속연도만으로 판정 불가 — 필수." },
+        counts: {
+          type: "object",
+          description: "연도별 인원. 키=연도(직전연도부터 마지막 공제연도까지), 값={total, youth, youth_deemed?}. youth_deemed=청년 간주(연령초과는 최초연도 수준으로 입력 → 추징 0; 미입력 시 실퇴사로 처리). 인원은 최초공제연도별 산정방법(통합고용 절사 등) 적용 후 값.",
+          additionalProperties: {
+            type: "object",
+            properties: { total: { type: "number" }, youth: { type: "number" }, youth_deemed: { type: "number" } },
+            required: ["total", "youth"],
+            additionalProperties: false,
+          },
+        },
+        sinsung: { type: "boolean", description: "[사회보험료] 신성장서비스업이면 제2호 50%→75%" },
+        si_youth: { type: "number", description: "[사회보험료] 청년등 1인당 사용자 사회보험료(원, =총급여×요율÷인원). 만원급 입력은 거부." },
+        si_other: { type: "number", description: "[사회보험료] 청년외 1인당 사용자 사회보험료(원)" },
+      },
+      required: ["first_year", "counts"],
       additionalProperties: false,
     },
   },
@@ -1111,6 +1141,7 @@ export const HIDDEN_TOOL_NAMES = new Set([
   "list_taxlaw_site_menus",
   "get_taxlaw_page_text",
   "call_taxlaw_action",
+  "compute_employment_credit",
 ])
 
 export function visibleTools(): typeof tools {
@@ -4879,6 +4910,14 @@ export async function handleToolCall(name: string, args: unknown): Promise<ToolR
     }
     if (name === "verify_nts_citations") {
       return await verifyNtsCitations(input as { text?: string; maxCitations?: number })
+    }
+    if (name === "compute_employment_credit") {
+      // 계산 엔진 예외 격리 — 검색 핸들러 가용성에 전이 금지(design D)
+      try {
+        return textResponse(computeEmploymentCredit(input as EmpCreditArgs))
+      } catch (e) {
+        return textResponse(`[입력/적용범위 오류] ${e instanceof Error ? e.message : String(e)}`, true)
+      }
     }
     if (name === "search_taxlaw_all") {
       return await searchTaxlawAll(input as IntegratedSearchArgs)

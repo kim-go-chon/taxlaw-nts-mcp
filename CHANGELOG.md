@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.13.0] - 2026-06-15
+
+고용 세액공제 '단일 출처' 계산 엔진 내장 — forward 공제 ↔ 추징식을 LLM이 따로 도출하다 모순 내는 오류의 구조적 차단(도구가 계산, 손계산 금지). 다단계 적대적 리뷰(정확성 14건·설계 3축·전체 산출물 8건)를 반영해 포팅.
+
+### Added — `compute_employment_credit` (HIDDEN, `src/employment-credit.ts`)
+- 고용증대(§29의7)·통합고용(§29의8 구법=2024·2025귀속)·중소기업 사회보험료(§30의4) + COVID 특례(§29의7⑤⑥⑦) forward 공제 + 추징 산정. 로컬 Python SSOT(`Downloads\TAX\고용증대세액공제_계산기\`)의 1:1 포팅 — `test/employment-credit.test.js` 16블록이 Python 자체테스트·검증배터리와 골든 패리티(동일 숫자).
+- **설계(design-tradeoff 리뷰 D안)**: tools/list 비노출(HIDDEN_TOOL_NAMES) → `call_taxlaw_extra(name="compute_employment_credit")` 경유(상주 토큰 0, v0.12.0 토큰규율 정렬). 게이트웨이 description에 발견성 1줄. 계산 핸들러 try/catch 격리(검색 가용성 보호).
+- **stale·오인 방지**: 출력 헤더에 "저자 산식 기반 계산값 — 1차 근거 아님" 강제('검증' 단어 금지), 사용 단가·기준 시행일 동봉. 통합고용 2026 귀속~ 신법(직전3년·단년·A+B+C 구간식)은 NOT_SUPPORTED → build_application_timetable 라우팅. 사회보험료 만원급 입력(원/만원 혼동) 거부. first_year(차수) 필수.
+- **법령 정합(리뷰 반영)**: ① 추징 청년감소 한도 = max(0,dYouth)(절사 전, §26의7⑤/§26의8④/§27의4⑪ 한도 단서) — forward 제1호 인원 n1=clamp(dYouth,0,dTotal)(§…①제1호 전체증가 절사)과 별개 상수 분리(dYouth>dTotal 과소추징 버그 차단). ② 3차 한도=직전2년 공제세액 합계(제1호 추징분은 산식값에만 차감). ③ COVID 게이트 fy∈{2018,2019}+⑤(2020감소)·⑥(2021회복) 데이터 게이트(무감소 유령 4차 forward 차단), fy+3 추징은 시행령 미규정 → 수동. ④ 전체유지·청년감소 잔여연도=전체 증가인원 전부 제2호 단가(기재부 조특제도과-215).
+
+### Fixed
+- `VERSION` 상수가 0.12.1로 잔존(0.12.2 커밋 시 package.json만 갱신)했던 것 → 0.13.0으로 정정.
+
+### Tested
+- `test/employment-credit.test.js` 16블록(고용증대·통합고용·사회보험료·COVID·신법 hardgate·단위가드·입력검증·HIDDEN 노출). 전체 205건 통과.
+
 ## [0.12.2] - 2026-06-14
 
 세액공제 사후관리 조문의 '문언 단정' 오류 능동 가드 추가(실측 사고 재발방지).
