@@ -72,6 +72,17 @@ test("classifyChange basics", () => {
   assert.equal(classifyChange("합한", "버린"), "substantive")
 })
 
+test("unit-attached number change is substantive, not renumbering", () => {
+  // 세율·금액·기간 변경은 실질개정 — '번호이동'으로 강등되면 안 된다.
+  assert.equal(classifyChange("100분의 10", "100분의 20"), "substantive")
+  assert.equal(classifyChange("1천만원", "2천만원"), "substantive")
+  assert.equal(classifyChange("5년", "7년"), "substantive")
+  // 순수 조문 참조 변경은 여전히 번호이동
+  assert.equal(classifyChange("제1호", "제2호"), "renumbering")
+  const r = diffArticleTexts("세액의 100분의 10에 상당하는 금액", "세액의 100분의 20에 상당하는 금액")
+  assert.equal(r.verdict, "substantive")
+})
+
 test("long text triggers line-level fallback and still finds the change", () => {
   // 단어 1만 개(>DP 가드) / 줄 2천 개(<DP 가드) → 줄단위 분해 경로.
   // 첫·끝 줄도 바꿔 prefix/suffix 절단으로 가드를 우회하지 못하게 한다.

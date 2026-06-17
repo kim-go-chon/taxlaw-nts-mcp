@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.15.0] - 2026-06-17
+
+3관점(효과성·토큰·시간) + 보안 리뷰(Claude 7-에이전트 적대 워크플로 + 직접 보안 정독, Codex GPT-5.5 병행) 반영. ★핵심 메타테마 — "수동적 권고문(description·INSTRUCTIONS)은 반복 무시되어 실패 → 인용 1건 쓰는 그 호출에서 기계적으로 발동되는 ACTIVE 게이트로 전환". 이번 세션 오인용 사고(사용료 사건을 §48 공동경비 배부 근거로 오귀속, 제목≠본문) 직격. **MCP 재시작 필요.**
+
+### Added — verify_nts_citations 명제 결박 ACTIVE 게이트 (G1)
+- 스키마에 `claims:[{citation, proposition, basis:'direct'|'inference'}]` 추가. 제출 시 각 인용의 **주장 핵심어가 문서 본문/요지에 실제 등장하는지** 매칭률로 ACTIVE 검사: <40%면 `⚠⚠ [명제 불일치 의심] 오귀속 의심 — full 본문 대조 필수`, 결박 시 매칭%+`[직접근거]/[추론]` 라벨. claims 미제출 시 `ℹ` 안내(하위호환, 실존만). 요약에 `⚠명제불일치/⚠명제미결박` 카운트. pure 함수 `propTokens`/`propositionFit`(단위테스트). "실존≠명제적합" PASSIVE 한 줄을 통과조건으로 승격.
+
+### Added — verify confirmed 제목-only 강등 (G2)
+- 번호가 제목(TTL)에만 매칭되고 본문(문서번호·요지)에 없으면 `△ 제목≠본문(이의-부산청 류) 가능 — full로 사건 동일성 확인` 강등 태그(실존✓은 유지). 요약에 `△제목만매칭` 카운트. NTS 제목↔본문 불일치(데이터 이상) 자동 노출.
+
+### Security — OC(법제처 API키) 출력 redaction 방어심층
+- `redactSecrets()`를 모든 `textResponse` 출력에 적용 → `?OC=…`/`&oc=…`를 `***`로 마스킹. 현재 누출 경로는 없으나(에러는 label만, fetchWithRetry는 err.message만) DRF URL이 미래에 출력/에러에 섞여도 키 보호. 직접 보안 리뷰 결론: SSRF는 `normalizeTaxlawPath`(시작 `/` 강제+`//`·`://` 차단·호스트 고정)로 견고, ReDoS는 bounded 정규식으로 낮음, ledger append는 env경로·try/catch — Critical/High 없음.
+
+### 로드맵(승인/추가 예정)
+- additive 다음 배치: G3(detectHoldingTruncation을 full=true에도—요지↔주문 모순), G4(검색 쟁점일치 축+티어금지 헤더), G9(citationBound 동반호출 ACTIVE칩), G10(get_law_article 적용시기 미결박 가드), 간접 프롬프트 인젝션 delimiter.
+- 기본동작 변경(사용자 승인 필요): G5(검색 verbose triage 기본), G7(research_taxlaw_topic verify 인라인), G8(precedent full 자동승격).
+
+## [0.14.0] - 2026-06-17
+
+인용 검증 백스톱 강화 + '능동 게이트' 기반(L1 원장). 계기: 오인용 사고 — 하이픈형 심판례 번호(조심-2024-인-2328)가 verify_nts_citations 추출 정규식(`\s?`만 허용)에 안 잡혀 침묵 누락 → "4건 중 4건 검증" 거짓안심. 근본은 에이전트가 보조 인용을 full 본문 없이 검색근거 스니펫으로 인용한 규율 실패(수동 규율의 반복 한계)이고, 본 릴리스는 그 백스톱(MCP)과 능동 게이트 기반을 보강한다. **MCP 재시작 필요.**
+
+### Fixed — `extractNtsCitations` (P1)
+- 심판·심사 번호 구분자 `\s?`→`[\s-]?`로 통일 → **하이픈형 조심/국심**(조심-2024-서-5990) 추출. **이의신청 지방청 패턴**(이의-부산청-2024-0108) 신규. 감심/심사도 하이픈 허용. (`test/utils.test.js` P1 케이스)
+
+### Added — `findUnparsedCitationTokens` (P2, 침묵 누락 가시화)
+- 정밀 추출이 놓친 '인용처럼 보이는' 토큰을 광의 패턴으로 검출 → verify 출력에 `⚠ 추출 실패(미인식 패턴) N건` + 요약에 `⚠추출실패`. "검출 N건 중 N건"의 거짓안심 제거(포맷 불문 안전망). 추출된 토큰은 정규화 포함관계로 제외.
+
+### Added — verify_nts_citations 메타 echo (P3+P5) + 검증 원장 (L1)
+- ✓ 확인 줄에 **제목·요지·결정구분·세목 + 관련법령**(상세 1콜 보강) 병기 + "⚠ 실존≠명제적합, full 본문 대조" 강제 줄 → 2328류 royalty 사건이 게이트에서 눈앞에 드러나 자가적발 보조.
+- **L1 원장**: 검증결과를 `~/.taxlaw-nts-citation-ledger.jsonl`(env `TAXLAW_CITATION_LEDGER`)에 적재(raw·normalized·exists·title·gist·decision·relatedLaws·id·ts). 외부 빌드게이트(L2 `verify_citations.py`)가 "검증 실행 여부"를 대조하는 근거. 기록 실패는 검증을 막지 않음.
+
+### Changed — search_taxlaw_documents 설명 (P4)
+- "'검색근거' 스니펫=질의어 매칭 단편, 사건 실제 쟁점(제목·요지·관련법령)과 다를 수 있음 — 보조·예시 인용도 핵심과 동일 검증 바, 결론·분류는 full=true" 명문화.
+
+### 능동 게이트(외부, MCP 밖)
+- L2 빌드게이트 `Downloads\TAX\한의_관계도\verify_citations.py`(+test): 산출물 인용 전수추출 ↔ 원장 대조, 미검증(원장 부재)=빌드 실패(exit 1), 실존=제목·결정·관련법령 노출(명제 재대조), NTS 미발견=WARN(≠미존재).
+- L3 살리언스 훅 `~/.claude/hooks/citation_gate.py`(settings.json UserPromptSubmit): 법령·세무 인용 작업 시 '인용 게이트' 규율(핵심/보조 티어 금지·full 본문·verify) 자동 주입.
+
 ## [0.13.0] - 2026-06-15
 
 고용 세액공제 '단일 출처' 계산 엔진 내장 — forward 공제 ↔ 추징식을 LLM이 따로 도출하다 모순 내는 오류의 구조적 차단(도구가 계산, 손계산 금지). 다단계 적대적 리뷰(정확성 14건·설계 3축·전체 산출물 8건)를 반영해 포팅.

@@ -3,6 +3,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import { appendFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import {
   classifyIndustryForArticle,
   dbInfo as upjongDbInfo,
@@ -35,7 +38,7 @@ import { computeEmploymentCredit, type EmpCreditArgs } from "./employment-credit
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.13.0"
+const VERSION = "0.15.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -623,7 +626,9 @@ const tools = [
     name: "search_taxlaw_documents",
     description: `국세법령정보시스템 문서 검색. 세법해석례/질의회신(01-04)과 과세전적부·이의·심사·심판·판례·헌재(05-10)를 검색. 최신 조세심판원 결정례는 NTS가 강세. ${COMPANION_NOTICE} 결과는 본 검색 + korean-law-mcp.search_decisions를 함께 호출해 양쪽 출처 병기.
 
-⚠️ taxLawCode 권장: 검색어가 여러 세법에 걸칠 수 있으면 세목 코드 명시. NTS 코드 매핑: ${taxLawCodeReference()}. NTS API의 코드 필터링이 strict하지 않아 불일치 항목은 ⚠ taxLawCode_mismatch 자동 부착.`,
+⚠️ taxLawCode 권장: 검색어가 여러 세법에 걸칠 수 있으면 세목 코드 명시. NTS 코드 매핑: ${taxLawCodeReference()}. NTS API의 코드 필터링이 strict하지 않아 불일치 항목은 ⚠ taxLawCode_mismatch 자동 부착.
+
+⚠️ '검색근거' 스니펫은 query 토큰 매칭 단편이라 사건의 실제 쟁점(제목·요지·관련법령)과 다를 수 있습니다 — 키워드가 겹친다고 곧 그 쟁점의 결정이 아닙니다. 산출물에 넣을 인용은 핵심·보조 가리지 말고(티어 금지) 전부 동일하게 제목/요지/관련법령으로 쟁점 일치를 확인하고, 결론·분류 인용은 full=true 본문(주문·판단)을 대조하세요. 마지막에 verify_nts_citations로 일괄 실존·메타 확인.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -1073,6 +1078,20 @@ const tools = [
       properties: {
         text: { type: "string", description: "검증할 본문/인용 목록(초안 전체를 넣어도 됨 — 번호 패턴만 추출)" },
         maxCitations: { type: "number", minimum: 1, maximum: 20, default: 12, description: "검증할 최대 인용 수(추출 순)" },
+        claims: {
+          type: "array",
+          description: "v0.15.0 — 인용별 '명제 결박'(권장). 각 인용이 산출물에서 뒷받침하려는 주장을 함께 제출하면, 그 주장 핵심어가 문서 본문/요지에 실제 등장하는지 ACTIVE 검사(불일치 시 ⚠⚠ 오귀속 의심). 미제출 시 실존만 확인.",
+          items: {
+            type: "object",
+            properties: {
+              citation: { type: "string", description: "인용 번호(text의 것과 동일 표기). 예: 조심-2024-인-2328" },
+              proposition: { type: "string", description: "이 인용으로 뒷받침하려는 주장(한 문장). 예: 공동경비를 §48 매출액 비율로 안분한다" },
+              basis: { type: "string", enum: ["direct", "inference"], description: "직접근거(direct)인지 추론(inference)인지" },
+            },
+            required: ["citation", "proposition"],
+            additionalProperties: false,
+          },
+        },
       },
       required: ["text"],
       additionalProperties: false,
@@ -1149,8 +1168,14 @@ export function visibleTools(): typeof tools {
   return tools.filter((t) => !HIDDEN_TOOL_NAMES.has(t.name))
 }
 
+// v0.15.0(보안 하드닝) — 모든 도구 출력에서 법제처 OC(API키) 누출 방어심층. 현재 누출 경로는
+// 없으나(에러는 label만, fetch는 err.message만), DRF URL이 미래에 출력/에러에 섞여도 키를 마스킹한다.
+export function redactSecrets(text: string): string {
+  return String(text || "").replace(/([?&](?:OC|oc)=)[^&\s"'<>]+/g, "$1***")
+}
+
 function textResponse(text: string, isError = false): ToolResponse {
-  return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) }
+  return { content: [{ type: "text", text: redactSecrets(text) }], ...(isError ? { isError: true } : {}) }
 }
 
 function lookupSiteActions(keys: string[]): SiteMenuAction[] {
@@ -2036,9 +2061,13 @@ export function extractNtsCitations(text: string): NtsCitation[] {
     if (DEPT_FALSE_PREFIXES.has(m[1])) continue
     push(m[0], "interpretation")
   }
-  // 심판·심사: 조심2013서1471, 국심2005서1234 / 감심2010-123, 심사소득2019-0012
-  for (const m of src.matchAll(/(?:조심|국심)\s?\d{4}\s?[가-힣]{1,2}\s?\d{1,5}/g)) push(m[0], "tribunal")
-  for (const m of src.matchAll(/(?:감심|심사[가-힣]{0,4})\s?\d{4}\s?-\s?\d{1,5}/g)) push(m[0], "tribunal")
+  // 심판·심사: 조심2013서1471 / 조심-2024-서-5990(하이픈 공식표기) / 국심2005서1234
+  // v0.13.x(P1) — 구분자 [\s-]?로 통일. 하이픈형 조심/국심 누락 수정(오인용 사고 조심-2024-인-2328 미추출 재발방지).
+  for (const m of src.matchAll(/(?:조심|국심)[\s-]?\d{4}[\s-]?[가-힣]{1,2}[\s-]?\d{1,5}/g)) push(m[0], "tribunal")
+  // 감심·심사청구: 감심2010-123 / 심사소득2019-0012 / 심사-2020-1234
+  for (const m of src.matchAll(/(?:감심|심사[가-힣]{0,4})[\s-]?\d{4}[\s-]?\d{1,5}/g)) push(m[0], "tribunal")
+  // 이의신청: 이의-부산청-2024-0108 / 이의-중부청-2023-12 (지방청 단위 문서번호)
+  for (const m of src.matchAll(/이의(?:신청)?[\s-]?[가-힣]{2,7}청[\s-]?\d{4}[\s-]?\d{1,5}/g)) push(m[0], "tribunal")
   // 법원: 2021두39997, 2023누15045, 2020구합1234, 2019헌바73
   for (const m of src.matchAll(/\d{4}\s?(?:두|누|구합|구단|헌바|헌가|헌마)\s?\d{2,7}/g)) push(m[0], "court")
   // 기본통칙: "기본통칙 10-0…5" / 옛 "기본통칙 10-0-5"
@@ -2046,22 +2075,113 @@ export function extractNtsCitations(text: string): NtsCitation[] {
   return out
 }
 
+// v0.13.x(P2) — 정밀 추출기가 놓친 '인용처럼 보이는' 토큰을 찾아 침묵 누락을 가시화한다.
+// "N건 중 N건 검증" 거짓안심 방지: 미인식 포맷(신형 하이픈·지방청 이의신청 등)을 ⚠로 노출한다.
+const CITATION_SHAPED =
+  /(?:조심|국심|감심|심사|이의|적부|과세전적부|서면|사전|기준)[가-힣·\-]{0,9}\d{4}[가-힣·\-]{0,5}\d{1,6}/g
+export function findUnparsedCitationTokens(text: string, extracted: NtsCitation[]): string[] {
+  const src = String(text || "")
+  const norm = (s: string) => s.replace(/[\s\-–—.·]/g, "").toLowerCase()
+  const extractedNorm = extracted.map((c) => c.normalized).filter((n) => n.length >= 6)
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const m of src.matchAll(CITATION_SHAPED)) {
+    const raw = m[0].trim().replace(/[\s.,]+$/, "")
+    const n = norm(raw)
+    if (n.length < 6) continue
+    if (extractedNorm.some((e) => n.includes(e) || e.includes(n))) continue
+    if (seen.has(n)) continue
+    seen.add(n)
+    out.push(raw)
+  }
+  return out
+}
+
+// v0.13.x(L1) — 인용 검증 결과를 원장(jsonl)에 적재. 빌드/마감 게이트가 "검증을 실제로 돌렸는가"를 대조하는 근거.
+// 경로는 TAXLAW_CITATION_LEDGER로 재지정 가능(기본: 홈디렉터리). 기록 실패는 검증을 막지 않는다(가용성 우선).
+const CITATION_LEDGER_PATH = process.env.TAXLAW_CITATION_LEDGER || join(homedir(), ".taxlaw-nts-citation-ledger.jsonl")
+function appendCitationLedger(entry: Record<string, unknown>): void {
+  try {
+    appendFileSync(CITATION_LEDGER_PATH, JSON.stringify({ ...entry, ts: new Date().toISOString() }) + "\n")
+  } catch {
+    /* 원장 기록 실패 무시 */
+  }
+}
+
+// v0.13.x(P5) — 확정 인용의 '관련법령'을 상세조회로 보강(명제적합성 자가검증 신호). 실패 시 생략.
+async function fetchRelatedLawsForCitation(id: string): Promise<string> {
+  const attempts = [
+    `/qt/USEQTA002P.do?ntstDcmId=${encodeURIComponent(id)}`,
+    `/pd/USEPDA002P.do?ntstDcmId=${encodeURIComponent(id)}`,
+  ]
+  for (const referer of attempts) {
+    try {
+      const data = await postTaxlawAction<TaxlawDetailData>("ASIQTB002PR01", { dcmDVO: { ntstDcmId: id } }, referer)
+      const detail = data.ASIQTB002PR01
+      if (!detail?.dcmDVO) continue
+      return (detail.dcmRltnStttList || []).map((it) => cleanText(it.ntstTextNm)).filter(Boolean).join(", ")
+    } catch {
+      /* 상세조회 실패 시 관련법령 생략(제목·요지·결정만으로도 신호 충분) */
+    }
+  }
+  return ""
+}
+
+// v0.15.0(G1 — 명제 결박 ACTIVE 게이트) — proposition 핵심 토큰이 문서 본문/요지에 실제 등장하는지로
+// 명제 적합성을 휴리스틱 측정. "실존≠명제적합"이라는 PASSIVE 권고를 호출시점 ACTIVE 신호로 승격
+// (이번 세션 오귀속 사고: 사용료 사건을 §48 공동경비 배부 근거로 오인용 재발 차단). 조사 제거 후 길이≥2 토큰.
+const JOSA_SUFFIX = /(으로서|으로|에서|에게서|에게|까지|부터|이라|라고|와의|과의|에는|에도|을|를|이|가|은|는|의|에|와|과|로|도|만|및|등|또는)$/
+export function propTokens(s: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (let t of String(s || "").split(/[^가-힣A-Za-z0-9]+/)) {
+    t = t.replace(JOSA_SUFFIX, "")
+    if (t.length < 2) continue
+    const k = t.toLowerCase()
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(t)
+  }
+  return out
+}
+export function propositionFit(proposition: string, hay: string): number {
+  const toks = propTokens(proposition)
+  if (!toks.length) return 1
+  const h = String(hay || "").toLowerCase()
+  return toks.filter((t) => h.includes(t.toLowerCase())).length / toks.length
+}
+type NtsClaim = { citation?: string; proposition?: string; basis?: string }
+
 // v0.12.0 — NTS 인용 실존 일괄 검증 도구. 산출물에 들어갈 번호의 실존을 검색으로 확인.
-// ⚠ 실존 확인 ≠ 명제 적합성(그 문서가 결론을 지지하는가) — 후자는 full 본문 대조가 별도 필요.
-export async function verifyNtsCitations(args: { text?: string; maxCitations?: number }): Promise<ToolResponse> {
+// ⚠ 실존 확인 ≠ 명제 적합성(그 문서가 결론을 지지하는가) — claims 제출 시 ACTIVE 결박 검사, 미제출 시 실존만.
+export async function verifyNtsCitations(args: { text?: string; maxCitations?: number; claims?: NtsClaim[] }): Promise<ToolResponse> {
   const text = requireString("text", args.text)
   const cap = asPositiveInt(args.maxCitations, 12, 20)
   const all = extractNtsCitations(text)
+  const unparsed = findUnparsedCitationTokens(text, all)
   if (all.length === 0) {
+    if (unparsed.length) {
+      return textResponse(
+        [
+          "── NTS 인용 실존 일괄 검증 ──",
+          `⚠ 정밀 추출 0건이나, 인용처럼 보이는 미인식 토큰 ${unparsed.length}건 발견 — 패턴 미지원 가능. 수동 확인 필수:`,
+          ...unparsed.map((u) => `  • ${u}`),
+        ].join("\n"),
+      )
+    }
     return textResponse(
       "인용 번호 패턴이 검출되지 않았습니다(해석례 문서번호·심판례 청구번호·법원 사건번호·기본통칙). 번호 표기를 확인하거나 인용 목록만 따로 전달하세요.",
     )
   }
   const cits = all.slice(0, cap)
+  const hasClaims = Array.isArray(args.claims) && args.claims.length > 0
   const lines = [
     "── NTS 인용 실존 일괄 검증 ──",
     `검출 ${all.length}건 중 ${cits.length}건 검증${all.length > cap ? ` (초과 ${all.length - cap}건은 maxCitations 확대 후 재호출)` : ""}.`,
     "⚠ 실존 확인 ≠ 명제 적합성 — 결론 인용 전 full 본문(주문·판단)으로 그 문서가 명제를 실제 지지하는지 별도 대조하라.",
+    hasClaims
+      ? "✓ claims 제출됨 → 명제 결박 ACTIVE 검사 수행(주장 핵심어↔본문 매칭률)."
+      : "ℹ claims[{citation, proposition, basis:'direct'|'inference'}] 제출 시 명제 적합성을 ACTIVE 검사(미제출=실존만 확인). 산출물 인용은 claims 동반 권장.",
     "",
   ]
   // v0.12.1 — 인용별 처리를 동시성 상한(4) 청크 병렬로(종전 순차 for: N건=N회 직렬 왕복).
@@ -2070,7 +2190,8 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
     { kind: "question" as const, codes: ["01", "02", "03", "04"] },
     { kind: "precedent" as const, codes: ["05", "06", "07", "08", "09", "10"] },
   ]
-  type CitResult = { tally: "confirmed" | "notFound" | "failed" | "basic"; line: string }
+  type CitResult = { tally: "confirmed" | "notFound" | "failed" | "basic"; line: string; titleOnly?: boolean; claimMiss?: boolean; claimMismatch?: boolean }
+  const norm2 = (s: unknown) => cleanText(String(s || "")).replace(/[\s\-–—.·]/g, "").toLowerCase()
 
   async function processCit(cit: NtsCitation): Promise<CitResult> {
     if (cit.kind === "basic_rule") {
@@ -2094,9 +2215,45 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
       })
       if (hit) {
         const date = cleanText(String(hit.DCM_RGT_DTM_S || hit.DCM_RGT_DTM || "")).slice(0, 12)
-        const id = hit.DOC_ID || hit.DOCID || "?"
-        return { tally: "confirmed", line: `✓ ${cit.raw} — 실존 확인: ${cleanText(hit.TTL).slice(0, 60)} (생산 ${date || "?"}, ID ${id})` }
+        const id = String(hit.DOC_ID || hit.DOCID || "?")
+        const title = cleanText(hit.TTL).slice(0, 70)
+        const gist = cleanText(String(hit.GIST_CNTN || "")).replace(/\s+/g, " ").slice(0, 80)
+        const decision = cleanText(String(hit.NTST_DCM_DCS_CL_NM || ""))
+        const tax = cleanText(String(hit.NTST_TLAW_CL_NM || ""))
+        const related = id !== "?" ? await fetchRelatedLawsForCitation(id) : ""
+        appendCitationLedger({ raw: cit.raw, normalized: cit.normalized, kind: cit.kind, exists: true, title, gist, decision, relatedLaws: related, id })
+        const metaBits = [tax && `세목 ${tax}`, decision && `결정 ${decision}`, related && `관련법령 ${related.slice(0, 70)}`]
+          .filter(Boolean)
+          .join(" · ")
+        const ln: string[] = [`✓ ${cit.raw} — 실존 확인: ${title} (생산 ${date || "?"}, ID ${id})`]
+        if (metaBits) ln.push(`    └ ${metaBits}`)
+        if (gist) ln.push(`    └ 요지: ${gist}…`)
+        // G2 — 번호가 제목(TTL)에만 매칭되고 본문(문서번호·요지)에는 없으면 강등(제목≠본문, 이의-부산청 류). 실존✓은 유지.
+        const bodyHay = norm2(`${hit.NTST_DCM_DSCM_CNTN || ""}${hit.NTST_DCM_RPLY_CNTN || ""}${hit.GIST_CNTN || ""}`)
+        const titleOnly = !bodyHay.includes(cit.normalized) && norm2(hit.TTL).includes(cit.normalized)
+        if (titleOnly) ln.push("    └ △ 번호가 제목(TTL)에만 매칭·본문(문서번호/요지) 미확인 — 제목≠본문(이의-부산청 류) 가능, full로 사건 동일성 확인")
+        // G1 — 명제 결박: claims 제출 시 주장 핵심어↔본문 매칭률로 ACTIVE 검사.
+        const claim = (args.claims || []).find((c) => c && norm2(c.citation) === cit.normalized)
+        let claimMiss = false
+        let claimMismatch = false
+        if (hasClaims && !claim) {
+          claimMiss = true
+          ln.push("    └ ⚠ [명제 미결박] 이 인용의 proposition·basis 미제출 — 주장 적합성 미검증. 산출물 인용 전 claims로 재호출.")
+        } else if (claim) {
+          const fit = propositionFit(String(claim.proposition || ""), `${bodyHay}${norm2(hit.TTL)}${norm2(gist)}${norm2(related)}`)
+          const pct = Math.round(fit * 100)
+          if (fit < 0.4) {
+            claimMismatch = true
+            ln.push(`    └ ⚠⚠ [명제 불일치 의심] 주장 핵심어 본문 매칭 ${pct}% — 오귀속(표현·쟁점 오귀속) 의심. full 본문(주문·판단)으로 직접 대조 필수, 불일치 시 인용 제외.`)
+          } else {
+            ln.push(`    └ [명제 결박] 주장 핵심어 본문 매칭 ${pct}%${claim.basis === "inference" ? " · [추론] 라벨(직접근거 아님)" : " · [직접근거]"} — 결론 인용은 full 본문 확인.`)
+          }
+        } else {
+          ln.push("    └ ⚠ 실존 ≠ 명제적합 — 위 제목·요지·관련법령이 인용 '주장'과 일치하는지 full 본문(주문·판단)으로 확인")
+        }
+        return { tally: "confirmed", line: ln.join("\n"), titleOnly, claimMiss, claimMismatch }
       }
+      appendCitationLedger({ raw: cit.raw, normalized: cit.normalized, kind: cit.kind, exists: false })
       return {
         tally: "notFound",
         line: `✗ ${cit.raw} — NTS 공개DB 미발견. ⚠ 미존재/할루시네이션 단정 금지 — 공개DB는 선별·익명화 수록이므로 외부 DB(casenote 등) 교차확인 전까지 산출물에는 "공개DB 미발견"으로만 기재.${cit.kind === "court" ? " 법원 판례는 korean-law-mcp search_decisions(domain=precedent)·cite_check 병행." : ""}`,
@@ -2116,13 +2273,29 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
   let confirmed = 0
   let notFound = 0
   let failed = 0
+  let titleOnly = 0
+  let claimMiss = 0
+  let claimMismatch = 0
   for (const r of results) {
     if (r.tally === "confirmed") confirmed++
     else if (r.tally === "notFound") notFound++
     else if (r.tally === "failed") failed++
+    if (r.titleOnly) titleOnly++
+    if (r.claimMiss) claimMiss++
+    if (r.claimMismatch) claimMismatch++
     lines.push(r.line)
   }
-  lines.push("", `요약: ✓ 확인 ${confirmed} / ✗ 미발견 ${notFound} / ? 실패 ${failed} / 검출 ${all.length}`)
+  if (unparsed.length) {
+    lines.push("", `⚠ 추출 실패(미인식 패턴) ${unparsed.length}건 — verify 대상에서 누락됨(침묵 누락 방지 경고). 포맷 확인 후 개별 인용 또는 수동 검증 필수:`)
+    unparsed.forEach((u) => lines.push(`  • ${u}`))
+  }
+  if (claimMismatch) lines.push("", `⚠⚠ 명제 불일치 의심 ${claimMismatch}건 — 산출물 인용 전 full 본문(주문·판단)으로 오귀속 여부 직접 대조 필수.`)
+  if (claimMiss) lines.push(claimMismatch ? "" : "", `⚠ 명제 미결박 ${claimMiss}건 — proposition·basis 없이는 적합성 미검증. 산출물 인용 전 claims 동반 재호출.`)
+  lines.push("", `요약: ✓ 확인 ${confirmed} / ✗ 미발견 ${notFound} / ? 실패 ${failed} / 검출 ${all.length}` +
+    `${unparsed.length ? ` / ⚠추출실패 ${unparsed.length}` : ""}` +
+    `${titleOnly ? ` / △제목만매칭 ${titleOnly}` : ""}` +
+    `${claimMiss ? ` / ⚠명제미결박 ${claimMiss}` : ""}` +
+    `${claimMismatch ? ` / ⚠⚠명제불일치 ${claimMismatch}` : ""}`)
   return textResponse(truncate(lines.join("\n"), 20000))
 }
 
@@ -2283,7 +2456,7 @@ async function searchTaxlawDocuments(
 
   const title = codes.length === 1 ? docLabel(codes[0]) : codes.map((code) => docLabel(code)).join(", ")
   const currentPage = asPositiveInt(args.page, 1)
-  const pageSize = asPositiveInt(args.display, 20, 50)
+  const pageSize = asPositiveInt(args.display, 10, 50)
   const estimatedPages = total > 0 ? Math.ceil(total / pageSize) : 0
   const lines = [
     `국세법령정보시스템 문서 검색 결과: ${title}`,
@@ -4909,7 +5082,7 @@ export async function handleToolCall(name: string, args: unknown): Promise<ToolR
       return await handleToolCall(sub, input.args ?? {})
     }
     if (name === "verify_nts_citations") {
-      return await verifyNtsCitations(input as { text?: string; maxCitations?: number })
+      return await verifyNtsCitations(input as { text?: string; maxCitations?: number; claims?: NtsClaim[] })
     }
     if (name === "compute_employment_credit") {
       // 계산 엔진 예외 격리 — 검색 핸들러 가용성에 전이 금지(design D)

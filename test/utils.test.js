@@ -25,6 +25,10 @@ const {
   filterVersionsByName,
   lawNameKey,
   extractNtsCitations,
+  findUnparsedCitationTokens,
+  propTokens,
+  propositionFit,
+  redactSecrets,
   todayYmd,
   parseLawAddenda,
   extractCdataText,
@@ -613,6 +617,56 @@ test("extractNtsCitations: 해석례 신형/구형/부서형·심판례·법원�
   const court = cits.find((c) => c.raw === "2021두39997")
   assert.equal(court.kind, "court")
   assert.equal(court.normalized, "2021두39997")
+})
+
+test("extractNtsCitations(P1): 하이픈형 조심·지방청 이의신청·감심 추출 — 오인용 사고(조심-2024-인-2328 침묵누락) 재발방지", () => {
+  const text = "조심-2024-서-5990, 조심-2024-인-2328, 이의-부산청-2024-0108, 조심2025서2156, 감심2010-123 참조."
+  const norms = extractNtsCitations(text).map((c) => c.normalized)
+  assert.ok(norms.includes("조심2024서5990"), "하이픈형 조심(서)")
+  assert.ok(norms.includes("조심2024인2328"), "하이픈형 조심(인) — 오인용 당사자")
+  assert.ok(norms.includes("이의부산청20240108"), "지방청 이의신청")
+  assert.ok(norms.includes("조심2025서2156"), "압축형 조심 회귀")
+  assert.ok(norms.includes("감심2010123"), "감심 하이픈")
+})
+
+test("findUnparsedCitationTokens(P2): 정밀추출이 놓친 인용형 토큰만 노출, 추출된 것은 제외(침묵누락 가시화)", () => {
+  const text = "조심-2024-서-5990 인용. 그리고 적부-국세청-2099-9999 도 있음."
+  const extracted = extractNtsCitations(text)
+  const unparsed = findUnparsedCitationTokens(text, extracted)
+  // 조심-2024-서-5990은 P1로 추출 → unparsed 제외
+  assert.ok(!unparsed.some((u) => u.replace(/[\s-]/g, "").includes("조심2024서5990")), "추출된 인용은 미추출 경고에서 제외")
+  // 적부-국세청-...는 정밀 추출 대상 아님 → unparsed로 노출
+  assert.ok(unparsed.some((u) => u.includes("적부")), "미인식 포맷은 ⚠ 노출")
+})
+
+test("propTokens(G1): 조사 제거·길이≥2·중복제거", () => {
+  const toks = propTokens("공동경비를 매출액 비율로 안분, 손금 산입 / 매출액 기준")
+  assert.ok(toks.includes("공동경비"), "조사 '를' 제거")
+  assert.ok(toks.includes("매출액"), "매출액(로 제거)")
+  assert.ok(toks.includes("비율"), "비율")
+  assert.ok(toks.includes("안분"), "안분")
+  assert.ok(!toks.includes("를") && !toks.includes("이") && !toks.includes("에"), "1자 조사 배제")
+  assert.equal(new Set(toks).size, toks.length, "중복(매출액 2회) 제거")
+})
+
+test("propositionFit(G1): 명제 적합 케이스 vs 오귀속 케이스 분리(임계 0.4)", () => {
+  // 적합: 주장 토큰이 본문에 대부분 등장
+  const body = norm("청구법인의 공동경비를 직전 사업연도 매출액 비율로 안분하여 손금불산입한 처분은 정당함")
+  const fitHi = propositionFit("공동경비를 매출액 비율로 안분", body)
+  assert.ok(fitHi >= 0.4, `적합 케이스 fit=${fitHi} (≥0.4 기대)`)
+  // 오귀속(이번 세션 사고형): 사용료소득 사건 본문에 §48 공동경비 배부 주장 토큰이 거의 없음
+  const royaltyBody = norm("외국법인의 글로벌 마케팅 분담금이 사용료소득에 해당하는지 여부 — 상표권 국내 사용 대가로 보기 어려움")
+  const fitLo = propositionFit("공동경비를 §48 매출액 비율로 안분하는 정상 배부방식", royaltyBody)
+  assert.ok(fitLo < 0.4, `오귀속 케이스 fit=${fitLo} (<0.4 기대 → ⚠⚠ 발동)`)
+  function norm(s) { return s.replace(/[\s\-–—.·]/g, "").toLowerCase() }
+})
+
+test("redactSecrets(보안): 출력의 법제처 OC 키 마스킹", () => {
+  assert.equal(redactSecrets("https://www.law.go.kr/DRF/lawSearch.do?OC=secretkey123&target=law"),
+    "https://www.law.go.kr/DRF/lawSearch.do?OC=***&target=law")
+  assert.equal(redactSecrets("error at ...&oc=abc DEF"), "error at ...&oc=*** DEF")
+  // OC가 없으면 무변경
+  assert.equal(redactSecrets("일반 텍스트 OC 설명"), "일반 텍스트 OC 설명")
 })
 
 test("classifyAgainstCurrent: 현행본 대조 — same/differs/deleted/missing 분기(v0.12.1 추출)", () => {

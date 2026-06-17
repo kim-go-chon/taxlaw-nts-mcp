@@ -86,10 +86,12 @@ function normalizePunct(s: string): string {
 }
 
 function normalizeNumbers(s: string): string {
+  // 조문 참조(제N조/항/호/목·동그라미 번호)만 #로 collapse한다.
+  // 단위에 붙은 숫자(100분의 10, 1천만원, 5년 등)까지 collapse하면 세율·금액 변경이
+  // '번호이동'으로 오분류되므로 일괄 \d+ 치환은 두지 않는다.
   return normalizePunct(s)
     .replace(/제\d+(?:조|항|호|목)(?:의\d+)?/g, "#")
     .replace(/[①-⑳㉑-㉟]/g, "#")
-    .replace(/\d+/g, "#")
 }
 
 export function classifyChange(removed: string, added: string): ChangeKind {
