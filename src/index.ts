@@ -38,7 +38,7 @@ import { computeEmploymentCredit, type EmpCreditArgs } from "./employment-credit
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.16.0"
+const VERSION = "0.16.1"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1171,7 +1171,8 @@ export function visibleTools(): typeof tools {
 // v0.15.0(보안 하드닝) — 모든 도구 출력에서 법제처 OC(API키) 누출 방어심층. 현재 누출 경로는
 // 없으나(에러는 label만, fetch는 err.message만), DRF URL이 미래에 출력/에러에 섞여도 키를 마스킹한다.
 export function redactSecrets(text: string): string {
-  return String(text || "").replace(/([?&](?:OC|oc)=)[^&\s"'<>]+/g, "$1***")
+  // gi: 대소문자(Oc/oC)·URL인코딩(%4F%43) 변형까지 마스킹(Codex v0.16.1 재대조 반영).
+  return String(text || "").replace(/([?&](?:oc|%4f%43)=)[^&\s"'<>]+/gi, "$1***")
 }
 
 function textResponse(text: string, isError = false): ToolResponse {
@@ -2169,8 +2170,10 @@ export function propTokens(s: string): string[] {
   }
   return out
 }
+// 초고빈도 비핵심 토큰 — 명제 적합성 점수를 부풀려 false negative를 내므로 제외(Codex v0.16.1 재대조 반영).
+const PROP_STOP = new Set(["여부", "해당", "관련", "근거", "적용", "한다", "되는", "대한", "경우", "이상", "있는", "없는", "또는"])
 export function propositionFit(proposition: string, hay: string): number {
-  const toks = propTokens(proposition)
+  const toks = propTokens(proposition).filter((t) => !PROP_STOP.has(t) && !/^\d+$/.test(t))
   if (!toks.length) return 1
   const h = String(hay || "").toLowerCase()
   return toks.filter((t) => h.includes(t.toLowerCase())).length / toks.length
@@ -2217,6 +2220,8 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
   ]
   type CitResult = { tally: "confirmed" | "notFound" | "failed" | "basic"; line: string; titleOnly?: boolean; claimMiss?: boolean; claimMismatch?: boolean }
   const norm2 = (s: unknown) => cleanText(String(s || "")).replace(/[\s\-–—.·]/g, "").toLowerCase()
+  // claims는 인용당 선형탐색 대신 정규화 키 Map(Codex v0.16.1 재대조 반영 — 대량 입력 성능).
+  const claimsByCit = new Map<string, NtsClaim>((args.claims || []).filter((c) => c && c.citation).map((c) => [norm2(c.citation), c]))
 
   async function processCit(cit: NtsCitation): Promise<CitResult> {
     if (cit.kind === "basic_rule") {
@@ -2254,11 +2259,11 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
         if (metaBits) ln.push(`    └ ${metaBits}`)
         if (gist) ln.push(`    └ 요지: ${gist}…`)
         // G2 — 번호가 제목(TTL)에만 매칭되고 본문(문서번호·요지)에는 없으면 강등(제목≠본문, 이의-부산청 류). 실존✓은 유지.
-        const bodyHay = norm2(`${hit.NTST_DCM_DSCM_CNTN || ""}${hit.NTST_DCM_RPLY_CNTN || ""}${hit.GIST_CNTN || ""}`)
+        const bodyHay = norm2(`${hit.NTST_DCM_DSCM_CNTN || ""}${hit.NTST_DCM_RPLY_CNTN || ""}${hit.GIST_CNTN || ""}${hit.CNTN || ""}${hit.FILE_CN || ""}`)
         const titleOnly = !bodyHay.includes(cit.normalized) && norm2(hit.TTL).includes(cit.normalized)
-        if (titleOnly) ln.push("    └ △ 번호가 제목(TTL)에만 매칭·본문(문서번호/요지) 미확인 — 제목≠본문(이의-부산청 류) 가능, full로 사건 동일성 확인")
+        if (titleOnly) ln.push("    └ △ 번호가 제목(TTL)에만 매칭·본문(문서번호/요지) 미확인 — 제목≠본문 가능, full로 사건 동일성 확인")
         // G1 — 명제 결박: claims 제출 시 주장 핵심어↔본문 매칭률로 ACTIVE 검사.
-        const claim = (args.claims || []).find((c) => c && norm2(c.citation) === cit.normalized)
+        const claim = claimsByCit.get(cit.normalized)
         let claimMiss = false
         let claimMismatch = false
         if (hasClaims && !claim) {
@@ -2535,7 +2540,7 @@ async function searchTaxlawDocuments(
 
   // v0.16.0(G9) — citationBound 인용게이트 칩: INSTRUCTIONS/COMPANION_NOTICE의 PASSIVE 라우팅을 결과시점 ACTIVE 1줄로.
   // 검색→산출물 인용이 곧 실패 경로(검색근거≠쟁점·요지≠holding)이므로, 인용 절차를 결과 헤더에 직접 들이민다.
-  if (items.length > 0) {
+  if (items.length > 0 && args.verbose !== false) {
     lines.push(
       "[COMPANION·인용게이트] 결론·분류로 인용할 땐: 제목/요지/관련법령으로 쟁점 확인(검색근거≠쟁점) → get_taxlaw_document_text(full=true) 주문·판단 대조(요지≠holding) → 조문은 korean-law get_law_text 동반 → 작성 후 verify_nts_citations(claims=[{citation,proposition,basis}])로 실존+명제 게이트. 핵심/보조 티어 금지.",
       "",
@@ -3964,7 +3969,8 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
 // 조치 결박)을 강제 안내한다. 기존 4069행 일반 안내보다 강한 조건부 ⚠(세액공제류 고위험 조문 한정).
 export function buildApplicationTimingGuard(body: string, hasYearAnchor: boolean): string[] {
   if (hasYearAnchor) return []
-  if (!/(공제율|공제액|공제세액|세액공제|단가|상시근로자|사후관리|추징|최초.{0,3}공제|감면율|감면세액|공제대상)/.test(String(body || ""))) return []
+  // 고위험(귀속연도 의존) 키워드만 — '세액공제·공제대상' 등 광범위어는 단순 현행조문 조회 과발동을 유발해 제외(Codex v0.16.1).
+  if (!/(공제율|단가|상시근로자|사후관리|추징|최초.{0,3}공제|감면율)/.test(String(body || ""))) return []
   return [
     "── 적용시기 미결박 ⚠ (귀속연도 의존 조문) ──",
     "단가·공제율·사후관리 등 귀속연도에 따라 달라지는 요소를 포함 — 귀속연도별 단가·요건·추징 결론 전에 build_application_timetable(부칙·경과조치·준용 결박)으로 적용시기를 확정하라. 다년 사이클 공제(통합고용 등)는 최초공제연도(차수) 미확인 시 사용자에게 질문(귀속연도만으론 판정 불가).",
