@@ -38,7 +38,7 @@ import { computeEmploymentCredit, type EmpCreditArgs } from "./employment-credit
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.15.0"
+const VERSION = "0.16.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1710,10 +1710,35 @@ function compactBodyText(text: string, full = false, code?: string): string {
 // 본문 뒤쪽에 위치해 기본(full=false) 8000자 truncate에 자주 잘린다. 요지·처분개요만 보고 결론을
 // 단정하면 요지와 실제 주문/판단이 어긋나는 오류가 발생한다(예: 요지 '에누리 해당'↔판결 '에누리 아님·과세').
 // 잘림 시 full=true 재조회를 강제 안내하고, 요지-결과 정합성·결정구분 표기 가드를 함께 부착한다.
-export function detectHoldingTruncation(opts: { code?: string; fullBody: string; shownBody: string; isFull: boolean }): string[] {
-  const { code, fullBody, shownBody, isFull } = opts
-  if (isFull || !fullBody) return []
+// v0.16.0(G3) — 결정/판결의 '결과 방향'을 명시 결론어로 분류(국승=과세유지 / 국패=납세자유리). 모호하면 "".
+// 요지(gist)와 주문(결론부)의 분류가 충돌하면 요지≠holding 능동 경고에 사용. 복합주문 오탐 방지 위해 명시어만.
+export function classifyVerdict(text: string): "win" | "lose" | "" {
+  const t = String(text || "")
+  const win = /기각한다|각하한다|심판청구를 기각|청구를 기각|국승|처분은 (?:정당|적법)|잘못이 없는 것으로 판단/.test(t)
+  const lose = /취소한다|취소합니다|인용한다|일부 인용|국패|경정한다|경정합니다|처분은 (?:부당|위법)/.test(t)
+  if (win && !lose) return "win"
+  if (lose && !win) return "lose"
+  return ""
+}
+
+export function detectHoldingTruncation(opts: { code?: string; fullBody: string; shownBody: string; isFull: boolean; gist?: string }): string[] {
+  const { code, fullBody, shownBody, isFull, gist } = opts
+  if (!fullBody) return []
   if (!code || !PRECEDENT_CODES.has(code.padStart(2, "0"))) return []
+  if (isFull) {
+    // v0.16.0(G3) — full=true에도 요지≠holding 능동 검사: 요지 결론어와 주문(결론부) 결과가 '달라 보이면'만 ⚠
+    //   (모순 신호 없으면 full 응답은 깨끗이 — 평시 노이즈 0). full을 받고도 요지만 읽는 위험 구간 차단.
+    const gv = classifyVerdict(gist || "")
+    const hv = classifyVerdict(fullBody.slice(-1600))
+    if (gv && hv && gv !== hv) {
+      return [
+        "── 요지·주문 결과 불일치 ⚠⚠ (판례·결정례) ──",
+        "요지의 결론 방향과 주문(결론부)이 달라 보입니다 — 분류·결론은 반드시 주문(holding) 기준으로 표기하고 요지만으로 단정하지 마세요(요지≠holding).",
+        `(감지: 요지=${gv === "win" ? "기각·과세유지 취지" : "취소·인용 취지"} / 주문=${hv === "win" ? "기각·과세유지" : "취소·인용"})`,
+      ]
+    }
+    return []
+  }
   const wasCut = shownBody.length < fullBody.length || /\[truncated to/.test(shownBody)
   const lines = ["── 판단·결론부 확인 (판례·결정례) ──"]
   if (wasCut) {
@@ -2349,6 +2374,13 @@ function formatDocumentSearchItem(item: TaxlawDcm, query?: string, requestedTaxL
   const haystack = [title, gist, snippet, cleanText(item.FILE_CN || "")].join(" ")
   const relevance = query ? judgeRelevance(query, haystack) : { tag: "", matchedRatio: 1, matched: [], missing: [] }
 
+  // v0.16.0(G4) — '쟁점일치' 축: query가 본문(발췌·검색근거)에는 매칭되나 제목·요지(쟁점)에는 약하면,
+  // 같은 단어·다른 쟁점일 수 있음(검색근거≠쟁점, 축약 오인용 방지). judgeRelevance가 토큰겹침만 보던 사각 보강.
+  const issueRel = query ? judgeRelevance(query, [title, gist].join(" ")) : { matchedRatio: 1 }
+  const issueTag = query && relevance.matchedRatio >= 0.5 && issueRel.matchedRatio < 0.3 && relevance.matched.length >= 2
+    ? " ⚠ 본문어 매칭O·쟁점(제목/요지)X — 같은 단어 다른 쟁점 의심"
+    : ""
+
   // v0.9.5 — NTS API의 taxLawCode 필터링이 strict하지 않아 응답에 다른 세목 코드가 섞일 수 있음.
   // 요청 코드와 응답 코드가 다르면 ⚠ 라벨 부착.
   const codeMismatchTag = requestedTaxLawCode && !taxLawCodeMatches(requestedTaxLawCode, taxCode)
@@ -2356,7 +2388,7 @@ function formatDocumentSearchItem(item: TaxlawDcm, query?: string, requestedTaxL
     : ""
 
   const lines = [
-    `[${id}] ${title}${relevance.tag}${codeMismatchTag}`,
+    `[${id}] ${title}${relevance.tag}${codeMismatchTag}${issueTag}`,
     `  구분: ${type} / 세목: ${formatTaxLawCellCompact(tax, taxCode)}`,
     `  문서번호: ${cleanText(item.NTST_DCM_DSCM_CNTN) || "N/A"} / 회신번호: ${cleanText(item.NTST_DCM_RPLY_CNTN) || "N/A"}`,
     `  생산일자: ${normalizeDate(item.DCM_RGT_DTM_S || item.DCM_RGT_DTM)} / 등록일자: ${normalizeDate(item.FRS_RGT_DTM)}`,
@@ -2500,6 +2532,15 @@ async function searchTaxlawDocuments(
     name: cleanText(it.NTST_TLAW_CL_NM || ""),
   })))
   if (codeHeader) lines.push(codeHeader, "")
+
+  // v0.16.0(G9) — citationBound 인용게이트 칩: INSTRUCTIONS/COMPANION_NOTICE의 PASSIVE 라우팅을 결과시점 ACTIVE 1줄로.
+  // 검색→산출물 인용이 곧 실패 경로(검색근거≠쟁점·요지≠holding)이므로, 인용 절차를 결과 헤더에 직접 들이민다.
+  if (items.length > 0) {
+    lines.push(
+      "[COMPANION·인용게이트] 결론·분류로 인용할 땐: 제목/요지/관련법령으로 쟁점 확인(검색근거≠쟁점) → get_taxlaw_document_text(full=true) 주문·판단 대조(요지≠holding) → 조문은 korean-law get_law_text 동반 → 작성 후 verify_nts_citations(claims=[{citation,proposition,basis}])로 실존+명제 게이트. 핵심/보조 티어 금지.",
+      "",
+    )
+  }
 
   // v0.9.12 — relevance_low overflow 경고. 멀티 키워드(2개+) 쿼리에서 회수 항목의 80% 이상이
   // query 토큰을 하나도 매칭하지 않으면 "사실상 매칭 실패" 시그널. NTS 검색 엔진이 OR로 빠진
@@ -2683,6 +2724,7 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
       fullBody: bodyText,
       shownBody: compactBodyText(bodyText, full, code),
       isFull: full,
+      gist,
     })
     if (holdingWarn.length > 0) lines.push(...holdingWarn, "")
   }
@@ -3917,6 +3959,18 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   return textResponse(truncate(lines.join("\n"), args.full === true ? 80000 : 32000))
 }
 
+// v0.16.0(G10) — 적용시기 미결박 능동 가드(부칙 우선). 귀속연도 의존 요소(단가·공제율·사후관리·추징·
+// 상시근로자 등)를 담은 조문을 year/efYd 앵커 없이 회수하면, 결론 전 build_application_timetable(부칙·경과
+// 조치 결박)을 강제 안내한다. 기존 4069행 일반 안내보다 강한 조건부 ⚠(세액공제류 고위험 조문 한정).
+export function buildApplicationTimingGuard(body: string, hasYearAnchor: boolean): string[] {
+  if (hasYearAnchor) return []
+  if (!/(공제율|공제액|공제세액|세액공제|단가|상시근로자|사후관리|추징|최초.{0,3}공제|감면율|감면세액|공제대상)/.test(String(body || ""))) return []
+  return [
+    "── 적용시기 미결박 ⚠ (귀속연도 의존 조문) ──",
+    "단가·공제율·사후관리 등 귀속연도에 따라 달라지는 요소를 포함 — 귀속연도별 단가·요건·추징 결론 전에 build_application_timetable(부칙·경과조치·준용 결박)으로 적용시기를 확정하라. 다년 사이클 공제(통합고용 등)는 최초공제연도(차수) 미확인 시 사용자에게 질문(귀속연도만으론 판정 불가).",
+  ]
+}
+
 export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
   const jo = requireString("jo", args.jo)
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
@@ -4045,6 +4099,8 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   if (revisionGuard.length) lines.push("", ...revisionGuard)
   const forkGuard = buildInterpretiveForkGuard(text, jo)
   if (forkGuard.length) lines.push("", ...forkGuard)
+  const timingGuard = buildApplicationTimingGuard(text, Boolean(efYd))
+  if (timingGuard.length) lines.push("", ...timingGuard)
   lines.push(
     "",
     "── 본문 ──",

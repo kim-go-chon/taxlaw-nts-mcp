@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.16.0] - 2026-06-18
+
+3관점+보안 리뷰 로드맵 additive ACTIVE 게이트 2차 배치(G3·G4·G9·G10) — 모두 신호 추가형·하위호환. 사용자 반복 피드백을 호출시점 능동 신호로 계속 전환. **MCP 재시작 필요.**
+
+### Added — 요지↔주문 결과 불일치 능동 검사 (G3, 피드백 요지≠holding)
+- `classifyVerdict()`(pure) 신설 + `detectHoldingTruncation`을 **full=true에도** 발동: 요지(gist) 결론어와 주문(결론부) 결과가 '달라 보이면'만 `⚠⚠ 요지·주문 결과 불일치` (모순 신호 없으면 full 응답은 깨끗 — 평시 노이즈 0). full을 받고도 요지만 읽는 위험 구간 차단. 단위테스트.
+
+### Added — 검색 '쟁점일치' 축 (G4, 피드백 검색근거≠쟁점)
+- `formatDocumentSearchItem`: query가 본문(발췌·검색근거)에는 매칭되나 제목·요지(쟁점)에는 약하면 `⚠ 본문어 매칭O·쟁점(제목/요지)X — 같은 단어 다른 쟁점 의심` 태그. judgeRelevance가 토큰겹침만 보던 사각 보강.
+
+### Added — citationBound 인용게이트 칩 (G9, 메타테마)
+- 검색 응답 헤더에 결과시점 ACTIVE 1줄: 결론·분류 인용 절차(쟁점 확인→full 주문·판단 대조→korean-law 동반→verify_nts_citations(claims) 게이트, 티어 금지). INSTRUCTIONS/COMPANION_NOTICE의 PASSIVE 라우팅을 검색→인용 실패경로에 직접 들이밂(토큰효율 위해 1줄).
+
+### Added — get_law_article 적용시기 미결박 가드 (G10, 피드백 부칙 우선)
+- `buildApplicationTimingGuard()`(pure): 단가·공제율·사후관리·상시근로자·추징 등 귀속연도 의존 조문을 year/efYd 앵커 없이 회수하면 `⚠ 적용시기 미결박 → build_application_timetable(부칙·경과조치 결박)` 강제 안내(다년 사이클은 최초공제연도 질문). 단위테스트.
+
+테스트 214/214.
+
 ## [0.15.0] - 2026-06-17
 
 3관점(효과성·토큰·시간) + 보안 리뷰(Claude 7-에이전트 적대 워크플로 + 직접 보안 정독, Codex GPT-5.5 병행) 반영. ★핵심 메타테마 — "수동적 권고문(description·INSTRUCTIONS)은 반복 무시되어 실패 → 인용 1건 쓰는 그 호출에서 기계적으로 발동되는 ACTIVE 게이트로 전환". 이번 세션 오인용 사고(사용료 사건을 §48 공동경비 배부 근거로 오귀속, 제목≠본문) 직격. **MCP 재시작 필요.**

@@ -29,6 +29,8 @@ const {
   propTokens,
   propositionFit,
   redactSecrets,
+  classifyVerdict,
+  buildApplicationTimingGuard,
   todayYmd,
   parseLawAddenda,
   extractCdataText,
@@ -667,6 +669,37 @@ test("redactSecrets(보안): 출력의 법제처 OC 키 마스킹", () => {
   assert.equal(redactSecrets("error at ...&oc=abc DEF"), "error at ...&oc=*** DEF")
   // OC가 없으면 무변경
   assert.equal(redactSecrets("일반 텍스트 OC 설명"), "일반 텍스트 OC 설명")
+})
+
+test("classifyVerdict(G3): 명시 결론어 분류(win=과세유지 / lose=납세자유리 / 모호='')", () => {
+  assert.equal(classifyVerdict("이 건 심판청구를 기각한다."), "win")
+  assert.equal(classifyVerdict("처분을 취소한다."), "lose")
+  assert.equal(classifyVerdict("이 건 처분은 달리 잘못이 없는 것으로 판단된다."), "win")
+  assert.equal(classifyVerdict("처분은 부당하다."), "lose")
+  assert.equal(classifyVerdict("쟁점은 공동경비 안분기준이다."), "") // 결론어 없음
+})
+
+test("detectHoldingTruncation(G3): full=true에도 요지↔주문 결과 충돌 시에만 ⚠, 무충돌 시 깨끗", () => {
+  // 요지=취소 취지(lose) ↔ 주문=기각(win) → 충돌 → ⚠⚠ 블록
+  const conflict = detectHoldingTruncation({
+    code: "06", isFull: true, shownBody: "x", fullBody: "…심리 및 판단… 청구주장이 이유 없으므로 심판청구를 기각한다.",
+    gist: "쟁점처분은 취소한다는 취지로 인용한다",
+  })
+  assert.ok(conflict.some((l) => l.includes("요지·주문 결과 불일치")), "충돌 시 ⚠⚠")
+  // 무충돌(둘 다 기각/win) → []
+  const ok = detectHoldingTruncation({
+    code: "06", isFull: true, shownBody: "x", fullBody: "…심판청구를 기각한다.", gist: "처분은 정당하다(기각)",
+  })
+  assert.equal(ok.length, 0, "무충돌 full은 깨끗")
+  // 비-full(truncated)은 기존 요지-결과 정합성 안내 유지
+  const cut = detectHoldingTruncation({ code: "06", isFull: false, shownBody: "짧음", fullBody: "긴 본문".repeat(50) })
+  assert.ok(cut.some((l) => l.includes("요지-결과 정합성")), "비-full 기존 가드 유지")
+})
+
+test("buildApplicationTimingGuard(G10): 귀속연도 의존 조문+앵커없음 → ⚠, 앵커있거나 무관조문 → []", () => {
+  assert.ok(buildApplicationTimingGuard("상시근로자 수에 1천만원을 곱한 금액을 공제한다", false).length > 0, "단가·상시근로자+앵커없음")
+  assert.equal(buildApplicationTimingGuard("상시근로자 수에 1천만원을 곱한 금액을 공제한다", true).length, 0, "year/efYd 앵커 있으면 억제")
+  assert.equal(buildApplicationTimingGuard("법인의 사업연도는 1년을 초과하지 못한다", false).length, 0, "무관 조문 억제")
 })
 
 test("classifyAgainstCurrent: 현행본 대조 — same/differs/deleted/missing 분기(v0.12.1 추출)", () => {
