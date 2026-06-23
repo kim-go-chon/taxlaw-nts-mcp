@@ -1,5 +1,5 @@
 {
- "generatedAt": "2026-06-23T01:47:45.249659+00:00",
+ "generatedAt": "2026-06-23T06:31:33.594652+00:00",
  "source": "창중감,중특감 판정기.xlsx [연계표] (사용자 작성 — SSOT)",
  "sourceFile": "창중감,중특감 판정기.xlsx",
  "provisional": true,
@@ -13,9 +13,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011001": {
@@ -25,9 +27,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011002": {
@@ -37,9 +41,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011003": {
@@ -49,9 +55,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011004": {
@@ -61,9 +69,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011005": {
@@ -73,9 +83,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011006": {
@@ -85,9 +97,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011007": {
@@ -97,9 +111,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011008": {
@@ -109,9 +125,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "011009": {
@@ -121,9 +139,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "가"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012101": {
@@ -133,9 +153,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012102": {
@@ -145,9 +167,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012103": {
@@ -157,9 +181,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012104": {
@@ -169,9 +195,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012201": {
@@ -181,9 +209,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012202": {
@@ -193,9 +223,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012203": {
@@ -205,9 +237,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "012204": {
@@ -217,9 +251,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "나"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "014300": {
@@ -289,9 +325,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "루"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "020101": {
@@ -301,9 +339,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "루"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "020102": {
@@ -313,9 +353,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "루"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "020200": {
@@ -325,9 +367,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "루"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "020300": {
@@ -337,9 +381,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "루"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "051102": {
@@ -349,9 +395,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "051104": {
@@ -361,9 +409,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "051200": {
@@ -373,9 +423,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "052101": {
@@ -385,9 +437,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "052103": {
@@ -397,9 +451,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "052104": {
@@ -409,9 +465,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "052200": {
@@ -421,9 +479,11 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
-    "note": null
+    "eligible": true,
+    "ho": [
+     "다"
+    ],
+    "note": "개인=소득세법§12 비과세분 제외/법인=§66·67·68 전액면제·§127 중복배제 우선검토"
    }
   },
   "101000": {
@@ -485,8 +545,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "라",
-     "하"
+     "라"
     ],
     "note": null
    }
@@ -502,8 +561,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "라",
-     "하"
+     "라"
     ],
     "note": null
    }
@@ -519,8 +577,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "라",
-     "하"
+     "라"
     ],
     "note": null
    }
@@ -728,8 +785,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "라",
-     "하"
+     "라"
     ],
     "note": null
    }
@@ -2841,8 +2897,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "소"
+     "마"
     ],
     "note": null
    }
@@ -2858,8 +2913,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "소"
+     "마"
     ],
     "note": null
    }
@@ -2875,8 +2929,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "소"
+     "마"
     ],
     "note": null
    }
@@ -8140,8 +8193,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "허"
+     "마"
     ],
     "note": null
    }
@@ -8189,8 +8241,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "허"
+     "마"
     ],
     "note": null
    }
@@ -8958,8 +9009,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "소"
+     "마"
     ],
     "note": null
    }
@@ -9023,8 +9073,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
-     "소"
+     "마"
     ],
     "note": null
    }
@@ -9497,7 +9546,6 @@
    "chojunggam": {
     "eligible": true,
     "ho": [
-     "2",
      "11"
     ],
     "note": null
@@ -9505,7 +9553,6 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "마",
      "머"
     ],
     "note": null
@@ -9513,17 +9560,13 @@
   },
   "381007": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "2"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "마"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -15456,10 +15499,8 @@
   },
   "525105": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "5"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
@@ -16663,17 +16704,13 @@
   },
   "630909": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "6"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "처"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -16695,16 +16732,14 @@
   },
   "749906": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "6"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "처"
+     "무"
     ],
     "note": null
    }
@@ -17684,8 +17719,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "거",
-     "타"
+     "거"
     ],
     "note": null
    }
@@ -17701,8 +17735,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "거",
-     "타"
+     "거"
     ],
     "note": null
    }
@@ -17714,22 +17747,24 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "거"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
   "724002": {
    "chojunggam": {
-    "eligible": false,
-    "ho": [],
+    "eligible": true,
+    "ho": [
+     "8"
+    ],
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
+    "eligible": true,
+    "ho": [
+     "거"
+    ],
     "note": null
    }
   },
@@ -19204,8 +19239,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
@@ -19221,26 +19255,20 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
   },
   "742103": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "10"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "러",
-     "저"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -19255,7 +19283,6 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
      "저"
     ],
     "note": null
@@ -19263,18 +19290,13 @@
   },
   "742105": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "10"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "러",
-     "저"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -19289,7 +19311,6 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
      "저"
     ],
     "note": null
@@ -19304,11 +19325,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "러",
-     "저"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -19323,8 +19341,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
@@ -19340,7 +19357,6 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
      "저"
     ],
     "note": null
@@ -19357,7 +19373,6 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
      "저"
     ],
     "note": null
@@ -19374,8 +19389,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
@@ -19391,8 +19405,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
@@ -19408,8 +19421,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
@@ -19425,8 +19437,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "러",
-     "저"
+     "러"
     ],
     "note": null
    }
@@ -20046,7 +20057,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "조"
+     "두"
     ],
     "note": null
    }
@@ -20272,10 +20283,8 @@
   },
   "749934": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "11"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
@@ -20367,10 +20376,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "조"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21430,10 +21437,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21444,10 +21449,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21458,10 +21461,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21514,10 +21515,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21542,10 +21541,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21556,10 +21553,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21570,10 +21565,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "허"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -21590,8 +21583,7 @@
     "eligible": true,
     "ho": [
      "노",
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21607,8 +21599,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21624,8 +21615,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21641,8 +21631,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21658,8 +21647,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21675,8 +21663,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21692,8 +21679,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21709,8 +21695,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21727,8 +21712,7 @@
     "eligible": true,
     "ho": [
      "소",
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21744,8 +21728,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21761,8 +21744,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21780,8 +21762,7 @@
     "eligible": true,
     "ho": [
      "노",
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -21797,8 +21778,7 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "코",
-     "허"
+     "코"
     ],
     "note": null
    }
@@ -22017,8 +21997,10 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": false,
-    "ho": [],
+    "eligible": true,
+    "ho": [
+     "호"
+    ],
     "note": null
    }
   },
@@ -22697,10 +22679,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "터"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -22984,10 +22964,8 @@
   },
   "940100": {
    "chojunggam": {
-    "eligible": true,
-    "ho": [
-     "10"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    },
    "jungteukgam": {
@@ -23100,17 +23078,13 @@
    "chojunggam": {
     "eligible": true,
     "ho": [
-     "8",
-     "10",
      "11"
     ],
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "카"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23135,10 +23109,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "호"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23149,10 +23121,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "호"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23215,10 +23185,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "아"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23226,18 +23194,13 @@
    "chojunggam": {
     "eligible": true,
     "ho": [
-     "8",
-     "11",
      "14"
     ],
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "다",
-     "하"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23276,10 +23239,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "호"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23453,10 +23414,8 @@
     "note": null
    },
    "jungteukgam": {
-    "eligible": true,
-    "ho": [
-     "호"
-    ],
+    "eligible": false,
+    "ho": [],
     "note": null
    }
   },
@@ -23471,7 +23430,6 @@
    "jungteukgam": {
     "eligible": true,
     "ho": [
-     "차",
      "하"
     ],
     "note": null
@@ -23481,7 +23439,6 @@
    "chojunggam": {
     "eligible": true,
     "ho": [
-     "10",
      "11"
     ],
     "note": null

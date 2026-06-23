@@ -101,14 +101,14 @@ test("normalizeUpjongCode6: 6자리 zero-pad / 비숫자 null", () => {
   assert.equal(normalizeUpjongCode6(""), null)
 })
 
-test("classifyCreditEligibility: 922202는 연계표상 중특감 적격(터)으로 전사 — provisional", () => {
-  // ★실측 부정확 케이스: 연계표가 922202(자동차전문정비업)를 중특감 '터'로 잘못 표기.
-  // 플러밍은 충실 전사가 정상 — 정확도 교정은 xlsx(SSOT) 수정 후 재빌드로 반영.
+test("classifyCreditEligibility: 922202 중특감 교정 반영(자동차전문정비업=터 아님) — 정확도 감사 회귀가드", () => {
+  // 2026-06-23 정확도 감사 후 xlsx 교정→재빌드 반영: 922202(자동차전문정비업)는 자동차정비공장(터,
+  // 조특칙§22=종합·소형종합정비업만) 아님 → 중특감 비적격. 창중감 14호(개인소비용품수리=KSIC95)는 유지.
   const r = classifyCreditEligibility("922202")
   assert.equal(r.found, true)
-  assert.equal(r.jungteukgam.eligible, true)
-  assert.ok(r.jungteukgam.ho.includes("터"))
-  assert.equal(r.provisional, true)
+  assert.equal(r.jungteukgam.eligible, false)        // 터 삭제 반영
+  assert.ok(!r.jungteukgam.ho.includes("터"))
+  assert.ok(r.chojunggam.ho.includes("14"))          // 창중감 14호 유지
 })
 
 test("classifyCreditEligibility: 미수록 코드는 found=false", () => {
