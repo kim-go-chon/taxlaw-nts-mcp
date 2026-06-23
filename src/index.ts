@@ -5126,6 +5126,13 @@ function classifyCreditEligibilityTool(args: { code?: unknown }): ToolResponse {
   lines.push(
     formatCreditCell("창중감(조특법 §6③)", r.chojunggam, "6조3항 호"),
     formatCreditCell("중특감(조특법 §7①1호)", r.jungteukgam, "7조1항 호/목"),
+  )
+  if (r.sogiup) {
+    lines.push(
+      `소기업 매출한도(중기본법 시행령 별표3 기호 ${r.sogiup.bylho}): ${r.sogiup.eok}억원 — 직전 3년 평균매출 ≤ 한도면 소기업(§7 감면율 소기업 10/20/30% vs 중기업 5/15%·수도권 0%), 초과=중기업.`,
+    )
+  }
+  lines.push(
     "",
     "⚠ provisional — 연계표 충실 전사값(미검증). 결론·신고 전 반드시 법령 교차확인:",
     "  · ★연도주의(표=2024 귀속 기준): §6 창중감은 2026.1.1 이후 창업 시 감면율 전면개편(청년 수도권75%·일반 수도권25% 등 4구간)·창업기한 2027.12.31 연장·감면세액 5억 한도(2024.12.31 신설). §7 중특감은 일몰 2028.12.31 연장이나 2026 목 글자 이동(수소발전 '두목' 신설→보안·임업·통관·자동차임대 한칸씩 밀림)·일반서적출판 중기업10% '마목' 신설. → 2025·2026 귀속·창업은 조특법 §6·§7 해당연도 본문 직접 확인(get_law_article year=YYYY).",

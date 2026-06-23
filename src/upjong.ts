@@ -432,11 +432,44 @@ export function normalizeUpjongCode6(code: string): string | null {
   return t.length < 6 ? t.padStart(6, "0") : t
 }
 
+// 중기본법 시행령 [별표3] 소기업 매출한도(억원). 분류기호=KSIC 대분류(C는 중분류 C10~C34, E는 E36/E, S는 S). <개정 2025.10.1>
+const SOGIUP_BYL3_EOK: Record<string, number> = {
+  C19: 140, C24: 140,
+  C10: 120, C11: 120, C14: 120, C15: 120, C20: 120, C21: 120, C23: 120, C25: 120,
+  C26: 120, C28: 120, C29: 120, C30: 120, C32: 120, D: 120, E36: 120,
+  H: 100, K: 100,
+  A: 80, B: 80, C12: 80, C13: 80, C16: 80, C17: 80, C18: 80, C22: 80, C27: 80, C31: 80, C33: 80, F: 80,
+  G: 60, J: 50, E: 40, L: 40, M: 30, N: 30, R: 30,
+  C34: 15, I: 15, P: 15, Q: 15, S: 15,
+}
+
+export interface SogiupThreshold {
+  bylho: string // 별표3 분류기호 (예: C26, A, S, E36)
+  eok: number // 매출한도(억원)
+  eokwon: number // 매출한도(원)
+}
+
+// 업종 KSIC(대분류 l1·중분류 l2)로 별표3 소기업 매출한도 도출. 매출 ≤ 한도 = 소기업(조특령§6④). l2는 strip 저장 → 2자리 복원.
+export function sogiupThreshold(ksic: ClassPath | null | undefined): SogiupThreshold | null {
+  const dae = ksic?.l1Code || ""
+  if (!dae) return null
+  const jung = (ksic?.l2Code || "").padStart(2, "0")
+  let bylho: string
+  if (dae === "C") bylho = "C" + jung
+  else if (dae === "E") bylho = jung === "36" ? "E36" : "E"
+  else if (dae === "S") bylho = "S"
+  else bylho = dae
+  const eok = SOGIUP_BYL3_EOK[bylho] ?? SOGIUP_BYL3_EOK[dae]
+  if (eok === undefined) return null
+  return { bylho, eok, eokwon: eok * 100_000_000 }
+}
+
 export interface CreditLookupResult {
   upjong: string
   found: boolean
   chojunggam: CreditCell | null
   jungteukgam: CreditCell | null
+  sogiup: SogiupThreshold | null // 별표3 소기업 매출한도(중특감 감면율 판정용)
   source: string | null
   provisional: boolean
   note: string | null
@@ -446,11 +479,14 @@ export function classifyCreditEligibility(code: string): CreditLookupResult {
   const db = loadCreditDb()
   const key = normalizeUpjongCode6(code)
   const rec = key ? db.records[key] : undefined
+  // upjong-ksic는 leading-zero strip 저장 → strip형으로 조회해 KSIC 대/중분류 회수
+  const ksicRec = key ? findByUpjong(key.replace(/^0+/, "") || "0") : null
   return {
     upjong: key || String(code || "").trim(),
     found: !!rec,
     chojunggam: rec ? rec.chojunggam : null,
     jungteukgam: rec ? rec.jungteukgam : null,
+    sogiup: ksicRec ? sogiupThreshold(ksicRec.ksic) : null,
     source: db.source,
     provisional: db.provisional !== false,
     note: db.note || null,

@@ -4,7 +4,7 @@ import { strict as assert } from "node:assert"
 process.env.TAXLAW_MCP_TEST_MODE = "1"
 
 const { isAdminRuleRow, statuteArticleSuffix, buildCreditEligibilityHint } = await import("../build/index.js")
-const { classifyCreditEligibility, normalizeUpjongCode6 } = await import("../build/upjong.js")
+const { classifyCreditEligibility, normalizeUpjongCode6, sogiupThreshold } = await import("../build/upjong.js")
 
 // v0.9.13 — 행정규칙(훈령·예규·고시·지침) 분류 라벨 감지 회귀 가드.
 // 실측 케이스: 「모범납세자 관리규정」 통합검색 시 statute 컬렉션이 "분류: 훈령 / 납보·심사",
@@ -109,6 +109,20 @@ test("classifyCreditEligibility: 922202 중특감 교정 반영(자동차전문�
   assert.equal(r.jungteukgam.eligible, false)        // 터 삭제 반영
   assert.ok(!r.jungteukgam.ho.includes("터"))
   assert.ok(r.chojunggam.ho.includes("14"))          // 창중감 14호 유지
+})
+
+test("sogiupThreshold: 별표3 소기업 매출한도 도출(C/E 중분류·S 대분류·leading-zero)", () => {
+  // 922202 자동차전문수리(KSIC S95) → S = 15억 / 011000 작물재배(A, strip 조회) → 80억
+  assert.equal(classifyCreditEligibility("922202").sogiup.eok, 15)
+  assert.equal(classifyCreditEligibility("011000").sogiup.eok, 80)
+  // 제조 C 중분류 분기 + E36(수도)/E(하수)/대분류
+  assert.equal(sogiupThreshold({ l1Code: "C", l2Code: "26" }).eok, 120) // 전자
+  assert.equal(sogiupThreshold({ l1Code: "C", l2Code: "19" }).eok, 140) // 석유정제
+  assert.equal(sogiupThreshold({ l1Code: "C", l2Code: "34" }).eok, 15)  // 산업용기계수리
+  assert.equal(sogiupThreshold({ l1Code: "E", l2Code: "36" }).eok, 120) // 수도업
+  assert.equal(sogiupThreshold({ l1Code: "E", l2Code: "37" }).eok, 40)  // 하수폐기물
+  assert.equal(sogiupThreshold({ l1Code: "G" }).bylho, "G")             // 도소매 60억
+  assert.equal(sogiupThreshold({ l1Code: null }), null)
 })
 
 test("classifyCreditEligibility: 미수록 코드는 found=false", () => {
