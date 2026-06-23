@@ -385,3 +385,74 @@ export function searchUpjongByKeyword(
   }
   return hits
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// 창중감(조특법 §6③)·중특감(조특법 §7①1호) 업종 적격표 (credit-eligibility.json)
+// SSOT = 「창중감,중특감 판정기.xlsx [연계표]」 → build_mcp_credit_data.py 파생. provisional(미검증).
+// 연계표의 §6③ 호(B열)·§7①1호 호/목(AE열)을 충실 전사한 값 — 적격 판단의 1차 신호이되,
+// 단서업종(자동차정비공장=종합·소형종합정비업만 등)은 법령으로 재확인해야 한다.
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface CreditCell {
+  eligible: boolean
+  ho: string[] // 6조3항 호 / 7조1항 호·목 (멀티 가능)
+  note: string | null
+}
+export interface CreditRecord {
+  chojunggam: CreditCell // 조특법 §6③ 창업중소기업
+  jungteukgam: CreditCell // 조특법 §7①1호 중소기업특별
+}
+interface CreditDb {
+  generatedAt: string
+  source: string | null
+  sourceFile?: string | null
+  provisional?: boolean
+  note?: string | null
+  count: number
+  records: Record<string, CreditRecord>
+}
+
+let cachedCreditDb: CreditDb | null = null
+
+export function loadCreditDb(): CreditDb {
+  if (cachedCreditDb) return cachedCreditDb
+  const path = resolve(__dirname, "data", "credit-eligibility.json")
+  if (!existsSync(path)) {
+    cachedCreditDb = { generatedAt: new Date(0).toISOString(), source: null, provisional: true, count: 0, records: {} }
+    return cachedCreditDb
+  }
+  cachedCreditDb = JSON.parse(readFileSync(path, "utf8")) as CreditDb
+  return cachedCreditDb
+}
+
+// 업종코드를 적격표 키(6자리 zero-pad)로 정규화. 4~6자리 숫자만 허용.
+export function normalizeUpjongCode6(code: string): string | null {
+  const t = String(code || "").replace(/\s+/g, "").trim()
+  if (!/^\d{4,6}$/.test(t)) return null
+  return t.length < 6 ? t.padStart(6, "0") : t
+}
+
+export interface CreditLookupResult {
+  upjong: string
+  found: boolean
+  chojunggam: CreditCell | null
+  jungteukgam: CreditCell | null
+  source: string | null
+  provisional: boolean
+  note: string | null
+}
+
+export function classifyCreditEligibility(code: string): CreditLookupResult {
+  const db = loadCreditDb()
+  const key = normalizeUpjongCode6(code)
+  const rec = key ? db.records[key] : undefined
+  return {
+    upjong: key || String(code || "").trim(),
+    found: !!rec,
+    chojunggam: rec ? rec.chojunggam : null,
+    jungteukgam: rec ? rec.jungteukgam : null,
+    source: db.source,
+    provisional: db.provisional !== false,
+    note: db.note || null,
+  }
+}

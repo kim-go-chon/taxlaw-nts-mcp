@@ -15,9 +15,11 @@ import {
   formatClassPath,
   resolveClassName,
   searchUpjongByKeyword,
+  classifyCreditEligibility,
   CLASS_LEVEL_KR,
   type ClassLevel,
   type UpjongRecord,
+  type CreditLookupResult,
 } from "./upjong.js"
 import { checkYearApplicability, formatYearCheck, getRecentThresholdYears } from "./year-check.js"
 import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef, type BasicRulingRef } from "./citation-extract.js"
@@ -982,6 +984,19 @@ const tools = [
     },
   },
   {
+    name: "classify_credit_eligibility",
+    description:
+      "업종코드(6자리)로 창업중소기업 세액감면(창중감, 조특법 §6③ 각 호)·중소기업특별세액감면(중특감, 조특법 §7①1호 각 목) 적격 업종 여부를 한 번에 판정합니다. '이 업종코드가 창중감/중특감 되나?' 질문 시 1차 호출. 출처=사용자 「창중감,중특감 판정기」 연계표(§6③ 호·§7①1호 호/목 전사) — provisional(미검증). ⚠ 단서업종은 본 결과로 단정 금지: 자동차정비공장(§7터목)=자동차종합·소형자동차종합정비업만(조특칙§22, 자동차전문정비업 922202 등 제외), 의료업=요양급여 비율·소득 요건, 부동산임대·소비성서비스 제외 등은 조특법·조특령·조특칙 본문으로 재확인. 비적격(호 비어 있음)도 연계표 누락일 수 있으니 법령 교차확인.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "업종코드(6자리). 예: 922202, 300100" },
+      },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "lookup_ksic_code",
     description: "KSIC(통계청 표준산업분류) 코드를 받아 매핑된 국세청 업종코드 목록과 분류수준 정보를 반환합니다.",
     inputSchema: {
@@ -1815,6 +1830,21 @@ function formatIntegratedId(row: AnyRecord): string {
   return cleanText(firstValue(row, ["DOC_ID", "DOCID", "REQ_STD_ID", "NTST_PLCN_BK_ID"])) || "N/A"
 }
 
+// v0.16.2 — statute(조세법령/일반법령) 행은 raw 응답에 조번호(TEXT_UQNM="제22조")와
+// 조제목(TEXT_KRN_NM="자동차정비공장의 범위")이 들어 있으나, formatIntegratedTitle이
+// NM(법령명)을 먼저 잡아 둘 다 버린다. 그 결과 위임조문(영→칙) 추적 시 본문은 잡혀도
+// "어느 조인지"를 결과만으로 알 수 없어 조번호 사냥(조문 1개씩 더듬기)을 유발한다.
+// 법령 행에 한해 제목에 "제N조(조제목)"를 결합해 한 줄로 조 위치를 노출한다.
+export function statuteArticleSuffix(row: AnyRecord): string {
+  const label = cleanText(firstValue(row, ["LBL1_TTL", "LBL1_NM"]))
+  if (!/법령/.test(label)) return "" // 해석례·판례·별표·통칙(2-1-3형)·행정규칙 행은 제외
+  const joNo = cleanText(firstValue(row, ["TEXT_UQNM"]))
+  // 단일 조 토큰만("제N조" 또는 "제N조의M"). 통칙형(2-1-3)·복합("제22조 및 제23조")·항 단위는 배제.
+  if (!joNo || !/^제\d+조(의\d+)?$/.test(joNo)) return ""
+  const joTitle = cleanText(firstValue(row, ["TEXT_KRN_NM"]))
+  return joTitle && joTitle !== joNo ? `${joNo}(${joTitle})` : joNo
+}
+
 // v0.9.13 — 통합검색 결과 행이 행정규칙(훈령·예규·고시·지침)인지 분류 라벨로 판별.
 // formatIntegratedRow와 동일한 라벨 필드를 사용. "고시서면질의" 같은 해석례 docType 라벨은
 // ADMIN_RULE_LABEL_RE의 앵커(^…$) 덕에 오탐되지 않는다.
@@ -1834,7 +1864,9 @@ function formatIntegratedRow(row: AnyRecord, collectionName: string, verbose = t
   const date = normalizeDate(firstValue(row, ["DCM_RGT_DTM_S", "DCM_RGT_DTM", "PMG_DT", "ENFR_DT", "PLCN_DT", "REGST_DT", "FRS_RGT_DTM", "DATE"]))
   const summary = formatIntegratedSummary(row)
 
-  const lines = [`[${id}] ${title || "(제목 없음)"}`]
+  const statuteSuffix = statuteArticleSuffix(row)
+  const titleWithJo = statuteSuffix ? `${title} ${statuteSuffix}`.trim() : title
+  const lines = [`[${id}] ${titleWithJo || "(제목 없음)"}`]
   const labels = [firstLabel, secondLabel].filter(Boolean).join(" / ")
   if (labels) lines.push(`  분류: ${labels}`)
   if (docNo || replyNo) lines.push(`  문서번호: ${docNo || "N/A"}${replyNo ? ` / 회신번호: ${replyNo}` : ""}`)
@@ -3977,6 +4009,26 @@ export function buildApplicationTimingGuard(body: string, hasYearAnchor: boolean
   ]
 }
 
+// 조특법(법률) 제6조(창중감)·제7조(중특감) 회수 시 업종 적격 판정도구로 능동 라우팅.
+// 시행령·시행규칙의 같은 조번호는 다른 내용이므로 법률명 정확일치로 한정한다.
+export function buildCreditEligibilityHint(lawTitle: string, jo: string): string[] {
+  if ((lawTitle || "").replace(/\s+/g, "") !== "조세특례제한법") return []
+  const j = (jo || "").replace(/\s+/g, "")
+  if (j === "제6조") {
+    return [
+      "── 업종 적격(창중감) 안내 ──",
+      "특정 업종코드가 §6③ 각 호의 감면 대상 업종인지는 classify_credit_eligibility(업종코드)로 확인(연계표 기반·provisional). ⚠ 부동산임대·소비성서비스 주된사업 배제 등 단서는 조특령 §2·§5 본문으로 재확인.",
+    ]
+  }
+  if (j === "제7조") {
+    return [
+      "── 업종 적격(중특감) 안내 ──",
+      "특정 업종코드가 §7①1호 각 목의 감면 대상 업종인지는 classify_credit_eligibility(업종코드)로 확인(연계표 기반·provisional). ⚠ 단서업종(자동차정비공장=종합·소형종합정비업만[조특칙§22], 의료업 요건 등)은 조특령 §6·조특칙으로 재확인.",
+    ]
+  }
+  return []
+}
+
 export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
   const jo = requireString("jo", args.jo)
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
@@ -4107,6 +4159,8 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   if (forkGuard.length) lines.push("", ...forkGuard)
   const timingGuard = buildApplicationTimingGuard(text, Boolean(efYd))
   if (timingGuard.length) lines.push("", ...timingGuard)
+  const creditHint = buildCreditEligibilityHint(lawTitle, jo)
+  if (creditHint.length) lines.push("", ...creditHint)
   lines.push(
     "",
     "── 본문 ──",
@@ -5045,6 +5099,43 @@ function resolveIndustryClassTool(args: ResolveClassArgs): ToolResponse {
   return textResponse(lines.join("\n"))
 }
 
+function formatCreditCell(label: string, cell: CreditLookupResult["chojunggam"], hoLabel: string): string {
+  if (!cell) return `${label}: 판정 불가(업종코드 미수록)`
+  if (!cell.eligible) return `${label}: ✗ 비적격 (연계표에 ${hoLabel} 매핑 없음)`
+  const ho = cell.ho.length ? cell.ho.join(", ") : "?"
+  const note = cell.note ? ` / 비고: ${cell.note}` : ""
+  return `${label}: ✅ 적격 — ${hoLabel} [${ho}]${note}`
+}
+
+function classifyCreditEligibilityTool(args: { code?: unknown }): ToolResponse {
+  const code = requireString("code", args.code)
+  const r = classifyCreditEligibility(code)
+  const lines = [
+    `창중감(§6③)·중특감(§7①1호) 업종 적격 판정`,
+    `업종코드: ${r.upjong}`,
+    `출처: ${r.source || "N/A"}${r.provisional ? " (provisional·미검증)" : ""}`,
+    "",
+  ]
+  if (!r.found) {
+    lines.push(
+      `[NOT_FOUND] 업종코드 ${r.upjong}가 적격표에 없습니다.`,
+      "→ 6자리 표기 확인 / lookup_upjong_code로 코드 실재 확인 / 연계표 미수록일 수 있으니 조특법 §6③·§7①1호 본문과 직접 대조.",
+    )
+    return textResponse(lines.join("\n"))
+  }
+  lines.push(
+    formatCreditCell("창중감(조특법 §6③)", r.chojunggam, "6조3항 호"),
+    formatCreditCell("중특감(조특법 §7①1호)", r.jungteukgam, "7조1항 호/목"),
+    "",
+    "⚠ provisional — 연계표 충실 전사값(미검증). 결론·신고 전 반드시 법령 교차확인:",
+    "  · 자동차정비공장(§7터목)=자동차종합·소형자동차종합정비업만(조특칙§22) — 자동차전문정비업(예: 922202)은 ✗.",
+    "  · 의료업=요양급여 비율·종합소득 요건 / 부동산임대·소비성서비스는 중소기업 자체 배제(조특령§2①).",
+    "  · 적격 표기라도 단서·규모·지역·창업요건은 별도. 비적격 표기도 연계표 누락 가능 → 법령 확인.",
+  )
+  if (r.note) lines.push("", `참고: ${r.note}`)
+  return textResponse(lines.join("\n"))
+}
+
 function classifyIndustryForArticleTool(args: ClassifyArticleArgs): ToolResponse {
   const industryName = requireString("industryName", args.industryName)
   const upjongCode = requireString("upjongCode", args.upjongCode)
@@ -5219,6 +5310,9 @@ export async function handleToolCall(name: string, args: unknown): Promise<ToolR
     }
     if (name === "list_taxlaw_publication_categories") {
       return await listTaxlawPublicationCategories()
+    }
+    if (name === "classify_credit_eligibility") {
+      return classifyCreditEligibilityTool(input as { code?: unknown })
     }
     if (name === "lookup_upjong_code") {
       return lookupUpjongCodeTool(input as UpjongLookupArgs)

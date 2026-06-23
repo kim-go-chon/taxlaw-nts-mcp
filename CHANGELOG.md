@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.0] - 2026-06-23
+
+창중감(§6③)·중특감(§7①1호) **업종 적격 판정 도구 신설**(노출) + statute 검색 결과 **조번호·조제목 노출**. additive·하위호환. **MCP 재시작 필요.**
+
+### Added — `classify_credit_eligibility(업종코드)` 노출 도구 (창중감/중특감 업종 적격)
+- 배경: 임베드된 표준산업분류표(`upjong-ksic.json`)는 ①업종 도구가 HIDDEN(call_taxlaw_extra 게이트)이라 사실상 미호출 ②순수 KSIC 크로스워크로 §6/§7 적격 플래그 0개 ③`classify_industry_for_article`은 호출자가 업종명을 넣어야 하는 범용 매칭기 ④§6/§7 조문과 무연결 — 즉 창중감/중특감 판정엔 미사용. (922202 자동차전문정비업을 §7 자동차정비공장으로 오판하는 실수의 온상)
+- `classify_credit_eligibility(code)`: 업종코드→창중감(§6③ 호)·중특감(§7①1호 호/목) 적격을 한 번에 반환. **메인 목록 노출**(숨김 ❌). 단서업종(자동차정비공장=종합·소형종합정비업만[조특칙§22]·의료업 요건·부동산임대/소비성서비스 배제) 재확인 ⚠ 동봉. provisional(미검증) 명시.
+- 데이터 `src/data/credit-eligibility.json`: **SSOT=「창중감,중특감 판정기.xlsx [연계표]」** → `build_mcp_credit_data.py`(판정기 폴더)로 파생. 연계표 D=업종코드/B=6조3항 호/AC=창중감 비고/AE=7조1항 호/AF=중특감 비고를 충실 전사(업종코드 1611건). ⚠ 연계표 §6③/§7① 매핑 정확도 재검토 진행 중 — 현재 값은 미검증.
+- `getLawArticle`: 조특법(법률) **제6조·제7조** 회수 시 `classify_credit_eligibility` 능동 라우팅 힌트 부착(시행령/시행규칙 같은 조번호는 제외). 신규 export: `classifyCreditEligibility`/`normalizeUpjongCode6`/`buildCreditEligibilityHint`. 단위테스트 4건.
+
+### Fixed — statute 행 제목이 조번호·조제목을 버리던 문제 (실측 회귀)
+- 실측: "자동차정비공장 공장의 범위 조세특례제한법 시행규칙" statute 검색 시 raw 행에 `TEXT_UQNM="제22조"`·`TEXT_KRN_NM="자동차정비공장의 범위"`가 있으나, `formatIntegratedTitle`이 `NM`(법령명 "조세특례제한법 시행규칙")을 firstValue로 먼저 잡아 둘 다 버림 → 결과만으로 조 위치를 알 수 없어 조번호 더듬기 유발.
+- `statuteArticleSuffix(row)`(pure, export) 신설: LBL1이 `법령` 계열인 행에 한해 `제N조(조제목)`를 추출(통칙형 `2-1-3`·해석례·판례·별표는 제외, `<!HS>` 마커 제거). `formatIntegratedRow` 제목에 결합 → `[id] 조세특례제한법 시행규칙 제22조(자동차정비공장의 범위)`.
+- 라이브 검증: BEFORE `조세특례제한법 시행규칙` → AFTER `조세특례제한법 시행규칙 제22조(자동차정비공장의 범위)`. 단위테스트 7건 추가(0.17.0 합산 전체 225 통과).
+
 ## [0.16.1] - 2026-06-18
 
 Codex GPT-5.5(최고수준) v0.14~0.16 재대조 반영. P0 없음 — 소규모 견고화. **MCP 재시작 필요.**
