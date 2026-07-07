@@ -1,6 +1,6 @@
 {
   "name": "taxlaw-nts-mcp",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "MCP server for Korea NTS Tax Law Information System searches.",
   "type": "module",
   "main": "build/index.js",
@@ -14,7 +14,7 @@
     "watch": "tsc --watch",
     "start": "node build/index.js",
     "pretest": "npm run build",
-    "test": "node --test test/utils.test.js test/upjong.test.js test/year-check.test.js test/citation-extract.test.js test/doctrine-assess.test.js test/restructure-map.test.js test/admin-rule-stale.test.js test/timetable.test.js test/text-diff.test.js test/employment-credit.test.js",
+    "test": "node --test test/utils.test.js test/upjong.test.js test/year-check.test.js test/citation-extract.test.js test/doctrine-assess.test.js test/restructure-map.test.js test/admin-rule-stale.test.js test/timetable.test.js test/text-diff.test.js test/meta.test.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },

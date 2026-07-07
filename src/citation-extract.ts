@@ -188,9 +188,6 @@ const RULING_PATTERN = new RegExp(
   "g",
 )
 
-// 세법명을 통칙 번호 앞 6자 안에서 발견하면 taxLaw로 채움.
-const TAX_LAW_HEAD = /(소득세법|법인세법|부가가치세법|상속세\s?및\s?증여세법|상증세법|상증법|국세기본법|국세징수법|조세특례제한법|조특법|지방세법|관세법|개별소비세법|주세법|종합부동산세법|교육세법|농어촌특별세법|조세범\s?처벌법)/
-
 function normalizeTaxLawName(raw: string): string {
   const collapsed = raw.replace(/\s+/g, "")
   const alias: Record<string, string> = {

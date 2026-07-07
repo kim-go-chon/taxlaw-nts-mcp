@@ -100,13 +100,6 @@ const FINAL_LABELS: Record<FinalValidity, string> = {
   unverified: "❓ 자동 검증 실패 — 사용자 직접 본문 확인 필요",
 }
 
-function yearsBetween(dateStr: string | null, year: number | null): number | null {
-  if (!dateStr || !year) return null
-  const y = Number(dateStr.slice(0, 4))
-  if (!y) return null
-  return year - y
-}
-
 function determineFinalValidity(
   yearCheck: YearCheckResult,
   productionYear: number | null,

@@ -22,11 +22,10 @@ import {
   type CreditLookupResult,
 } from "./upjong.js"
 import { checkYearApplicability, formatYearCheck, getRecentThresholdYears } from "./year-check.js"
-import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef, type BasicRulingRef } from "./citation-extract.js"
+import { extractLawArticleRefs, extractBasicRulingRefs, formatBasicRulingRef } from "./citation-extract.js"
 import { assessDoctrineValidity, formatAssessment, type DoctrineMeta } from "./doctrine-assess.js"
 import { detectPreRestructureCitations, formatRestructureHits } from "./restructure-map.js"
 import {
-  TAX_LAW_CODE_MAP,
   describeTaxLawCode,
   formatTaxLawCellCompact,
   formatTaxLawCodeHeader,
@@ -35,12 +34,11 @@ import {
 } from "./tax-law-code-map.js"
 import { buildRetryQueries, describeRetryAttempt } from "./query-retry.js"
 import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
-import { computeEmploymentCredit, type EmpCreditArgs } from "./employment-credit.js"
 
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.16.1"
+const VERSION = "0.20.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -73,7 +71,7 @@ const INSTRUCTIONS = `taxlaw-nts-mcp는 한국 국세법령정보시스템(NTS) 
 
 [표준 워크플로] 키워드 추출 → korean-law search_law+get_law_text(법률·시행령 1차 권위) → 본 MCP search_taxlaw_all/search_taxlaw_documents(해석례·통칙 보완) → 인용 전 연도 검증 → 5단 응답.
 
-[응답 5단] ①결론(요지 1~2문장) ②매트릭스(케이스별 표 — 행마다 결론+근거 법령) ③법령 래퍼(법률/시행령/기본통칙/해석례·심판례·판례 — 문서번호·일자·인용문, 출처별 분리) ④AI 보충 해석(⚠ 미검증 표시, ①~③과 섞기 금지) ⑤"인용 본문을 더 부착해드릴까요?" 1줄. 빈 섹션도 헤더 유지+"검색 결과 없음"(추측·생성 금지). 단답형은 5단 생략 가능.
+[응답 5단] ①결론(요지 1~2문장) ②매트릭스(케이스별 표 — 행마다 결론+근거 법령) ③법령 래퍼(법률/시행령/기본통칙/해석례·심판례·판례 — 문서번호·일자·인용문·원문링크URL, 출처별 분리 / ★해석례·심판례·판결을 사용자에게 제시할 때는 각 건에 NTS 원문 링크(검색행 '원문:' URL 그대로, 임의 생성 금지)를 반드시 병기) ④AI 보충 해석(⚠ 미검증 표시, ①~③과 섞기 금지) ⑤"인용 본문을 더 부착해드릴까요?" 1줄. 빈 섹션도 헤더 유지+"검색 결과 없음"(추측·생성 금지). 단답형은 5단 생략 가능.
 
 [중복 처리] 두 MCP 동일 사건은 문서번호(공백·하이픈 제거)/생산일자/제목 기준 병합 + 양쪽 출처 ID 병기.
 
@@ -1115,7 +1113,7 @@ const tools = [
   {
     name: "call_taxlaw_extra",
     description:
-      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [고용공제계산] compute_employment_credit(고용증대 §29의7·통합고용 §29의8구법·사회보험료 §30의4 forward 공제+추징 산정 — 손계산 대신 사용). [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(url) / call_taxlaw_action(actionId, payload).",
+      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [고용공제계산] 내장 계산기 제거됨(v0.20.0, SSOT 단일화) — 고용증대·통합고용·사회보험료 공제/추징 계산은 전용 계산기(Downloads\TAX\고용증대세액공제_계산기, Python SSOT)를 쓰고, 단가·산식·적용시기는 get_law_article(full=true)·build_application_timetable로 조문 직접 확인. [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(url) / call_taxlaw_action(actionId, payload).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1123,35 +1121,6 @@ const tools = [
         args: { type: "object", description: "그 도구의 인자 객체", additionalProperties: true },
       },
       required: ["name"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "compute_employment_credit",
-    description:
-      "[HIDDEN — call_taxlaw_extra 경유] 고용 세액공제 forward 공제 + 추징을 한 출처에서 산정(고용증대 §29의7 · 통합고용 §29의8 구법=2024·2025귀속 · 중소기업 사회보험료 §30의4 + COVID §29의7⑤⑥⑦). LLM 손계산(법령회수+장문추론)·forward↔추징 모순 오류를 차단. ⚠ '저자 산식 기반 계산값'이며 1차 근거 아님 — 인용·신고 전 조문·해석례 원문 및 사용 단가 확인. 단가는 코드 상수(시행일 기준)라 개정 시 stale(결과에 단가·기준 동봉). 통합고용 2026 귀속~ 신법(직전3년·단년공제·최소고용·A+B+C 구간식)은 NOT_SUPPORTED → build_application_timetable 라우팅. 다년 사이클이라 first_year(=최초공제연도=차수) 필수.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        credit_type: { type: "string", enum: ["고용증대", "통합고용", "사회보험료"], description: "공제 종류(기본 고용증대)" },
-        size: { type: "string", enum: ["중소", "중견", "대기업"], description: "기업규모(고용증대/통합고용 필수). 사회보험료는 중소 전제." },
-        region: { type: "string", enum: ["수도권내", "수도권밖"], description: "증가 지역(고용증대/통합고용 필수)" },
-        first_year: { type: "number", description: "최초공제연도(=차수 기준=증가연도). 다년 사이클은 귀속연도만으로 판정 불가 — 필수." },
-        counts: {
-          type: "object",
-          description: "연도별 인원. 키=연도(직전연도부터 마지막 공제연도까지), 값={total, youth, youth_deemed?}. youth_deemed=청년 간주(연령초과는 최초연도 수준으로 입력 → 추징 0; 미입력 시 실퇴사로 처리). 인원은 최초공제연도별 산정방법(통합고용 절사 등) 적용 후 값.",
-          additionalProperties: {
-            type: "object",
-            properties: { total: { type: "number" }, youth: { type: "number" }, youth_deemed: { type: "number" } },
-            required: ["total", "youth"],
-            additionalProperties: false,
-          },
-        },
-        sinsung: { type: "boolean", description: "[사회보험료] 신성장서비스업이면 제2호 50%→75%" },
-        si_youth: { type: "number", description: "[사회보험료] 청년등 1인당 사용자 사회보험료(원, =총급여×요율÷인원). 만원급 입력은 거부." },
-        si_other: { type: "number", description: "[사회보험료] 청년외 1인당 사용자 사회보험료(원)" },
-      },
-      required: ["first_year", "counts"],
       additionalProperties: false,
     },
   },
@@ -1175,6 +1144,8 @@ export const HIDDEN_TOOL_NAMES = new Set([
   "list_taxlaw_site_menus",
   "get_taxlaw_page_text",
   "call_taxlaw_action",
+  // v0.21.0(#7) — compute_employment_credit는 v0.20.0에서 계산기능 제거·라우터 응답만 남김. HIDDEN에 유지해야
+  // call_taxlaw_extra(name="compute_employment_credit") 게이트가 라우터(전용 계산기 안내)에 도달한다(미등록 시 generic 오류 = CHANGELOG와 모순). tools 배열엔 미등록이라 tools/list 비노출은 유지.
   "compute_employment_credit",
 ])
 
@@ -1787,12 +1758,15 @@ function docCodeFromType(raw: unknown): string | undefined {
   return codes.length === 1 ? codes[0] : undefined
 }
 
-function refererForDoc(code: string | undefined, id: string): string {
+export function refererForDoc(code: string | undefined, id: string): string {
   const normalizedCode = code?.padStart(2, "0")
+  // v0.21.1(#7) — 표시 원문 URL의 id를 내부 조회 경로(getTaxlawDocumentText·research_taxlaw_topic)와 동일하게 정규화(001_ 접두 제거).
+  // 정규화 없으면 001_ 접두 DOC_ID 행의 링크가 서버 canonical id와 어긋남. normalizeDetailId는 멱등이라 이미 정규화된 콜러엔 무해.
+  const nid = normalizeDetailId(id)
   if (normalizedCode && PRECEDENT_CODES.has(normalizedCode)) {
-    return `/pd/USEPDA002P.do?ntstDcmId=${encodeURIComponent(id)}`
+    return `/pd/USEPDA002P.do?ntstDcmId=${encodeURIComponent(nid)}`
   }
-  return `/qt/USEQTA002P.do?ntstDcmId=${encodeURIComponent(id)}`
+  return `/qt/USEQTA002P.do?ntstDcmId=${encodeURIComponent(nid)}`
 }
 
 function totalCount(data: TaxlawSearchData["ASIPDI002PR01"], codes: string[]): number {
@@ -1880,7 +1854,12 @@ function formatIntegratedRow(row: AnyRecord, collectionName: string, verbose = t
     }
   }
   if ((collectionName === "question" || collectionName === "precedent") && id !== "N/A") {
-    lines.push("  상세: get_taxlaw_document_text에 위 ID 사용")
+    // v0.20.0 — 해석례·심판례·판결 제시 시 원문 링크 병기 강제. 실제 DOC_ID로 NTS 원문 URL 조립(임의 생성 아님).
+    const nid = normalizeDetailId(id) // v0.21.1(#7) — 검색·조회 경로와 동일 정규화(001_ 접두 제거)
+    const detailPath = collectionName === "precedent"
+      ? `/pd/USEPDA002P.do?ntstDcmId=${encodeURIComponent(nid)}`
+      : `/qt/USEQTA002P.do?ntstDcmId=${encodeURIComponent(nid)}`
+    lines.push(`  원문: ${TAXLAW_BASE}${detailPath}`)
   }
   if (collectionName === "hometaxCnslThan" && id !== "N/A") {
     lines.push("  상세: get_taxlaw_hometax_counsel_text에 위 ID 사용")
@@ -1977,7 +1956,7 @@ async function searchTaxlawAll(
     `국세법령정보시스템 통합검색 결과: "${query}"`,
     `출처: ${TAXLAW_BASE}/is/USEISA001M.do`,
     `검색 컬렉션: ${collections.join(", ")} / 총 ${total.toLocaleString()}건 / page=${page}/${estimatedPagesAll.toLocaleString()} (displayPerCollection=${display}) — 다음 페이지: page=${page + 1}`,
-    "주의: 아래 결과는 국세법령정보시스템 action.do 응답에서 온 실제 항목만 표시합니다.",
+    "주의: 아래 결과는 국세법령정보시스템 action.do 응답에서 온 실제 항목만 표시합니다. 각 행의 [ID]를 get_taxlaw_document_text(full=true)에 넣으면 전문.",
     "",
   ]
   // v0.9.5 — 복합어 자동 분해 재시도로 회수된 결과에 대한 안내
@@ -2113,7 +2092,11 @@ export function extractNtsCitations(text: string): NtsCitation[] {
   // 신형 해석례: 서면-2024-법규부가-4804 / 사전-2023-법규법인-123 / 기준-2020-법령해석소득-67
   for (const m of src.matchAll(/(?:서면|사전|기준)\s?-\s?\d{4}\s?-\s?[가-힣]{2,12}\s?-\s?\d{1,6}/g)) push(m[0], "interpretation")
   // 구형 해석례: 부가46015-2833, 법인46012-123, 소득22601-1234
-  for (const m of src.matchAll(/[가-힣]{2,6}\d{4,5}\s?-\s?\d{1,6}/g)) push(m[0], "interpretation")
+  for (const m of src.matchAll(/[가-힣]{2,6}\d{4,5}\s?-\s?\d{1,6}/g)) {
+    // v0.21.0(#3) — 감심/심사(쟁송) 접두어는 아래 tribunal 루프가 처리 — 여기서 interpretation으로도 잡으면 이중분류(검출수 2배·cap 조기소진·NTS 중복왕복).
+    if (/^(?:감심|심사|조심|국심)/.test(m[0])) continue
+    push(m[0], "interpretation")
+  }
   // 부서형: 서면법규과-1284, 부가가치세제과-456, 법인세과-789 (일반어 '결과-12' 류는 차단)
   for (const m of src.matchAll(/([가-힣]{2,14}(?:과|팀))\s?-\s?\d{1,6}/g)) {
     if (DEPT_FALSE_PREFIXES.has(m[1])) continue
@@ -2123,7 +2106,8 @@ export function extractNtsCitations(text: string): NtsCitation[] {
   // v0.13.x(P1) — 구분자 [\s-]?로 통일. 하이픈형 조심/국심 누락 수정(오인용 사고 조심-2024-인-2328 미추출 재발방지).
   for (const m of src.matchAll(/(?:조심|국심)[\s-]?\d{4}[\s-]?[가-힣]{1,2}[\s-]?\d{1,5}/g)) push(m[0], "tribunal")
   // 감심·심사청구: 감심2010-123 / 심사소득2019-0012 / 심사-2020-1234
-  for (const m of src.matchAll(/(?:감심|심사[가-힣]{0,4})[\s-]?\d{4}[\s-]?\d{1,5}/g)) push(m[0], "tribunal")
+  // v0.21.0(#2) — '감심 제2023-56호'(감사원 공식표기: 공백+'제'…'호')가 본추출·백스톱 양쪽을 침묵 통과하던 누락 수정. 선택적 '제'·'호'·공백 허용.
+  for (const m of src.matchAll(/(?:감심|심사[가-힣]{0,4})[\s-]?제?\s?\d{4}[\s-]?\d{1,5}\s?호?/g)) push(m[0], "tribunal")
   // 이의신청: 이의-부산청-2024-0108 / 이의-중부청-2023-12 (지방청 단위 문서번호)
   for (const m of src.matchAll(/이의(?:신청)?[\s-]?[가-힣]{2,7}청[\s-]?\d{4}[\s-]?\d{1,5}/g)) push(m[0], "tribunal")
   // 법원: 2021두39997, 2023누15045, 2020구합1234, 2019헌바73
@@ -2193,7 +2177,10 @@ export function propTokens(s: string): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (let t of String(s || "").split(/[^가-힣A-Za-z0-9]+/)) {
-    t = t.replace(JOSA_SUFFIX, "")
+    // v0.21.1(#4) — 어간이 2자 이상 남을 때만 조사 절삭. '제도/온도/결과/효과/평가/증가' 등 조사 동형 종성(도·과·가)
+    // 명사가 1글자로 뭉개져 명제결박 토큰에서 탈락하던 blind spot 방지(공동경비를→공동경비·비율로→비율은 기존대로 절삭).
+    const stem = t.replace(JOSA_SUFFIX, "")
+    if (stem.length >= 2) t = stem
     if (t.length < 2) continue
     const k = t.toLowerCase()
     if (seen.has(k)) continue
@@ -2288,6 +2275,9 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
           .filter(Boolean)
           .join(" · ")
         const ln: string[] = [`✓ ${cit.raw} — 실존 확인: ${title} (생산 ${date || "?"}, ID ${id})`]
+        // v0.21.1(#1) — 인용 직전 최종 게이트(verify)의 확인행에도 원문 URL을 붙여, verify 출력만으로 citation_table을 채울 때 모델의 URL 창작을 차단(검색 포맷터와 동일 데이터계층 조립).
+        const code = String(hit.NTST_DCM_CL_CD || "").padStart(2, "0")
+        if (id !== "?") ln.push(`    └ 원문: ${TAXLAW_BASE}${refererForDoc(code, id)}`)
         if (metaBits) ln.push(`    └ ${metaBits}`)
         if (gist) ln.push(`    └ 요지: ${gist}…`)
         // G2 — 번호가 제목(TTL)에만 매칭되고 본문(문서번호·요지)에는 없으면 강등(제목≠본문, 이의-부산청 류). 실존✓은 유지.
@@ -2302,13 +2292,18 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
           claimMiss = true
           ln.push("    └ ⚠ [명제 미결박] 이 인용의 proposition·basis 미제출 — 주장 적합성 미검증. 산출물 인용 전 claims로 재호출.")
         } else if (claim) {
-          const fit = propositionFit(String(claim.proposition || ""), `${bodyHay}${norm2(hit.TTL)}${norm2(gist)}${norm2(related)}`)
+          const prop = String(claim.proposition || "")
+          const fit = propositionFit(prop, `${bodyHay}${norm2(hit.TTL)}${norm2(gist)}${norm2(related)}`)
           const pct = Math.round(fit * 100)
+          // v0.21.0(#1) — propositionFit은 순수 토큰겹침이라 '…아니다' vs '…이다'(부정어/방향)를 구분 못 한다.
+          // 부정어 하나만 다른 정반대 판시도 매칭 100%가 나오므로, 결박 라벨을 '토큰겹침'으로 약화하고 주장이 부정·배제형이면 방향(주문 결과) 확인을 강제한다.
+          const negProp = /(아니|않|못한|없|제외|배제|해당(하|되)지|부인|불인정|비과세|면제)/.test(prop)
           if (fit < 0.4) {
             claimMismatch = true
             ln.push(`    └ ⚠⚠ [명제 불일치 의심] 주장 핵심어 본문 매칭 ${pct}% — 오귀속(표현·쟁점 오귀속) 의심. full 본문(주문·판단)으로 직접 대조 필수, 불일치 시 인용 제외.`)
           } else {
-            ln.push(`    └ [명제 결박] 주장 핵심어 본문 매칭 ${pct}%${claim.basis === "inference" ? " · [추론] 라벨(직접근거 아님)" : " · [직접근거]"} — 결론 인용은 full 본문 확인.`)
+            ln.push(`    └ [명제 결박(토큰겹침)] 주장 핵심어 본문 매칭 ${pct}%${claim.basis === "inference" ? " · [추론] 라벨(직접근거 아님)" : " · [직접근거]"} — ⚠ 토큰 존재만 확인(부정어·방향·주문 결과 미검증). 결론 인용 전 full 본문(주문·판단)으로 긍정/부정 극성까지 대조.`)
+            if (negProp) ln.push(`    └ ⚠⚠ [부정형 주장] '…아니다/제외' 류 — 토큰겹침은 정반대(긍정) 판시와도 100% 일치하므로 주문의 인용/기각 방향을 full 본문으로 반드시 확인.`)
           }
         } else {
           ln.push("    └ ⚠ 실존 ≠ 명제적합 — 위 제목·요지·관련법령이 인용 '주장'과 일치하는지 full 본문(주문·판단)으로 확인")
@@ -2445,7 +2440,9 @@ function formatDocumentSearchItem(item: TaxlawDcm, query?: string, requestedTaxL
     if (gist) lines.push(`  요지: ${truncate(gist, 450)}`)
     if (snippet && !gist.includes(snippet)) lines.push(`  검색근거: ${truncate(snippet, 300)}`)
   }
-  lines.push("  상세: get_taxlaw_document_text에 위 ID 사용")
+  // v0.20.0 — 해석례·심판례·판결을 사용자에게 제시할 때 반드시 원문 링크를 병기하도록 검색 행에 실제 NTS 원문 URL을 노출.
+  // 링크는 API가 반환한 실제 DOC_ID로 조립(임의 생성 아님) — 모델이 URL을 창작하지 않도록 데이터 계층에서 제공.
+  if (id !== "N/A") lines.push(`  원문: ${TAXLAW_BASE}${refererForDoc(code, id)}`)
   return lines.join("\n")
 }
 
@@ -2531,7 +2528,7 @@ async function searchTaxlawDocuments(
     `국세법령정보시스템 문서 검색 결과: ${title}`,
     `출처: ${TAXLAW_BASE}/action.do (ASIPDI002PR01)`,
     `검색어: ${args.query || "(전체)"} / 총 ${total.toLocaleString()}건 / page=${currentPage}/${estimatedPages.toLocaleString()} (display=${pageSize}) — 다음 페이지: page=${currentPage + 1}`,
-    "주의: 아래 결과는 국세법령정보시스템 응답에 존재한 항목만 표시합니다.",
+    "주의: 아래 결과는 국세법령정보시스템 응답에 존재한 항목만 표시합니다. 각 행의 [ID]를 get_taxlaw_document_text(full=true)에 넣으면 전문(판례·결정례는 주문·판단 포함).",
     "",
   ]
   // v0.9.5 — 복합어 자동 분해 재시도로 회수된 결과에 대한 안내
@@ -3095,7 +3092,9 @@ async function resolveLawMst(oc: string, lawName: string): Promise<string> {
 // 법제처 시행일법령(eflaw) 검색으로 같은 법령의 최근 시행본 MST들을 시행일 내림차순(중복 제거)으로 반환.
 // 타법개정 통합본이 직전 일부개정 부칙을 누락하는 consolidation lag를 메우기 위함.
 async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promise<string[]> {
-  const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=20&query=${encodeURIComponent(lawName)}`
+  // v0.21.0(#5) — display를 40으로 맞춰 fetchEflawVersions(display=40)와 URL(=fetchMolegXml 캐시 키)을 일치시킨다.
+  // → timetable/addenda가 같은 eflaw 목록을 2회 왕복하던 중복 제거(두 번째 호출 캐시 적중). 반환 MST는 limit로 break하므로 불변.
+  const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=eflaw&type=XML&display=40&query=${encodeURIComponent(lawName)}`
   const xml = await fetchMolegXml(url, "시행일 법령 검색")
   const out: string[] = []
   const seen = new Set<string>()
@@ -3417,13 +3416,14 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
   }
   const msts = [primaryMst, ...recent.filter((m) => m !== primaryMst)].slice(0, Math.max(1, depth))
 
-  const sources: AddendaSource[] = []
-  for (const m of msts) {
+  // v0.21.0(#6) — 비-primary 시행본 XML(최대 depth-1개)은 서로 독립 fetch이므로 직렬 await 대신 병렬(콜드캐시 벽시계 단축).
+  // 순서·dedup은 mergeAddendaUnits가 promDate 기준이라 무관하고, primaryMst 조회(3405)는 mst로 하므로 배열 순서 보존이면 충분.
+  const sources: AddendaSource[] = await Promise.all(msts.map(async (m) => {
     const xml = m === primaryMst ? primaryXml : await fetchMolegXml(lawServiceUrl(m), "법령 조회")
     // 그 통합본 자체의 공포일자(기본정보 첫 등장) — dedup 시 최신 통합본 우선 판정 기준
     const promDate = (xml.match(/<공포일자>(\d{8})<\/공포일자>/)?.[1] || "").trim()
-    sources.push({ mst: m, units: parseLawAddenda(xml), promDate })
-  }
+    return { mst: m, units: parseLawAddenda(xml), promDate }
+  }))
   const { units } = mergeAddendaUnits(sources)
   const primaryNos = new Set((sources.find((s) => s.mst === primaryMst)?.units || []).map((u) => u.promulgationNo).filter(Boolean))
   const supplementedNos = units
@@ -4048,16 +4048,15 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   let mst = mstArg
   let versions: LawVersion[] = []
   let pickNote = ""
+  // v0.21.0(#9) — mst 직접 지정 + lawName 동시: 버전목록은 후행개정 가드 전용이고 조문 XML(MST 이미 확정)과 독립 →
+  // 여기서 await하지 않고 promise만 만들어 아래 조문 XML fetch와 Promise.all로 병렬화(직렬 1왕복 제거).
+  let versionsPromise: Promise<LawVersion[]> | null = null
   if (lawName) {
     if (!mst) {
       versions = await fetchEflawVersions(oc, lawName, 40) // 해소에 필수 — 실패 시 호출 실패가 맞다
     } else {
-      // v0.11.0 — mst 직접 지정이면 버전 목록은 후행 개정 가드 전용(soft-fail: 실패 시 가드만 생략).
-      try {
-        versions = await fetchEflawVersions(oc, lawName, 40)
-      } catch {
-        /* 가드 생략 — 본 응답은 정상 */
-      }
+      // mst 직접 지정이면 버전 목록은 후행 개정 가드 전용(soft-fail: 실패 시 가드만 생략) → 조문 XML과 병렬.
+      versionsPromise = fetchEflawVersions(oc, lawName, 40).catch(() => [])
     }
   }
   if (!mst) {
@@ -4077,7 +4076,12 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   }
 
   const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
-  const xml = await fetchMolegXml(url, "법령 조회")
+  // v0.21.0(#9) — 조문 XML과 (mst 지정 시) 가드용 버전목록을 병렬로. lawName-only 경로는 versionsPromise=null이라 이미 await된 versions를 그대로 사용.
+  const [xml, versionsResolved] = await Promise.all([
+    fetchMolegXml(url, "법령 조회"),
+    versionsPromise ?? Promise.resolve(versions),
+  ])
+  versions = versionsResolved
   const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
   const enforceDate = (xml.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
 
@@ -4557,21 +4561,33 @@ export async function researchTaxlawTopic(args: ResearchTopicArgs): Promise<Tool
 
   const codes = documentCodes(searchArgs.docType, "all")
   const groups = splitDocumentCodes(codes)
-  const settled = await Promise.allSettled(groups.map((group) => searchDocumentGroup(group, searchArgs)))
-  const results = settled
-    .filter((s): s is PromiseFulfilledResult<{ group: "question" | "precedent"; codes: string[]; result: TaxlawSearchData["ASIPDI002PR01"] }> => s.status === "fulfilled")
-    .map((s) => s.value)
-  if (results.length === 0) {
-    throw settled.find((s) => s.status === "rejected")?.reason ?? new TaxlawMcpError("Taxlaw document search failed.", ErrorCodes.API_ERROR)
+  // v0.21.0(#8) — 검색+dedupe를 헬퍼로 추출해 복합어 분해 재시도(형제 함수 searchTaxlawDocuments와 동일 패턴)를 매크로에도 부여.
+  const searchOnce = async (q: string): Promise<TaxlawDcm[]> => {
+    const settled = await Promise.allSettled(groups.map((group) => searchDocumentGroup(group, { ...searchArgs, query: q })))
+    const results = settled
+      .filter((s): s is PromiseFulfilledResult<{ group: "question" | "precedent"; codes: string[]; result: TaxlawSearchData["ASIPDI002PR01"] }> => s.status === "fulfilled")
+      .map((s) => s.value)
+    if (results.length === 0) {
+      throw settled.find((s) => s.status === "rejected")?.reason ?? new TaxlawMcpError("Taxlaw document search failed.", ErrorCodes.API_ERROR)
+    }
+    const rawItems = results
+      .flatMap((entry) => (entry.result.body || []).map((row) => row.dcm).filter((d): d is TaxlawDcm => !!d))
+      .sort((a, b) => documentDateValue(b) - documentDateValue(a))
+    return uniqueDocuments(rawItems).items
   }
-  const rawItems = results
-    .flatMap((entry) => (entry.result.body || []).map((row) => row.dcm).filter((d): d is TaxlawDcm => !!d))
-    .sort((a, b) => documentDateValue(b) - documentDateValue(a))
-  const { items: uniqueItems } = uniqueDocuments(rawItems)
+  let uniqueItems = await searchOnce(query)
   if (uniqueItems.length === 0) {
-    return notFoundResponse(`'${query}' 검색 결과 없음.`, [
-      "search_taxlaw_documents로 재검색(복합어 자동 분해 재시도 내장 — 본 매크로에는 없음).",
+    for (const rq of buildRetryQueries(query)) {
+      try {
+        const retried = await searchOnce(rq)
+        if (retried.length) { uniqueItems = retried; break }
+      } catch { /* 다음 분해 후보 시도 */ }
+    }
+  }
+  if (uniqueItems.length === 0) {
+    return notFoundResponse(`'${query}' 검색 결과 없음(복합어 분해 재시도 포함).`, [
       "docType·taxLawCode 필터를 풀거나 키워드를 1~2개 핵심 단어로 축소.",
+      "search_taxlaw_all(통합검색)로 컬렉션을 넓혀 재시도.",
     ], { toolName: "research_taxlaw_topic" })
   }
 
@@ -5246,12 +5262,17 @@ export async function handleToolCall(name: string, args: unknown): Promise<ToolR
       return await verifyNtsCitations(input as { text?: string; maxCitations?: number; claims?: NtsClaim[] })
     }
     if (name === "compute_employment_credit") {
-      // 계산 엔진 예외 격리 — 검색 핸들러 가용성에 전이 금지(design D)
-      try {
-        return textResponse(computeEmploymentCredit(input as EmpCreditArgs))
-      } catch (e) {
-        return textResponse(`[입력/적용범위 오류] ${e instanceof Error ? e.message : String(e)}`, true)
-      }
+      // v0.20.0 — 내장 계산기 제거(계산 SSOT 단일화·검색/검증 MCP와 신뢰경계 분리). 계산 대신 라우팅만 반환.
+      return textResponse(
+        [
+          "compute_employment_credit는 v0.20.0에서 제거되었습니다(계산 SSOT를 하나로 단일화).",
+          "고용증대(§29의7)·통합고용(§29의8)·중소기업 사회보험료(§30의4) 공제·추징 계산은 전용 계산기 SSOT를 사용하세요:",
+          "  Downloads\\TAX\\고용증대세액공제_계산기\\ (고용증대_계산기.py·사회보험료_계산기.py·통합고용_계산기.py, UserPromptSubmit 훅)",
+          "이 MCP에서는 계산 대신 조문·단가·적용시기를 확인하세요:",
+          "  · 단가·산식 원문: get_law_article(jo, full=true)  · 귀속연도별 적용본: build_application_timetable / trace_article_application",
+          "⚠ 계산기가 자동 반영하지 않는 트랩은 별도 검토: 적용배제 문언(단가전환)·적용순서(중특감→사보→고용 3/2/1차)·§144 이월·통합고용 상시인원 절사방법(연도별 상이).",
+        ].join("\n"),
+      )
     }
     if (name === "search_taxlaw_all") {
       return await searchTaxlawAll(input as IntegratedSearchArgs)

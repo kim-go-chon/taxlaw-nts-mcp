@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.20.0] - 2026-07-06
+
+해석례·심판례·판결 **원문링크 병기 강제** + **내장 고용공제 계산기 분리(SSOT 단일화)** + 다관점 적대 리뷰(CONFIRMED 9·PLAUSIBLE FIX 3) 반영 + 데드코드 정리. **MCP 재시작 필요.**
+
+### Added — 원문 링크(환각 방지·출처 추적성)
+- 해석례·심판례·판결 검색결과 각 행에 실제 NTS 원문 URL(`원문:`) 병기 — `search_taxlaw_documents`는 `refererForDoc(code,id)`, `search_taxlaw_all`은 collectionName 기반 `/qt`(해석례)·`/pd`(판례·결정례). API DOC_ID로 조립해 모델 URL 창작 차단. INSTRUCTIONS 5단 ③에 원문링크 병기 의무 명문화(임의 생성 금지). hometax 상담사례는 전용 도구 힌트 유지.
+- `verify_nts_citations`(인용 직전 최종 게이트) 실존 확인행에도 원문 URL 부착 — verify 출력만으로 citation_table을 채울 때의 URL 창작 잔여경로 차단.
+- 원문 URL id는 `normalizeDetailId`로 정규화(`001_` 접두 → canonical id) — 내부 조회 경로(`getTaxlawDocumentText`·`research_taxlaw_topic`)와 일치.
+
+### Removed — 내장 고용공제 계산기 분리(신뢰경계 분리·SSOT 단일화)
+- `compute_employment_credit`(고용증대 §29의7·통합고용 §29의8구법·사회보험료 §30의4)를 제거(`src/employment-credit.ts`·`test/employment-credit.test.js` 삭제). 배경: ①검색·검증 MCP에 '저자 산식 계산값' 혼입(신뢰경계) ②단가 하드코딩 stale ③로컬 Python SSOT 1:1 포팅이라 이중 구현 drift ④쉬운 케이스만 자동화(신법 통합고용 2026+·COVID fy+3·§30의4 forward는 manual) ⑤단가전환·적용순서·§144 이월 등 텍스트 트랩 미반영.
+- 계산 로직은 전용 SSOT(`Downloads\TAX\고용증대세액공제_계산기\` Python)에 생존 — capability 손실 없음. `call_taxlaw_extra(name="compute_employment_credit")` 호출은 계산 대신 **라우터 응답**(전용 계산기 경로 + 조문 확인 도구 + 트랩 경고). HIDDEN 유지로 게이트 도달.
+- 데드코드 정리: 미사용 import(`type BasicRulingRef`·`TAX_LAW_CODE_MAP`)·상수(`TAX_LAW_HEAD`)·함수(`yearsBetween`) 제거. (ts-prune 오탐 `formatLawArticleRef`는 test 커버 → 보존.)
+
+### Fixed — 다관점 적대 리뷰 반영(능동게이트 정밀도·성능)
+- 명제결박 polarity: `propositionFit`이 순수 토큰겹침이라 '…아니다' vs '…이다' 미구분(정반대 판시도 100% 통과) → 라벨 `[명제 결박(토큰겹침)]` 약화 + 부정형 주장이면 주문 방향 full 확인 강제.
+- 인용 추출: '감심 제2023-56호'(공백+제…호) 침묵누락(추출 패턴 확장)·감심/심사 이중분류(쟁송 접두어 skip) 수정.
+- `propTokens` JOSA 과절삭: '제도·결과·효과·평가·증가' 등 조사 동형 종성 명사 보존(어간 잔여≥2) — 극단선 `toks=[]`→`propositionFit=1`(무조건 통과) blind spot 해소.
+- 성능: `fetchEflawMsts` 캐시키 정렬(display 20→40)·`prepareMergedAddenda` 부칙 XML 병렬·`get_law_article` 가드 버전목록+조문 XML 병렬·`research_taxlaw_topic` 복합어 분해 retry·검색 행별 `전문:` 스캐폴딩 헤더 1줄 통합.
+- `VERSION` 상수를 package.json과 일치(서버 보고 버전·User-Agent 추적성).
+
+### CI / Test
+- test 스크립트 하드코딩 목록 가드(`test/meta.test.js`) — 나열 파일 ≡ 실제 `test/*.test.js` 강제(파일 추가/삭제 시 조용한 미실행·Node 20 하드에러 방지). glob 전환은 Node 20/24 × 크로스플랫폼 비호환이라 명시 목록 유지. 테스트 214 통과.
+
+### 리뷰 방법
+- Claude 멀티에이전트 적대검증(6관점 × 발견별 반증): CONFIRMED 9 · PLAUSIBLE FIX 3 · DEFER 2(#6 tail-latency 전역예산) · SKIP 3(overclaim=라벨약화로 해소·COMPANION 칩=의도된 ACTIVE 게이트·인젝션 델리미터=권위출처 가치 훼손). Codex 교차검증은 Windows 샌드박스 장애(CreateProcessAsUserW 1312)로 불가. ⚠ 네트워크 fetch 동시성(부칙·조문 병렬)은 컴파일+정적추론 검증(라이브 미검증) — 재시작 후 스모크 권장.
+
 ## [0.19.0] - 2026-06-23
 
 classify_credit_eligibility에 **소기업 매출한도(별표3)** 추가 — 중특감 감면율(소기업 10/20/30% vs 중기업 5/15%)을 빠르게 판정. **MCP 재시작 필요.**

@@ -10,6 +10,7 @@ const {
   cleanText,
   normalizeDate,
   normalizeDetailId,
+  refererForDoc,
   normalizeTaxlawPath,
   documentDateValue,
   documentDedupKey,
@@ -649,6 +650,27 @@ test("propTokens(G1): 조사 제거·길이≥2·중복제거", () => {
   assert.ok(toks.includes("안분"), "안분")
   assert.ok(!toks.includes("를") && !toks.includes("이") && !toks.includes("에"), "1자 조사 배제")
   assert.equal(new Set(toks).size, toks.length, "중복(매출액 2회) 제거")
+})
+
+test("propTokens(#4): 조사 동형 종성 명사 보존(어간 잔여≥2 가드) — 결과/효과/평가/제도/증가", () => {
+  // 이전 버그: '제도'→'제', '결과'→'결', '효과'→'효', '평가'→'평', '증가'→'증'으로 1글자 탈락
+  for (const w of ["제도", "결과", "효과", "평가", "증가", "온도", "속도"]) {
+    assert.ok(propTokens(`쟁점은 ${w}`).includes(w), `'${w}' 보존(어간 잔여<2라 절삭 안 함)`)
+  }
+  // 곡용형(어간 잔여≥2)은 기존대로 조사 절삭
+  assert.ok(propTokens("제도의 취지").includes("제도"), "'제도의'→'제도'(조사 '의' 절삭)")
+  assert.ok(propTokens("공동경비를 안분").includes("공동경비"), "'공동경비를'→'공동경비' 회귀 유지")
+  // 순명제(동형종성 명사만)에서도 토큰이 살아 propositionFit이 무조건 1을 반환하지 않음
+  assert.ok(propTokens("증가 효과").length >= 2, "동형종성 명사만으로도 토큰 확보(fit=1 blind spot 방지)")
+})
+
+test("refererForDoc(#7): 원문 URL id를 normalizeDetailId로 정규화(001_ 접두 제거)", () => {
+  // 001_ 접두 DOC_ID → canonical id로 정규화된 링크
+  assert.ok(refererForDoc("09", "001_200000000000019482").includes("ntstDcmId=200000000000019482"), "판례(09)=/pd, 001_ 제거")
+  assert.ok(refererForDoc("09", "001_123").startsWith("/pd/USEPDA002P.do"), "05~10 코드는 /pd 경로")
+  assert.ok(refererForDoc("02", "001_456").startsWith("/qt/USEQTA002P.do"), "01~04 코드는 /qt 경로")
+  // 이미 정규화된 id는 멱등(무변경)
+  assert.ok(refererForDoc("02", "200000000000019482").includes("ntstDcmId=200000000000019482"), "정규 id는 멱등")
 })
 
 test("propositionFit(G1): 명제 적합 케이스 vs 오귀속 케이스 분리(임계 0.4)", () => {
