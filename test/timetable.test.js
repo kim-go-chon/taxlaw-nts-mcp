@@ -11,6 +11,8 @@ const {
   checkAmendmentBinding,
   extractJunyongTargets,
   extractJoClauses,
+  targetYearApplicationNote,
+  joMentioned,
 } = await import("../build/index.js")
 
 // ── hangToSymbol ──
@@ -119,4 +121,62 @@ test('extractJoClauses: hang 필터가 "같은 조 제6항" 표기도 회수', (
   const clauses = extractJoClauses(addenda, "제26조의8", "제6항")
   assert.equal(clauses.length, 1)
   assert.match(clauses[0].clause, /최초 공제연도/)
+})
+
+// ── joMentioned (v0.21.0#X-11): jo 부분문자열 오매칭 방지 ──
+test("joMentioned(#X-11): '제2조'는 '제2조의2'를 삼키지 않고 '제2조제1항'은 매칭", () => {
+  assert.equal(joMentioned("제2조의2제1항", "제2조"), false)
+  assert.equal(joMentioned("제2조제1항이후개시", "제2조"), true)
+  assert.equal(joMentioned("제2조", "제2조"), true)
+})
+
+test("joMentioned(#X-11): 의-포함 joKey는 정확 매칭 유지", () => {
+  assert.equal(joMentioned("제26조의8제6항", "제26조의8"), true)
+  assert.equal(joMentioned("제2조의2제3항", "제2조의2"), true)
+  assert.equal(joMentioned("빈 텍스트", ""), false)
+})
+
+test("extractJoClauses(#X-11): '제2조'가 '제2조의2'만 언급된 조항을 오매칭하지 않음", () => {
+  const onlyOf2 = "제5조(적용례) ① 제2조의2제1항의 개정규정은 2025년 1월 1일 이후 개시하는 과세연도부터 적용한다."
+  const real2 = "제5조(적용례) ① 제2조제1항의 개정규정은 2025년 1월 1일 이후 개시하는 과세연도부터 적용한다."
+  assert.equal(extractJoClauses(onlyOf2, "제2조").length, 0)
+  assert.equal(extractJoClauses(real2, "제2조").length, 1)
+  assert.equal(extractJoClauses(onlyOf2, "제2조의2").length, 1)
+})
+
+// ── targetYearApplicationNote (v0.21.0#G8): 순수 함수 단위테스트 ──
+test("targetYearApplicationNote(#G8): 1.1 anchor·year-only는 순연도비교(기존 동작 회귀)", () => {
+  const a = targetYearApplicationNote("과세연도개시기준", "제6항의 개정규정은 2025년 1월 1일 이후 개시하는 과세연도부터 적용한다.", 2025, "2025.1.1", 3)
+  assert.match(a, /기준: 2025 이후 개시 과세연도/)
+  assert.match(a, /≥ → 개정규정 적용/)
+  const b = targetYearApplicationNote("과세연도개시기준", "2024년 이후 개시하는 과세연도부터 적용한다.", 2023, "", 3)
+  assert.match(b, /기준: 2024 이후 개시 과세연도/)
+  assert.match(b, /< → 종전규정/)
+})
+
+test("targetYearApplicationNote(#G8): 연중(7.1) anchor는 단정 대신 ⚠ 강등", () => {
+  const a = targetYearApplicationNote("과세연도개시기준", "2024년 7월 1일 이후 개시하는 과세연도부터 적용한다.", 2024, "", 3)
+  assert.match(a, /⚠ 연중 시행\(7\.1\) 기준/)
+  assert.match(a, /과세연도 개시일과 대조 필요/)
+  assert.equal(/→ 개정규정 적용/.test(a), false)
+})
+
+test("targetYearApplicationNote(#G8): 연도 미파싱 + enforceDate fallback(1.1 / 연중 / 미상)", () => {
+  const clause = "개정규정은 이후 개시하는 과세연도부터 적용한다." // 연도 없음
+  const jan1 = targetYearApplicationNote("과세연도개시기준", clause, 2026, "2025.1.1", 3)
+  assert.match(jan1, /시행일 fallback/)
+  assert.match(jan1, /2025 이후 개시 과세연도 추정/)
+  const mid = targetYearApplicationNote("과세연도개시기준", clause, 2026, "2025.7.1", 3)
+  assert.match(mid, /⚠ 연중 시행\(7\.1, 시행일 fallback\)/)
+  const none = targetYearApplicationNote("과세연도개시기준", clause, 2026, "", 3)
+  assert.match(none, /기준 과세연도 미파싱/)
+})
+
+test("targetYearApplicationNote(#G8): 경과조치 범위 문언은 정확일치 대신 ⚠ 강등, 순수 연도는 기존 동작", () => {
+  const range = targetYearApplicationNote("경과조치(종전규정)", "2021년 이전에 투자한 경우에는 개정규정에도 불구하고 종전의 규정에 따른다.", 2020, "", 3)
+  assert.match(range, /⚠ 범위 문언/)
+  assert.match(range, /원문 대조 필요/)
+  const exact = targetYearApplicationNote("경과조치(종전규정)", "2024년 개시 과세연도분은 개정규정에도 불구하고 종전의 규정에 따른다.", 2024, "", 3)
+  assert.match(exact, /포함 → 원칙 종전규정/)
+  assert.equal(/범위 문언/.test(exact), false)
 })

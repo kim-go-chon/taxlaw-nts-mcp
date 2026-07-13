@@ -322,19 +322,23 @@ function buildNextActions(
     actions.push({
       tool: "korean-law-mcp.search_law",
       args: { query: ref.lawName, display: 3 },
-      purpose: `${ref.lawName} 현행 법령 식별자(mst/lawId) 확보`,
-      expectedUse: `다음 단계 get_law_text(mst=..., jo='${ref.article}')에 사용`,
+      purpose: `${ref.lawName} 현행 법령 존재·명칭 확인`,
+      expectedUse: `현행성 확인용. 시점 본문 대조는 다음 단계 taxlaw-nts-mcp.get_law_article(jo='${ref.article}')로.`,
       priority,
     })
+    // v0.21.0(#G9) — 시점 대조 스텝을 korean-law get_law_text(efYd) → 자사 get_law_article(year, full)로 교체.
+    //   korean-law의 efYd 시점본 경로는 자사 코드가 '사실상 고장'으로 명시(수식·연혁 누락)해 왔고, 자사
+    //   get_law_article은 '후행 개정 확인' 가드까지 함께 반환한다. 변경 hunk 확정은 diff_article_versions로.
     actions.push({
-      tool: "korean-law-mcp.get_law_text",
+      tool: "taxlaw-nts-mcp.get_law_article",
       args: {
-        lawId: `(search_law 결과의 lawId)`,
+        lawName: ref.lawName,
         jo: ref.article,
-        ...(targetYear ? { efYd: `${targetYear}0101` } : {}),
+        ...(targetYear ? { year: targetYear } : {}),
+        full: true,
       },
-      purpose: `${ref.lawName} ${ref.article}${ref.paragraph ? ` ${ref.paragraph}` : ""} 현행 본문 확보`,
-      expectedUse: "예규 본문의 인용 문구와 1:1 대조해 동일/차이를 줄단위로 분리. 차이 부분은 부분 사문화로 표시.",
+      purpose: `${ref.lawName} ${ref.article}${ref.paragraph ? ` ${ref.paragraph}` : ""} 시점 본문(연도) 확보 + 후행개정 가드`,
+      expectedUse: "예규 본문의 인용 문구와 1:1 대조해 동일/차이를 줄단위로 분리. '후행 개정 확인' 블록이 변경·삭제를 지시하면 diff_article_versions(mstA/mstB)로 hunk 확정 후 부분 사문화로 표시.",
       priority,
     })
   }
@@ -526,7 +530,8 @@ export function formatAssessment(a: DoctrineAssessment): string[] {
       actions: Array<{ idx: number; action: NextAction }>
     }
     const groupFor = (tool: string): string => {
-      if (tool === "korean-law-mcp.search_law" || tool === "korean-law-mcp.get_law_text") {
+      // v0.21.0(#G9) — 시점 본문 대조 스텝이 taxlaw-nts-mcp.get_law_article로 교체됨(citation_check 그룹 유지).
+      if (tool === "korean-law-mcp.search_law" || tool === "taxlaw-nts-mcp.get_law_article") {
         return "citation_check"
       }
       if (tool === "korean-law-mcp.search_decisions") return "follow_decisions"
@@ -579,6 +584,8 @@ export function formatAssessment(a: DoctrineAssessment): string[] {
     for (const w of a.warnings) lines.push(`  - ${w}`)
     lines.push("")
   }
-  lines.push("동반 호출 필수: 위 자동 평가는 휴리스틱입니다. 인용 법조문 현행 적용가능성은 반드시 korean-law-mcp의 search_law + get_law_text(jo=...)로 직접 대조 후 사용자에게 보고하세요.")
+  lines.push("동반 호출 필수: 위 자동 평가는 휴리스틱입니다. 인용 법조문 현행 적용가능성은 반드시 korean-law-mcp의 search_law(현행 확인) + taxlaw-nts-mcp의 get_law_article(jo=..., year=...)로 직접 대조 후 사용자에게 보고하세요.")
+  // v0.21.0(#G9) — 라벨은 신호 휴리스틱이고, 기계 대조(get_law_article 후행개정 가드·diff)가 더 강한 증거다.
+  lines.push("※ 본 라벨은 휴리스틱 — get_law_article 후행개정 가드·diff 결과와 충돌 시 그쪽(기계 대조)이 우선.")
   return lines
 }

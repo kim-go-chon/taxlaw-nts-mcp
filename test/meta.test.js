@@ -2,7 +2,7 @@ import { test } from "node:test"
 import { strict as assert } from "node:assert"
 import { readFileSync, readdirSync } from "node:fs"
 
-// v0.21.1(#8) — test 스크립트 하드코딩 목록 footgun 가드.
+// v0.20.0(#8) — test 스크립트 하드코딩 목록 footgun 가드.
 // package.json test 스크립트가 나열한 파일과 실제 test/ 디렉터리의 *.test.js가 어긋나면 실패:
 //   · 파일 추가 후 목록 미갱신 → 조용한 미실행(커버리지 착시) 방지
 //   · 목록에 존재하지 않는 파일 참조 → Node 20 하드에러(CI 깨짐) 사전 검출

@@ -29,6 +29,9 @@ const {
   findUnparsedCitationTokens,
   propTokens,
   propositionFit,
+  isNegativeProposition,
+  classifyNoHitOutcome,
+  findUnmatchedClaims,
   redactSecrets,
   classifyVerdict,
   buildApplicationTimingGuard,
@@ -45,6 +48,7 @@ const {
   pickVersionInForce,
   extractArticleBody,
   pruneEmpty,
+  remainingBudgetMs,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -87,6 +91,38 @@ test("detectHoldingTruncation: 질의·해석례(비-쟁송)·full·빈본문은
   assert.deepEqual(detectHoldingTruncation({ code: "01", fullBody: "x", shownBody: "x", isFull: false }), [])
   assert.deepEqual(detectHoldingTruncation({ code: "08", fullBody: "x", shownBody: "x", isFull: true }), [])
   assert.deepEqual(detectHoldingTruncation({ code: "08", fullBody: "", shownBody: "", isFull: false }), [])
+})
+
+// v0.21.0(#G5) — 해석례(01~04) 회신 tail 소실 가드
+test("detectHoldingTruncation(#G5): 해석례 본문 잘림 + 회신 필드 빈값 → tail 소실 경고", () => {
+  const out = detectHoldingTruncation({
+    code: "02", // 질의회신
+    fullBody: "a".repeat(9000),
+    shownBody: "a".repeat(100) + "[truncated to 8,000 chars]",
+    isFull: false,
+    structuredReply: "",
+  }).join("\n")
+  assert.match(out, /회신·결론부 확인 \(해석례\)/)
+  assert.match(out, /해석례 tail 소실/)
+  assert.match(out, /full=true/)
+})
+
+test("detectHoldingTruncation(#G5): 해석례 잘려도 회신 필드가 채워졌으면 무경고(결론 전량 표시)", () => {
+  assert.deepEqual(
+    detectHoldingTruncation({
+      code: "02",
+      fullBody: "a".repeat(9000),
+      shownBody: "a".repeat(100),
+      isFull: false,
+      structuredReply: "회신: 과세대상에 해당한다.",
+    }),
+    [],
+  )
+})
+
+test("detectHoldingTruncation(#G5): 해석례 안 잘렸거나 full이면 무경고", () => {
+  assert.deepEqual(detectHoldingTruncation({ code: "03", fullBody: "짧은본문", shownBody: "짧은본문", isFull: false, structuredReply: "" }), [])
+  assert.deepEqual(detectHoldingTruncation({ code: "02", fullBody: "a".repeat(9000), shownBody: "a".repeat(100), isFull: true, structuredReply: "" }), [])
 })
 
 test("decodeHtml: standard entities", () => {
@@ -191,6 +227,16 @@ test("normalizeTaxlawPath: error code is INVALID_PARAMETER", () => {
     assert.equal(e instanceof TaxlawMcpError, true)
     assert.equal(e.code, ErrorCodes.INVALID_PARAM)
   }
+})
+
+// v0.21.0(#G10) — 제어문자(C0·DEL) 스트립 심화방어
+test("normalizeTaxlawPath: strips control characters", () => {
+  assert.equal(normalizeTaxlawPath("/qt\x00/USE\x1fQTA.do"), "/qt/USEQTA.do")
+  assert.equal(normalizeTaxlawPath("/a\x7fb.do"), "/ab.do")
+})
+
+test("normalizeTaxlawPath: control-only input throws (no silent fallback)", () => {
+  assert.throws(() => normalizeTaxlawPath("\x00\x1f"), TaxlawMcpError)
 })
 
 test("documentDateValue: prefers DCM_RGT_DTM_S", () => {
@@ -685,6 +731,52 @@ test("propositionFit(G1): 명제 적합 케이스 vs 오귀속 케이스 분리(
   function norm(s) { return s.replace(/[\s\-–—.·]/g, "").toLowerCase() }
 })
 
+test("extractNtsCitations(#E8): 법원 병합 사건번호 — '2021두39997, 39998'의 39998도 동일 연도·접두로 개별 추출", () => {
+  const norms = extractNtsCitations("대법원 2021두39997, 39998 판결 참조.").map((c) => c.normalized)
+  assert.ok(norms.includes("2021두39997"), "주 사건번호")
+  assert.ok(norms.includes("2021두39998"), "병합 꼬리번호도 재구성(종전 침묵 드롭)")
+})
+
+test("extractNtsCitations(#E8): 콤마 뒤 별개 인용(연도로 시작)은 병합 흡수 안 함", () => {
+  const norms = extractNtsCitations("대법원 2021두39997, 2020구합1234 판결.").map((c) => c.normalized)
+  assert.ok(norms.includes("2021두39997"), "첫 인용")
+  assert.ok(norms.includes("2020구합1234"), "두 번째 인용은 별개 유지")
+  assert.ok(!norms.includes("2021두2020"), "다음 인용 연도를 꼬리번호로 오흡수하지 않음")
+})
+
+test("propositionFit(#G4): 핵심어가 전부 불용어·숫자면 -1(판정불가) 반환 — 종전 1(완벽일치 둔갑) 회귀 방지", () => {
+  assert.equal(propositionFit("해당 여부 관련 2024", "아무 본문"), -1, "유효 토큰 0개 → -1")
+  const f = propositionFit("공동경비 안분", "청구법인의 공동경비를 안분")
+  assert.ok(f >= 0 && f <= 1, `정상 명제 fit=${f} (0~1)`)
+})
+
+test("isNegativeProposition(#E7): 확장 부정형 어휘 감지 + '부정당' lookahead 제외 + 긍정형 false", () => {
+  for (const p of ["…로 보기 어렵다", "쟁점과 무관하다", "성격이 다르다", "규정에 반한다", "법령을 위반", "부정한 방법"]) {
+    assert.equal(isNegativeProposition(p), true, `부정형 감지: ${p}`)
+  }
+  assert.equal(isNegativeProposition("해당하지 아니한다"), true, "기존 어휘 회귀(아니/해당하지)")
+  assert.equal(isNegativeProposition("부정당 지정 처분"), false, "'부정당'은 부정(?!당)으로 제외")
+  assert.equal(isNegativeProposition("사용료소득에 해당한다"), false, "긍정형은 false")
+})
+
+test("classifyNoHitOutcome(#G1): 전 그룹 실패=판정불가·원장미기록 / 일부 실패=미발견 불완전·원장미기록 / 무실패=미발견 기록", () => {
+  assert.deepEqual(classifyNoHitOutcome(2, 2), { tally: "failed", writeLedger: false, incomplete: true }, "전 그룹 reject → 판정불가")
+  assert.deepEqual(classifyNoHitOutcome(1, 2), { tally: "notFound", writeLedger: false, incomplete: true }, "일부 reject → 미발견이나 불완전·원장 생략")
+  assert.deepEqual(classifyNoHitOutcome(0, 2), { tally: "notFound", writeLedger: true, incomplete: false }, "무실패 → 정상 미발견·원장 기록")
+})
+
+test("findUnmatchedClaims(#G3): 처리된 인용과 매칭 안 된 claim 수집(오타·미지원·cap 초과) + dedup + citation 없음 skip", () => {
+  const processed = new Set(["서면2024법규부가4804", "2021두39997"])
+  const claims = [
+    { citation: "서면-2024-법규부가-4804", proposition: "p1" }, // 매칭됨 → 제외
+    { citation: "서면-2099-오타-9999", proposition: "p2" }, // 미대응
+    { citation: "서면-2099-오타-9999", proposition: "p3" }, // 중복 → dedup
+    { citation: "", proposition: "p4" }, // citation 없음 → skip
+  ]
+  assert.deepEqual(findUnmatchedClaims(claims, processed), ["서면-2099-오타-9999"])
+  assert.deepEqual(findUnmatchedClaims(undefined, processed), [], "claims 미제출 → 빈 배열")
+})
+
 test("redactSecrets(보안): 출력의 법제처 OC 키 마스킹", () => {
   assert.equal(redactSecrets("https://www.law.go.kr/DRF/lawSearch.do?OC=secretkey123&target=law"),
     "https://www.law.go.kr/DRF/lawSearch.do?OC=***&target=law")
@@ -816,6 +908,20 @@ test("interpretiveForkGuard: 폐쇄 호구분형('각 호의 구분에 따른 �
   assert.ok(!g.some((l) => l.includes("해석 분기 가드(세액공제 사후관리)")))
 })
 
+// v0.21.0(#G6) — 폐쇄 호구분형 관용구 변형("각 호에 따른 금액", "공제한 세액…상당하는")도 흡수
+test("interpretiveForkGuard(#G6): 문언 변형(각 호에 따른 금액 + 공제한 세액…상당하는) → 발화", () => {
+  const t =
+    "요건 판정 후 다음 각 호에 따른 금액을 공제한다. 1. …의 경우: 제1항제1호에 따라 공제한 세액에 상당하는 금액 2. 그 밖의 경우: 제1항제2호에 따라 공제한 세액에 상당하는 금액"
+  const g = buildInterpretiveForkGuard(t, "제30조의4")
+  assert.ok(g.some((l) => l.includes("해석 분기 가드(폐쇄 호구분형)")))
+})
+
+test("interpretiveForkGuard(#G6): 기존 관용구('각 호의 구분에 따른 금액'+'공제받은 금액 상당액')는 계속 발화(회귀)", () => {
+  const t =
+    "다음 각 호의 구분에 따른 금액을 공제한다. 1. …: 제1항제1호에 따라 공제받은 금액 상당액"
+  assert.ok(buildInterpretiveForkGuard(t, "제30조의4").some((l) => l.includes("해석 분기 가드(폐쇄 호구분형)")))
+})
+
 test("interpretiveForkGuard: 무관 조문(공제·감소·호 없음) → 미발화", () => {
   assert.equal(buildInterpretiveForkGuard("① 상시근로자 수는 매월 말일 현재 인원을 합하여 계산한다.", "제26조의7").length, 0)
 })
@@ -828,4 +934,22 @@ test("interpretiveForkGuard: '적용하지 아니' 없으면(추징 산식 본�
 
 test("interpretiveForkGuard: 빈 본문 → 미발화", () => {
   assert.equal(buildInterpretiveForkGuard("", "제29조의7").length, 0)
+})
+
+// v0.21.0(#G14) — 도구 시간예산 남은량 계산 순수함수. store 부재/잔여/소진 3케이스.
+test("remainingBudgetMs: deadlineAt 미지정(store 부재) → Infinity(무제한)", () => {
+  assert.equal(remainingBudgetMs(undefined), Infinity)
+  assert.equal(remainingBudgetMs(undefined, 123456), Infinity)
+})
+
+test("remainingBudgetMs: 미래 deadline → 양의 잔여(now 대비)", () => {
+  assert.equal(remainingBudgetMs(1000, 400), 600)
+  assert.equal(remainingBudgetMs(90000, 0), 90000)
+})
+
+test("remainingBudgetMs: 과거·동일 deadline → 소진(<=0)", () => {
+  assert.equal(remainingBudgetMs(400, 1000), -600)
+  assert.equal(remainingBudgetMs(500, 500), 0)
+  assert.ok(remainingBudgetMs(500, 500) <= 0)
+  assert.ok(remainingBudgetMs(400, 1000) <= 0)
 })

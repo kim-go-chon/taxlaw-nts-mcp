@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.21.0] - 2026-07-14
+
+4축 적대 리뷰(효과성·토큰·시간·보안) 반영 배치 릴리스 — 게이트 무결성 P0 1건(검증 장애→"미발견" 둔갑) 포함 Fixed 14건 + Security 2건 + Performance 4건 + 토큰 절감 4건.
+
+### Fixed — 게이트 무결성(verify·guard·타임테이블)
+- **G1(P0)** `verify_nts_citations`: 검색그룹 장애(NTS 5xx·네트워크 등)가 "✗ 공개DB 미발견"으로 둔갑 + 원장(ledger)에 미발견으로 오기록되던 것 차단 — `Promise.allSettled` reject를 무히트와 분리해 전그룹 실패=판정불가(원장 기록 금지)·일부 실패=불완전 명시(순수 분기 `classifyNoHit` export·테스트).
+- **G3** `verify_nts_citations(claims)`: text에서 추출된 어떤 인용과도 매칭 안 된 claim(오타·미지원 포맷·maxCitations 캡 초과)이 침묵 소실되던 역방향 누락 노출(`unmatchedClaims` 수집·표시).
+- **G4** `propositionFit`: 주장 핵심어가 전부 불용어·숫자로 비면 종전 1(=100% 적합) 반환 → -1(판정불가) + 전용 안내로 오귀속 차단.
+- **G2** 교차법령 필터 확대: `get_law_article`에만 있던 타법(시행령·시행규칙 등) 행 배제를 `diff_article_versions`·`build_application_timetable`·부칙 union까지 확장 — diff 양측이 다른 법령으로 해소되면 ⚠⚠ 최상단 경고+판정 신뢰금지 강등.
+- **G7** 후행개정 가드: 가드용 버전목록 회수가 이중 soft-fail로 조용히 빠지면 "가드 실패(대조 미수행)"를 명시(침묵=대조완료 오인 차단).
+- **G5** 해석례(01~04) 회신 tail 잘림 능동경고 — 구조화 회신 필드(CNTN)가 비었고 본문이 truncate되면 결론부 소실 가능 ⚠(판례 05~10 경로와 분리).
+- **G6** 해석분기 가드(폐쇄 호구분형) 변형군 확장: 정확 관용구 2개 AND가 "각 호에 따른 금액"·"공제한 세액…상당하는" 등 문언 변형에 침묵하던 것 보강.
+- **G8** 적용시기 노트 의미론 보강: 월일 경계·범위(이상/이하/전/후) 해석을 순수 함수로 export + 단위테스트.
+- **G9** `assess_doctrine_validity` nextActions 큐: 시점 대조 스텝을 korean-law `get_law_text(efYd)`(연혁 회수 고장 실측) → 자사 `get_law_article(year, full)`로 교체 + 실행 우선순위 명문화.
+- **G10** `call_taxlaw_extra` description 인자명 오기 정정(`get_taxlaw_page_text(url)`→`(path)`, `call_taxlaw_action(actionId, payload)`→`(actionId, paramData, refererPath)`) + `get_taxlaw_page_text` path 미지정 시 `/index.do` 무음 폴백 제거 → INVALID_PARAMETER.
+- **X-11** 조문 부분문자열 오매칭 방지: `"제2조".includes`가 "제2조의2"를 삼키던 것을 lookahead 매처(`joMentioned`)로 교체(timetable·trace·부칙 필터 전 경로).
+- **X-9** `assess_doctrine_validity` full 설명 허위 정정: "인용 추출 정확도 향상"(실제 추출은 full 무관 전체 bodyText 사용) → "출력 말미에 본문 발췌 부착". 별칭 `search_taxlaw_interpretations` 스키마 display 기본 20 → 실제 코드 기본 10으로 일치.
+- **E-7** 부정·배제형 주장 판정 정규식 확장(부정어 하나 차이로 정반대 판시와 토큰겹침 100% 나는 사각 보강).
+- **E-8** 병합 사건번호 추출: "2021두39997, 39998" 표기의 뒤 번호가 침묵 드롭되던 누락 수정.
+
+### Security
+- **G11** OC(법제처 API키) 표시 URL 분리: 응답에 노출되는 모든 `출처:` 법령 URL을 OC 제외본(`displayLawServiceUrl`)으로 조립(내부 fetch만 OC 포함 유지) — `redactSecrets`는 최후방어로 강등.
+- `normalizeTaxlawPath` 제어문자(C0·DEL) 스트립 심화방어(+테스트 2건).
+
+### Performance
+- **W-1** `research_taxlaw_topic`: targetYear 지정 시 픽별 유효성 1줄 자동 첨부 — 이미 회수한 detail로 `assessDoctrineValidity`(순수함수) 재사용, 추가 네트워크 0.
+- **W-4** `get_law_article` 현행 조회 경로의 잉여 `resolveLawMst` 왕복 제거(이미 받은 버전목록에서 오늘 시행본 MST 우선 해소).
+- **W-6** 문서 상세조회: 호출부가 문서코드(dcmClCd)를 알면 해당 상세 경로 우선 시도(referer 라우팅) — 순차 더듬기 헛왕복 제거.
+- **G14** 도구 콜 단위 시간예산 신설: env `TAXLAW_TOOL_BUDGET_MS`(기본 90000ms, 0=무제한) — CallTool 진입점에서 AsyncLocalStorage deadline을 걸고 모든 네트워크 재시도가 매 시도 전 잔여 예산 확인(소진 시 부분 결과+재호출 안내). v0.20.0 DEFER #6(tail-latency 전역예산) 해소.
+
+### Tokens — 설명·INSTRUCTIONS 축약(실측)
+- **T-4** INSTRUCTIONS 상수 2,421 → 1,999 chars(호스트 ~2,000자 절단 실측 하회): 강제 절차·적용시기·응답 5단은 문장 압축만(실질 유지), [저빈도 도구]·[중복 처리] 1문장화, [워크플로] 요지화.
+- **T-1** `search_taxlaw_documents` description 748 → 510 chars: 세목 코드표(`taxLawCodeReference()`)·quirk가 description·inputSchema 양쪽 중복 → description은 "코드표·quirk는 taxLawCode 파라미터 설명 참조"로 축약(스키마 쪽 전체표+quirk 유지).
+- **T-3** `call_taxlaw_extra` description 904 → 849 chars: [고용공제계산] 문단에서 사용자 로컬 경로 삭제(공개 repo 노출 제거) — `compute_employment_credit` 라우터 응답의 로컬 경로도 동일 정리.
+- **T-7** moleg 계열 5종(get_law_article/get_law_addenda/diff_article_versions/get_law_revision_text/trace_article_application) `oc` 파라미터 설명 통일 축약("법제처 OC 인증키(미입력 시 env LAW_GO_KR_OC).").
+- 합계: visibleTools(17종) description 7,112 → 6,819 chars, tools/list JSON 20,476 → 20,108 chars.
+
+### 기타
+- HEAD에 남아 있던 구 버전주석 13곳(v0.20.0 릴리스 스쿼시 때 리넘버 누락된 `v0.21.0(#1~#9)`·`v0.21.1(#..)`)을 `v0.20.0(#..)`으로 정정 — 이번 릴리스 태그(`#G..`/`#W..`/`#X..`/`#E..`)와 구분 복원.
+- VERSION 상수·package.json → 0.21.0. 테스트 240 통과(+25).
+
+### 리뷰 방법
+- 4축(효과성/토큰/시간/보안) Opus×4 병렬 적대 리뷰 + 독립 교차검증(Fable) + 최종검토 코드 재정독. Codex(gpt-5.6-sol) 교차는 2회 시도 모두 Windows 샌드박스 장애(CreateProcessAsUserW 1312)로 불가 → Claude 대체. 발견 43건 중 CONFIRMED 상위를 구현.
+
+**MCP 재시작 필요.**
+
 ## [0.20.1] - 2026-07-13
 
 해석 분기 가드 확장 — 폐쇄 호구분형('각 호의 구분에 따른 금액…상당액') 조문 탐지 신설 + 기존 가드 양방향화 (실측: 구 §30의4② 사보 2차 호구분 사고, 2026-07-13).

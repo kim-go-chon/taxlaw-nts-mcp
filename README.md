@@ -63,7 +63,7 @@ MCP `InitializeResult.instructions`로 LLM에 자동 주입됩니다. 클라이�
 | `search_taxlaw_all` | 통합검색 — 별표서식·국세법령·세법해석/질의·판례결정례·발간책자·홈택스 상담사례 |
 | `search_taxlaw_documents` | 세법해석례/질의회신(01–04)과 과세전적부·이의·심사·심판·판례·헌재(05–10) 검색. 세목코드(`taxLawCode`) 지정 권장 |
 | `get_taxlaw_document_text` | 문서 상세 본문. **`targetYear`**로 인용 법조문 시점 검증, **`full`**로 판례·결정례 주문·판단 결론부까지 |
-| `research_taxlaw_topic` | 체인 매크로 — 검색 → 관련 상위 K건 본문(`full`·`targetYear`) 첨부를 1콜로(다턴 왕복 절감) |
+| `research_taxlaw_topic` | 체인 매크로 — 검색 → 관련 상위 K건 본문(`full`·`targetYear`) 첨부를 1콜로(다턴 왕복 절감). `targetYear` 지정 시 픽별 유효성 1줄 자동 첨부 |
 | `assess_doctrine_validity` | 해석례·심판례·판례 한 건의 **현행 유효성 자동 채점**(6단계 판정 + 권장 후속 호출 큐) |
 | `verify_nts_citations` | 산출물 속 해석례·심판례·판례 번호를 일괄 추출해 **실존 여부 확인**(인용 게이트). `claims`로 인용–명제 적합성까지 검사 |
 | `list_taxlaw_basic_ruling_laws` | 기본통칙 법령 목록 조회(`lawId` 확보) |
@@ -121,7 +121,7 @@ git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
 cd taxlaw-nts-mcp
 npm install
 npm run build      # tsc + 내장 DB(JSON) 복사
-npm test           # 215개 단위 테스트 (선택)
+npm test           # 240개 단위 테스트 (선택)
 npm start          # MCP STDIO 서버 실행
 ```
 
@@ -213,6 +213,12 @@ API 키는 필요하지 않습니다. 기본 User-Agent는 `taxlaw-nts-mcp/<vers
 
 ```bash
 TAXLAW_USER_AGENT="Mozilla/5.0 ..."
+```
+
+도구 콜 1건에 시간예산을 걸 수 있습니다(tail-latency 방어, 소진 시 부분 결과 + 재호출 안내).
+
+```bash
+TAXLAW_TOOL_BUDGET_MS=90000   # 도구 콜 시간예산(ms). 기본 90000, 0=무제한
 ```
 
 ## 오류 응답 원칙

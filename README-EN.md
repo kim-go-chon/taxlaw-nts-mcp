@@ -43,7 +43,7 @@ Tools split into those exposed directly in `tools/list` and low-frequency tools 
 | `search_taxlaw_all` | Integrated search across annexes/forms, tax statutes, interpretations/Q&A, cases, publications, and Hometax counseling |
 | `search_taxlaw_documents` | Search interpretations/Q&A (01–04) and pre-assessment/objection/review/tribunal/court/constitutional documents (05–10); `taxLawCode` recommended |
 | `get_taxlaw_document_text` | Document detail body. **`targetYear`** verifies cited statute dates; **`full`** includes the ruling/holding of cases and decisions |
-| `research_taxlaw_topic` | Chain macro — search → attach the top-K bodies (`full`·`targetYear`) in one call |
+| `research_taxlaw_topic` | Chain macro — search → attach the top-K bodies (`full`·`targetYear`) in one call. With `targetYear`, a one-line validity note is auto-attached per pick |
 | `assess_doctrine_validity` | Auto-score the **current validity** of a single interpretation/tribunal/court decision (6-level verdict + recommended next-action queue) |
 | `verify_nts_citations` | Extract ruling/decision/case numbers from your draft and **check they exist** in the public DB (citation gate); `claims` also checks citation-to-proposition fit |
 | `list_taxlaw_basic_ruling_laws` | List basic ruling laws (to obtain `lawId`) |
@@ -101,7 +101,7 @@ git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
 cd taxlaw-nts-mcp
 npm install
 npm run build      # tsc + bundle DB copy
-npm test           # 215 unit tests (optional)
+npm test           # 240 unit tests (optional)
 npm start          # MCP STDIO server
 ```
 
@@ -193,6 +193,12 @@ No API key is required. The default User-Agent is `taxlaw-nts-mcp/<version> (+ht
 
 ```bash
 TAXLAW_USER_AGENT="Mozilla/5.0 ..."
+```
+
+A per-tool-call time budget can be set (tail-latency guard; on exhaustion, partial results plus a retry hint are returned).
+
+```bash
+TAXLAW_TOOL_BUDGET_MS=90000   # per-tool-call budget in ms. Default 90000, 0 = unlimited
 ```
 
 ## Error Behavior

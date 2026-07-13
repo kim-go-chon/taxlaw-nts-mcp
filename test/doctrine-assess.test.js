@@ -124,6 +124,36 @@ test("formatAssessment: scorecard contains final verdict and next-action queue",
   assert.match(text, /korean-law-mcp/)
 })
 
+// v0.21.0(#G9) — 시점 대조 스텝을 korean-law get_law_text(efYd) → 자사 get_law_article(year)로 교체
+test("v0.21.0(#G9): nextActions는 taxlaw-nts get_law_article(year)로 시점 대조하고 get_law_text(efYd)는 미지시", () => {
+  const body = [
+    "가. 관련규정",
+    "조세특례제한법 제18조의2 (2003. 12. 30. 개정)",
+  ].join("\n")
+  const yc = checkYearApplicability({ bodyText: body, targetYear: 2026 })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({ meta: makeMeta(), yearCheck: yc, citedArticles: refs, targetYear: 2026 })
+  const gla = a.nextActions.find((n) => n.tool === "taxlaw-nts-mcp.get_law_article")
+  assert.ok(gla, "taxlaw-nts-mcp.get_law_article 스텝 존재")
+  assert.equal(gla.args.year, 2026, "targetYear가 year 인자로 전달")
+  assert.equal(gla.args.full, true)
+  // korean-law get_law_text(efYd) 경로는 더 이상 지시하지 않음(사실상 고장 경로 제거)
+  assert.equal(a.nextActions.some((n) => n.tool === "korean-law-mcp.get_law_text"), false)
+  // korean-law search_law(현행 확인)는 유지
+  assert.ok(a.nextActions.some((n) => n.tool === "korean-law-mcp.search_law"))
+})
+
+test("v0.21.0(#G9): formatAssessment 말미에 '기계 대조 우선' 문구 부착", () => {
+  const body = ["가. 관련규정", "조세특례제한법 제18조의2 (2003. 12. 30. 개정)"].join("\n")
+  const yc = checkYearApplicability({ bodyText: body, targetYear: 2026 })
+  const refs = extractLawArticleRefs(body)
+  const a = assessDoctrineValidity({ meta: makeMeta(), yearCheck: yc, citedArticles: refs, targetYear: 2026 })
+  const text = formatAssessment(a).join("\n")
+  assert.match(text, /본 라벨은 휴리스틱/)
+  assert.match(text, /기계 대조.*우선/)
+  assert.match(text, /taxlaw-nts-mcp의 get_law_article/)
+})
+
 // ─── v0.9.0 신규 신호 ─────────────────────────────────────────
 
 test("v0.9.0: 옛 부가세법 시행령 §35 인용 → restructured_location 신호 + superseded_or_repealed 격상", () => {
