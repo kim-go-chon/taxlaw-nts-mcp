@@ -796,6 +796,24 @@ test("interpretiveForkGuard: 고용 세액공제 사후관리 '적용하지 아�
   assert.ok(g.some((l) => l.includes("제29조의7")))
   assert.ok(g.some((l) => l.includes("단가로 전환")))
   assert.ok(g.some((l) => l.includes("추징식 정합성")))
+  // v0.20.1 — 양방향화: 기존 가드에 역방향(폐쇄 호구분형에 전환 법리 유추 금지) 경고 문장 포함
+  assert.ok(g.some((l) => l.includes("역방향 오류도 경계")))
+  // 폐쇄 호구분형 신규 가드 블록은 발화하지 않음(이 텍스트는 '각 호의 구분에 따른 금액…상당액' 없음)
+  assert.ok(!g.some((l) => l.includes("해석 분기 가드(폐쇄 호구분형)")))
+})
+
+// v0.20.1 — 폐쇄 호구분형 신규 가드(구 조특법 §30의4② 사보 2차 사후관리)
+test("interpretiveForkGuard: 폐쇄 호구분형('각 호의 구분에 따른 금액…상당액') → 신규 가드 발화", () => {
+  const t =
+    "제1항을 적용받은 내국인이 최초로 공제받은 과세연도의 종료일부터 1년이 되는 날이 속하는 과세연도까지 상시근로자의 수가 감소하지 아니한 경우에는 다음 각 호의 구분에 따른 금액을 공제한다. 1. 청년등 상시근로자의 수가 감소하지 아니한 경우: 제1항제1호에 따라 공제받은 금액 상당액 2. 제1호 외의 경우: 제1항제2호에 따라 공제받은 금액 상당액"
+  const g = buildInterpretiveForkGuard(t, "제30조의4")
+  assert.ok(g.length > 0)
+  assert.ok(g[0].includes("해석 분기 가드(폐쇄 호구분형)"))
+  assert.ok(g.some((l) => l.includes("제30조의4")))
+  assert.ok(g.some((l) => l.includes("각 호의 구분")))
+  assert.ok(g.some((l) => l.includes("상당액")))
+  // 이 텍스트는 '적용하지 아니한다'가 없어 기존 사후관리 가드는 발화하지 않음
+  assert.ok(!g.some((l) => l.includes("해석 분기 가드(세액공제 사후관리)")))
 })
 
 test("interpretiveForkGuard: 무관 조문(공제·감소·호 없음) → 미발화", () => {
