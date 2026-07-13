@@ -12,6 +12,19 @@ For NTS menus that do not yet have a dedicated high-level tool, the server also 
 
 [한국어](./README.md)
 
+## What it's for
+
+Tax analysis rarely ends at the statute. The actual basis is often an NTS interpretation, Q&A reply, basic ruling, tax-tribunal decision, or Hometax counseling case — material that MOLEG's law.go.kr rarely surfaces but the NTS Tax Law Information System holds. This server retrieves that material down to the body text, and handles the parts of tax research that tend to go wrong.
+
+- **NTS-only sources** — Find tax interpretations, Q&A, basic rulings, tribunal decisions, Hometax counseling cases, and publications by number or keyword, and pull the full body.
+- **Citation existence check** — Before a ruling/decision number goes into your answer, it is checked against the live DB (`verify_nts_citations`); non-existent numbers are dropped or flagged "not found in public DB", so you don't cite a precedent that doesn't exist.
+- **Point-in-time check** — Give a tax year and it reviews against the provision in force that year (`build_application_timetable`), and judges whether a cited interpretation is superseded or repealed (`assess_doctrine_validity`). Old vs. new article text can be diffed side by side (`diff_article_versions`).
+- **Formula-bearing articles kept intact** — For articles with tables/formulas (e.g. the employment-increase and integrated-employment tax credits in the Restriction of Special Taxation Act), where generic law APIs tend to drop the formula, this pulls the source including the formula.
+- **Industry-code eligibility** — For start-up SME and small-business special tax reductions, it checks whether an industry code qualifies against KSIC and returns match / excluded / out-of-scope / ambiguous (`classify_industry_for_article`).
+- **Structured replies** — Answers come back as conclusion → case matrix → cited law (separated by source, with source links) → unverified notes (⚠), ready to drop into an opinion memo.
+
+Use MOLEG's `korean-law-mcp` for statute and case originals, and this server for NTS interpretations, basic rulings, and tribunal decisions. No API key or fee is required; final judgement still requires the original sources and a licensed professional.
+
 ## Using With korean-law-mcp
 
 For Korean tax questions, use `korean-law-mcp` first for statutes, enforcement decrees, precedents, and tax tribunal materials from MOLEG/law.go.kr, then use this server to fill NTS-specific gaps such as tax interpretations, basic rulings, Hometax counseling examples, forms, and publications.
@@ -22,51 +35,64 @@ This server only displays items returned by the NTS Tax Law Information System. 
 
 ## Tools
 
-### NTS Tax Law Information System search/retrieval
+Tools split into those exposed directly in `tools/list` and low-frequency tools called through the `call_taxlaw_extra(name, args)` gateway (to cut fixed session tokens). Set `TAXLAW_EXPOSE_ALL=1` to expose all of them directly.
+
+### Search & document retrieval
 | Tool | Purpose |
 | --- | --- |
-| `search_taxlaw_all` | Integrated NTS search across annexes/forms, tax statutes, interpretations/Q&A, cases, publications, and Hometax counseling |
-| `search_taxlaw_documents` | Search interpretations/Q&A and dispute documents |
-| `get_taxlaw_document_text` | Retrieve document detail text by `DOC_ID`/`DOCID`. **`targetYear` option**: auto-verifies cited statute dates and warns if the document is based on superseded provisions |
-| `assess_doctrine_validity` (0.7.0) | Auto-score the **current validity** of a single doctrine (interpretation / tribunal / court decision). Returns 6-level final verdict (`valid_current` / `needs_current_check` / `partially_outdated` / `likely_outdated` / `superseded_or_repealed` / `unverified`) plus a recommended next-action queue (`korean-law-mcp.search_law/get_law_text/search_decisions` + NTS later-dated interpretations search). |
-| `get_taxlaw_hometax_counsel_text` | Retrieve Hometax counseling detail text by `REQ_STD_ID` |
-| `list_taxlaw_site_menus` | List major NTS menus plus observed `action.do` call metadata |
-| `call_taxlaw_action` | Call a raw NTS `action.do` action with `actionId` and `paramData` |
-| `get_taxlaw_page_text` | Fetch same-site HTML/static pages as text |
-| `search_taxlaw_interpretations` | Backward-compatible alias for interpretation search |
-| `get_taxlaw_interpretation_text` | Backward-compatible alias for interpretation detail retrieval |
-| `list_taxlaw_basic_ruling_laws` | List basic ruling law IDs |
+| `search_taxlaw_all` | Integrated search across annexes/forms, tax statutes, interpretations/Q&A, cases, publications, and Hometax counseling |
+| `search_taxlaw_documents` | Search interpretations/Q&A (01–04) and pre-assessment/objection/review/tribunal/court/constitutional documents (05–10); `taxLawCode` recommended |
+| `get_taxlaw_document_text` | Document detail body. **`targetYear`** verifies cited statute dates; **`full`** includes the ruling/holding of cases and decisions |
+| `research_taxlaw_topic` | Chain macro — search → attach the top-K bodies (`full`·`targetYear`) in one call |
+| `assess_doctrine_validity` | Auto-score the **current validity** of a single interpretation/tribunal/court decision (6-level verdict + recommended next-action queue) |
+| `verify_nts_citations` | Extract ruling/decision/case numbers from your draft and **check they exist** in the public DB (citation gate); `claims` also checks citation-to-proposition fit |
+| `list_taxlaw_basic_ruling_laws` | List basic ruling laws (to obtain `lawId`) |
 | `get_taxlaw_basic_ruling_text` | Retrieve basic ruling text |
-| `search_taxlaw_forms` | Search all forms, annexes, legal forms, directive forms, and favorite forms |
-| `search_taxlaw_publications` | Search NTS publications |
-| `list_taxlaw_publication_categories` | List publication category codes |
+| `search_taxlaw_forms` | Search forms/annexes (legal, directive, and favorite forms) |
 
-### Industry-code ↔ KSIC mapping (0.5.x)
+### Point-in-time & application timing (MOLEG DRF supplement)
+Addenda, point-in-time versions, and article diffs — which the NTS system does not expose — are supplemented from MOLEG's law.go.kr Open API. Start here for any tax-year-scoped question.
+
+| Tool | Purpose |
+| --- | --- |
+| `build_application_timetable` | First entry point for tax-year questions — amendment inventory + addenda application-clause tagging + tax-year × article matrix in one call |
+| `trace_article_application` | Trace a single article's per-year application based on its addenda application clauses |
+| `get_law_article` | Article body at a point in time (year/effective date/MST) + **formula image URL**; past versions auto-compared against the current one |
+| `diff_article_versions` | Word-level diff of the same article across two effective versions (changed hunks only) |
+| `get_law_addenda` | Retrieve addenda (effective dates, application clauses, transitional provisions) |
+| `get_law_revision_text` | Retrieve the amendment text (the actual "change X to Y" directives) of a given amending act |
+
+### Tax-reduction industry eligibility
+| Tool | Purpose |
+| --- | --- |
+| `classify_credit_eligibility` | Industry code → eligibility for start-up SME reduction (RSTA §6③) and small-business special reduction (§7①); re-check proviso industries against the statute/decree/rule text |
+
+### Low-frequency tools via `call_taxlaw_extra`
+Call as `call_taxlaw_extra({ name, args })`.
+
+- **Industry-code ↔ KSIC** — `lookup_upjong_code` · `lookup_ksic_code` · `lookup_ksic_prefix` · `search_industry_by_keyword` · `resolve_industry_class` · `classify_industry_for_article` · `upjong_db_info`
+- **Publications / Hometax / site menus** — `get_taxlaw_hometax_counsel_text` · `search_taxlaw_publications` · `list_taxlaw_publication_categories` · `list_taxlaw_site_menus` · `get_taxlaw_page_text` · `call_taxlaw_action`
+- **Backward-compatible aliases** — `search_taxlaw_interpretations`(=`search_taxlaw_documents`) · `get_taxlaw_interpretation_text`(=`get_taxlaw_document_text`)
+
+#### Industry-code ↔ KSIC mapping DB
 The official NTS "Industry code ↔ Standard Industrial Classification (KSIC) mapping" is bundled as JSON (~1.5MB, 1,784 records, FY 2024). Tools auto-identify which classification level (l1 대분류 / l2 중분류 / l3 소분류 / l4 세분류 / l5 세세분류) a statute clause refers to, preventing the common LLM mistake of "matching on top-level name only".
 
-| Tool | Purpose |
-| --- | --- |
-| `lookup_upjong_code` | 6-digit industry code → 5-level classification path + KSIC mapping |
-| `lookup_ksic_code` | Exact 5-digit KSIC code → mapped industry codes |
-| `lookup_ksic_prefix` | KSIC prefix match. 1-letter (B/C/M…) = l1, 2-5 digits = l2~l5. e.g. `681` (real-estate rental), `4791` (mail-order retail), `7421` (cleaning) |
-| `search_industry_by_keyword` | Keyword search over class names (whitespace/punctuation normalized). **`levels` option** narrows search to specific levels |
-| `resolve_industry_class` | Map a clause-quoted industry name to its KSIC/NTS classification levels. **`levels` option** |
-| `classify_industry_for_article` | Given (statute industry name, exclusion clues, industry code under evaluation) → verdict ∈ {match, excluded, out_of_scope, ambiguous}. **`excludeLevels` option** narrows exclusion match levels to prevent over-exclusion |
-| `upjong_db_info` | Bundled DB freshness (generation time, FY, record count) |
-
-#### Example — Korean Restriction Special Tax Act Decree §27③ item 16
+Example — RSTA Decree §27③ item 16 (749942 vs 852000):
 ```js
-classify_industry_for_article({
-  industryName: "기타 전문, 과학 및 기술 서비스업",     // Korean: "Other professional, scientific, and technical services"
-  upjongCode:   "749942",                                  // NTS l2 = 74 "Professional services"
-  excludeNames: ["수의업"]                                  // Korean: veterinary services
+call_taxlaw_extra({
+  name: "classify_industry_for_article",
+  args: {
+    industryName: "기타 전문, 과학 및 기술 서비스업",   // "Other professional, scientific, and technical services"
+    upjongCode:   "749942",                                // NTS l2 = 74 "Professional services"
+    excludeNames: ["수의업"]                                // veterinary services
+  }
 })
 // → verdict: out_of_scope (749942 is NTS l2=74, while item 16 refers to KSIC l2=73)
 ```
 
 ## Full Menu Access
 
-Use `list_taxlaw_site_menus` first to find the menu key, URL, observed `actionId`, and default `paramData`. Prefer a high-level tool when one is listed. For remaining menu-backed data, pass the observed `actionId`, `defaultParamData`, and `refererPath` to `call_taxlaw_action`. Static HTML resources, such as tax-summary pages under `/html/U_0101.html` and tax-law suggestion guidance at `/cm/USECMJ001M.do`, can be read with `get_taxlaw_page_text`. Tax calendar data is available through the `ASECMC001MR01` action listed by `list_taxlaw_site_menus(query="세무일정")`.
+`list_taxlaw_site_menus`, `call_taxlaw_action`, and `get_taxlaw_page_text` here are low-frequency tools, so call them through `call_taxlaw_extra` by default (or set `TAXLAW_EXPOSE_ALL=1` for direct calls). Use `list_taxlaw_site_menus` first to find the menu key, URL, observed `actionId`, and default `paramData`. Prefer a high-level tool when one is listed. For remaining menu-backed data, pass the observed `actionId`, `defaultParamData`, and `refererPath` to `call_taxlaw_action`. Static HTML resources, such as tax-summary pages under `/html/U_0101.html` and tax-law suggestion guidance at `/cm/USECMJ001M.do`, can be read with `get_taxlaw_page_text`. Tax calendar data is available through the `ASECMC001MR01` action listed by `list_taxlaw_site_menus(query="세무일정")`.
 
 ## Quick Start
 

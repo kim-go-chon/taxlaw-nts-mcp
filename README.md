@@ -55,51 +55,64 @@ MCP `InitializeResult.instructions`로 LLM에 자동 주입됩니다. 클라이�
 
 ## 제공 도구
 
-### 국세법령정보시스템 검색·조회
+`tools/list`에 바로 노출되는 도구와, 세션 고정 토큰 절감을 위해 `call_taxlaw_extra(name, args)` 게이트웨이로 호출하는 저빈도 도구로 나뉩니다. 저빈도 도구도 `TAXLAW_EXPOSE_ALL=1` 환경변수를 주면 모두 직접 노출됩니다.
+
+### 검색·본문 조회
 | Tool | 용도 |
 | --- | --- |
-| `search_taxlaw_all` | 국세법령정보시스템 통합검색. 별표서식, 국세법령, 세법해석/질의, 판례·결정례, 발간책자, 홈택스 상담사례를 함께 검색 |
-| `search_taxlaw_documents` | 세법해석례/질의회신과 과세전적부, 이의, 심사, 심판, 판례, 헌재 문서 검색 |
-| `get_taxlaw_document_text` | 검색 결과의 `DOC_ID`/`DOCID`로 문서 상세 본문 조회. **`targetYear` 옵션**으로 인용 법조문 시점 자동 검증 |
-| `assess_doctrine_validity` (0.7.0) | 단일 예규·심판례·판례의 **현행 유효성 자동 채점**. 시점 비교 + 사문화 신호 + 최종 판정 6단계 + 권장 후속 호출 큐(`korean-law-mcp.search_law/get_law_text/search_decisions` + NTS 후일자 해석례 검색) 반환 |
-| `get_taxlaw_hometax_counsel_text` | 통합검색 홈택스 상담사례 결과의 `REQ_STD_ID`로 상세 본문 조회 |
-| `list_taxlaw_site_menus` | 국세법령정보시스템 주요 메뉴와 확인된 `action.do` 호출 정보 조회 |
-| `call_taxlaw_action` | 메뉴에서 확인한 `actionId`/`paramData`로 `action.do` 원시 JSON 조회 |
-| `get_taxlaw_page_text` | 정적 HTML 자료와 일반 페이지를 텍스트로 조회 |
-| `search_taxlaw_interpretations` | 기존 호환용 세법해석례 검색 alias |
-| `get_taxlaw_interpretation_text` | 기존 호환용 세법해석례 상세 alias |
-| `list_taxlaw_basic_ruling_laws` | 기본통칙 법령 목록 조회 |
+| `search_taxlaw_all` | 통합검색 — 별표서식·국세법령·세법해석/질의·판례결정례·발간책자·홈택스 상담사례 |
+| `search_taxlaw_documents` | 세법해석례/질의회신(01–04)과 과세전적부·이의·심사·심판·판례·헌재(05–10) 검색. 세목코드(`taxLawCode`) 지정 권장 |
+| `get_taxlaw_document_text` | 문서 상세 본문. **`targetYear`**로 인용 법조문 시점 검증, **`full`**로 판례·결정례 주문·판단 결론부까지 |
+| `research_taxlaw_topic` | 체인 매크로 — 검색 → 관련 상위 K건 본문(`full`·`targetYear`) 첨부를 1콜로(다턴 왕복 절감) |
+| `assess_doctrine_validity` | 해석례·심판례·판례 한 건의 **현행 유효성 자동 채점**(6단계 판정 + 권장 후속 호출 큐) |
+| `verify_nts_citations` | 산출물 속 해석례·심판례·판례 번호를 일괄 추출해 **실존 여부 확인**(인용 게이트). `claims`로 인용–명제 적합성까지 검사 |
+| `list_taxlaw_basic_ruling_laws` | 기본통칙 법령 목록 조회(`lawId` 확보) |
 | `get_taxlaw_basic_ruling_text` | 기본통칙 본문 조회 |
-| `search_taxlaw_forms` | 전체 서식, 별표, 법령서식, 훈령서식, 자주찾는서식 검색 |
-| `search_taxlaw_publications` | 국세청 발간책자 검색. 가능한 경우 상세 API의 파일 ID와 다운로드 힌트까지 표시 |
-| `list_taxlaw_publication_categories` | 발간책자 분야 코드 조회 |
+| `search_taxlaw_forms` | 별표·서식(전체·법령서식·훈령서식·자주찾는서식) 검색 |
 
-### 업종코드 ↔ KSIC 매핑 (0.4.0+)
-국세청 「업종코드-표준산업분류 연계표」를 빌드 시 JSON으로 변환해 내장. 분류수준 자동 식별로 LLM이 "대분류만 보고 잘못 매칭"하는 실수를 차단합니다.
+### 조문 시점·적용시기 (법제처 DRF 보완)
+국세법령정보시스템에 없는 부칙·시점본·조문 신구대조를 법제처 국가법령정보 Open API로 보완합니다. 귀속연도가 걸린 질문은 여기부터 시작합니다.
 
 | Tool | 용도 |
 | --- | --- |
-| `lookup_upjong_code` | 6자리 업종코드 → 5단계 분류(대/중/소/세/세세) + KSIC 매핑 |
-| `lookup_ksic_code` | KSIC 5자리 정확 일치 → 매핑된 업종코드 |
-| `lookup_ksic_prefix` (0.5.0) | KSIC prefix 매칭. 영문 1자리(B/C/M…)=대분류, 2~5자리=중~세세분류 |
-| `search_industry_by_keyword` | 분류명 키워드 검색. **`levels` 옵션**으로 검색 분류수준 한정 |
-| `resolve_industry_class` | 산업명 → KSIC/업종 분류수준 후보. **`levels` 옵션** |
-| `classify_industry_for_article` | 법조문 산업명·제외 단서·업종코드 → verdict ∈ {match, excluded, out_of_scope, ambiguous}. **`excludeLevels` 옵션** |
-| `upjong_db_info` | 내장 DB 신선도(귀속연도·생성시각·레코드 수) |
+| `build_application_timetable` | 귀속연도 제시 질문의 1차 진입점 — 개정 인벤토리 + 부칙 적용례 태깅 + 귀속연도×조문 매트릭스를 1콜로 |
+| `trace_article_application` | 단일 조문의 연도별(귀속) 적용시점을 부칙 적용례 기준으로 추적 |
+| `get_law_article` | 특정 시점(연도/시행일/MST)의 조문 본문 + **계산식 이미지 URL**. 과거본엔 후행 개정 자동 대조 |
+| `diff_article_versions` | 두 시점 시행본의 같은 조문을 단어단위로 대조(변경 hunk만) |
+| `get_law_addenda` | 법령 부칙(시행일·적용례·경과조치) 조회 |
+| `get_law_revision_text` | 특정 개정령의 개정문(개정 지시문 원문) 회수 |
 
-#### 사용 예 — 조특법 시행령 §27③ 16호 판정 (749942 vs 852000)
+### 세액감면 업종 판정
+| Tool | 용도 |
+| --- | --- |
+| `classify_credit_eligibility` | 업종코드 → 창업중소기업 세액감면(조특법 §6③)·중소기업특별세액감면(§7①) 적격 업종 여부 판정. 단서업종은 조특법·령·칙 본문 재확인 |
+
+### `call_taxlaw_extra`로 호출하는 저빈도 도구
+`call_taxlaw_extra({ name, args })` 형태로 호출합니다.
+
+- **업종코드 ↔ KSIC 매핑** — `lookup_upjong_code` · `lookup_ksic_code` · `lookup_ksic_prefix` · `search_industry_by_keyword` · `resolve_industry_class` · `classify_industry_for_article` · `upjong_db_info`
+- **발간책자·홈택스·사이트 메뉴** — `get_taxlaw_hometax_counsel_text` · `search_taxlaw_publications` · `list_taxlaw_publication_categories` · `list_taxlaw_site_menus` · `get_taxlaw_page_text` · `call_taxlaw_action`
+- **하위호환 별칭** — `search_taxlaw_interpretations`(=`search_taxlaw_documents`) · `get_taxlaw_interpretation_text`(=`get_taxlaw_document_text`)
+
+#### 업종코드 ↔ KSIC 매핑 DB
+국세청 「업종코드-표준산업분류 연계표」를 빌드 시 JSON으로 내장(약 1.5MB, 1,784 레코드, 귀속연도 2024). 분류수준(대/중/소/세/세세)을 자동 식별해 LLM이 "대분류만 보고 잘못 매칭"하는 실수를 차단합니다.
+
+예 — 조특법 시행령 §27③ 16호 판정(749942 vs 852000):
 ```js
-classify_industry_for_article({
-  industryName: "기타 전문, 과학 및 기술 서비스업",
-  upjongCode:   "749942",     // 중분류 74 "전문 서비스업"
-  excludeNames: ["수의업"]
+call_taxlaw_extra({
+  name: "classify_industry_for_article",
+  args: {
+    industryName: "기타 전문, 과학 및 기술 서비스업",
+    upjongCode:   "749942",     // 국세청 중분류 74 "전문 서비스업"
+    excludeNames: ["수의업"]
+  }
 })
-// → verdict: out_of_scope (16호가 가리키는 KSIC 중분류 73과 일치하지 않음)
+// → verdict: out_of_scope (16호가 가리키는 KSIC 중분류 73과 불일치)
 ```
 
 ## 전체 메뉴 접근
 
-먼저 `list_taxlaw_site_menus`로 메뉴 키, URL, 확인된 `actionId`, 기본 `paramData`를 확인합니다. 전용 도구가 있는 메뉴는 해당 고수준 도구를 쓰고, 없는 메뉴는 `call_taxlaw_action`에 `actionId`, `defaultParamData`, `refererPath`를 넘겨 원시 응답을 조회합니다. 세목별요약정보·세법개정건의처럼 정적 HTML로 제공되는 자료는 `get_taxlaw_page_text`에 `/html/U_0101.html`, `/cm/USECMJ001M.do` 같은 경로를 넘겨 조회합니다. 세무일정은 `list_taxlaw_site_menus(query="세무일정")`에서 확인한 `ASECMC001MR01` action에 `year`, `month`를 넘겨 조회할 수 있습니다.
+이 절의 `list_taxlaw_site_menus`·`call_taxlaw_action`·`get_taxlaw_page_text`는 저빈도 도구라 기본적으로 `call_taxlaw_extra`로 감싸 호출합니다(`TAXLAW_EXPOSE_ALL=1`이면 직접 호출 가능). 먼저 `list_taxlaw_site_menus`로 메뉴 키, URL, 확인된 `actionId`, 기본 `paramData`를 확인합니다. 전용 도구가 있는 메뉴는 해당 고수준 도구를 쓰고, 없는 메뉴는 `call_taxlaw_action`에 `actionId`, `defaultParamData`, `refererPath`를 넘겨 원시 응답을 조회합니다. 세목별요약정보·세법개정건의처럼 정적 HTML로 제공되는 자료는 `get_taxlaw_page_text`에 `/html/U_0101.html`, `/cm/USECMJ001M.do` 같은 경로를 넘겨 조회합니다. 세무일정은 `list_taxlaw_site_menus(query="세무일정")`에서 확인한 `ASECMC001MR01` action에 `year`, `month`를 넘겨 조회할 수 있습니다.
 
 ## 빠른 시작
 
