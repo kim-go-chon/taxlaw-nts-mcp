@@ -121,7 +121,7 @@ git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
 cd taxlaw-nts-mcp
 npm install
 npm run build      # tsc + 내장 DB(JSON) 복사
-npm test           # 57개 단위 테스트 (선택)
+npm test           # 215개 단위 테스트 (선택)
 npm start          # MCP STDIO 서버 실행
 ```
 

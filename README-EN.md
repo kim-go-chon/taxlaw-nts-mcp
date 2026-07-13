@@ -101,7 +101,7 @@ git clone https://github.com/kim-go-chon/taxlaw-nts-mcp.git
 cd taxlaw-nts-mcp
 npm install
 npm run build      # tsc + bundle DB copy
-npm test           # 57 unit tests (optional)
+npm test           # 215 unit tests (optional)
 npm start          # MCP STDIO server
 ```
 
