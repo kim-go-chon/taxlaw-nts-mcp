@@ -4259,6 +4259,34 @@ export function buildCreditEligibilityHint(lawTitle: string, jo: string): string
   return []
 }
 
+// v0.22.0 — 하위 위임(고시·행정규칙·시행규칙) 감지 가드.
+// 실측 사고(2026-07-14, 조특법 §30 중소기업 취업자 감면): 중기령 §3의3④가 "…중소벤처기업부장관이
+// 정하여 고시한다"로 세부 적용기간을 고시(중소기업 범위 및 확인에 관한 규정)에 위임했는데, 시행령
+// 본문 단서(관계기업)만 보고 "공시집단 편입 즉시전환 규정 없음"이라 단정 → 고시 §3②2호(편입 사유
+// 발생일부터 즉시 적용)를 놓쳐 결론이 반대로 뒤집힘. 조문이 하위규범(고시/훈령/예규/시행규칙)에
+// 위임하면 결론(특히 적용시점·판정시점·판정단위·계산방법) 전 그 하위규범을 확인하도록 능동 경고.
+// 과발동 방지: '대통령령으로 정한다'(에이전트가 통상 시행령으로 하강)는 제외하고, 자주 누락되는
+// 고시·행정규칙과 시행규칙(부령·총리령) 위임만 포착한다.
+export function buildDelegationGuard(body: string, jo: string): string[] {
+  const text = String(body || "")
+  if (!text) return []
+  const toGosi = /(정하여\s*고시|고시로\s*정한다|고시하는\s*바|장관이\s*정하여|장관이\s*정하는|청장이\s*정하여|청장이\s*정하는|위원회가\s*정하여|위원회가\s*정하는)/.test(text)
+  const toRule = /(총리령|[가-힣]{2,12}부령)(?:으로|에)\s*정(?:한다|하는|하도록|하여)/.test(text)
+  if (!toGosi && !toRule) return []
+  const out = [`── 하위 위임 감지 ⚠ (${jo}: 상위 조문에서 종료 금지) ──`]
+  if (toGosi) {
+    out.push(
+      "이 조문은 세부사항을 고시·행정규칙(고시·훈령·예규)에 위임한다 — 적용시점·판정시점·판정단위·계산방법 등 운영 세부는 상위 조문이 아니라 그 하위규범이 정한다. 결론(특히 그 세부) 전 필수 확인: korean-law discover_tools(intent=\"행정규칙\")→search_admin_rule(knd 3고시/1훈령/2예규)→get_admin_rule로 현행 고시 본문·소관부처 확인. 국세청 소관 위임이면 집행기준·기본통칙(get_taxlaw_basic_ruling_text)도 병행.",
+    )
+  }
+  if (toRule) {
+    out.push(
+      "이 조문은 시행규칙(총리령·부령)에 위임한다 — 시행령에서 멈추지 말고 해당 시행규칙 조문을 get_law_article(lawName=\"○○시행규칙\", jo) 또는 korean-law get_law_text로 확인하라.",
+    )
+  }
+  return out
+}
+
 export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse> {
   const jo = requireString("jo", args.jo)
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
@@ -4407,6 +4435,8 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   if (timingGuard.length) lines.push("", ...timingGuard)
   const creditHint = buildCreditEligibilityHint(lawTitle, jo)
   if (creditHint.length) lines.push("", ...creditHint)
+  const delegationGuard = buildDelegationGuard(text, jo)
+  if (delegationGuard.length) lines.push("", ...delegationGuard)
   lines.push(
     "",
     "── 본문 ──",
@@ -4517,6 +4547,8 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
     if (junyong.length) {
       lines.push(`준용 탐지: ${junyong.map((t) => t.jo + (t.hang || "")).join(", ")} — 2층 타임라인(준용 구조/준용 대상 각각의 부칙)을 모두 점검`)
     }
+    const delegation = own.body ? buildDelegationGuard(own.body, jo) : []
+    if (delegation.length) delegation.forEach((d) => lines.push(d))
 
     const entries: TtEntry[] = []
     const collectFor = (tjo: string, thang: string | undefined, dates: string[], via?: string) => {
