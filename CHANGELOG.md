@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.24.0] - 2026-07-14
+
+E·F 후속 심층리뷰(Fable 구조설계 + Opus 검증) 반영 — 준용 타법 오귀속 버그픽스(E1+E2) + 세법집행기준 조회도구(F-min). 무거운 E3(cross-law 자동해소)·E4(별표 연혁)·F-full(서버측 PDF 파싱)은 보류.
+
+### Fixed — 준용 타법·별표 오귀속 차단 (E1+E2, 정확성 버그)
+- **버그**: `extractJunyongTargets`가 "「중기령」 제13조를 준용"에서 법령정보를 소실한 채 `{jo:"제13조"}`만 반환 → trace·timetable이 **현재 법령의 제13조** 부칙·인벤토리를 "준용대상"으로 **오귀속 표기**(능동적 오정보). 별표 준용("별표3을 준용")은 silent skip.
+- **E1** `extractJunyongTargets` 확장: `준용` 앵커 앞의 「법령명」을 인접 귀속(`lawName`), 조문 ref 없는 `별표N`도 포착(`annex`). 반환 shape 하위호환(값 있는 필드만 포함 → 기존 `{jo,hang}` deepEqual·B 범위전개 무손상). 자기조문 제외는 '같은 법령'일 때만(타법 동일 조번호는 별개). `JunyongTarget` 타입·`fmtJunyong` export.
+- **E2** 오귀속 차단 게이트 3개 부착점(`get_law_article` 준용감지·`trace_article_application`·`build_application_timetable`): `lawName`/`annex` 타깃은 현재 법령 xml/units로 인벤토리 산출을 **금지**하고 라벨만("타법 준용 — 현재 법령 부칙과 별개, build_application_timetable(lawName=X)/korean-law get_annexes로 별도"). 같은 법령 준용만 종전대로 2층 회수.
+
+### Added — 세법집행기준 조회도구 (F-min)
+- `get_execution_standard(law, number?, query?, year?, full?)` 신설(`call_taxlaw_extra` 게이트웨이 — 저빈도·목록 비노출). NTS `common_st.js` 정적 레지스트리 15법령(라이브 확인) + `ASISTE001MR03`(연도판본 2012~2024) + `ASISTE001MR02`(구조화 목차). 번호("24-21-1")/제목/연도로 조회 → 번호·제목·수록페이지 + PDF(`downloadFile.do`, 무인증)·formerLibrary 스니펫 경로 안내. 번호조회=인용 실존게이트. 판본연도≠귀속연도·행정해석(법규성 없음) 주의문 고정.
+- 번호 정규화 순수함수: `resolveExecStdLaw`·`normalizeExecNo`·`parseExecTitleNo`·`matchExecNumber`(하이픈 경계 prefix로 "2-0-1"이 "20-0-1" 오매칭 방지, '의N' 리터럴 유지).
+- **본문 PDF 서버추출(F-full)은 보류**: 집행기준은 표·산식 밀도가 높아 추출 시 표 붕괴 + pdfjs 신규 의존성·파싱 보안표면 → 에이전트 시각 Read(pages)가 상위호환.
+
+### Fixed — 문서 정합
+- `search_taxlaw_all` formerLibrary(발간책자·집행기준) 결과에 "get_taxlaw_document_text로 전문" 안내가 **거짓**(PDF 전용, 라이브 NOT_FOUND 실증)이던 것 → formerLibrary 결과 존재 시 전용 정정 안내(집행기준=get_execution_standard, 발간책자=search_taxlaw_publications).
+- 하위 위임 가드(toGosi)의 집행기준 인출경로를 `get_execution_standard`로 갱신(종전 `get_taxlaw_document_text`는 오안내였음).
+
+### Tests
+- `test/timetable.test.js`: E1 타법 lawName 부착·별표 포착·같은법령 하위호환·`fmtJunyong`.
+- `test/exec-standard.test.js`(신설): 레지스트리 해소(별칭·합본 4건)·번호 정규화·제목 파싱·번호 매칭 경계.
+
+### 후속 보류 (미착수)
+- **E3** cross-law 자동해소(articleInfo/collectFor ctx 파라미터화 + 타법 MST 해소·prepareMergedAddenda 재호출). E2가 오귀속을 이미 제거하므로 편의 개선 성격.
+- **E4** 별표 자체 개정 연혁(별표는 조문 부칙과 다른 타임라인 — DRF 별표 스키마 실측 필요).
+- **F-full** 서버측 집행기준 PDF 텍스트 추출.
+
+## [0.23.0] - 2026-07-14
+
+규범 계층 하강 리뷰(효과성·토큰·시간·보안 4관점) 반영 — 위임·준용 하강 사각 4건 보강(무거운 2건 E·F는 후속 분리). VERSION 상수 0.21.0→0.23.0 lag 전진 정정(0.22.0에서 미bump).
+
+### Added — 준용 감지를 조문 '읽기' 경로에도 부착 (A)
+- `get_law_article` 응답에 `── 준용 감지 ⚠ ──` 블록 신설. 기존 준용 자동추적은 `trace_article_application`·`build_application_timetable`(적용시기)에만 있어, 조문을 '내용'으로 읽을 때는 준용 대상 포인터가 없던 사각을 해소. 준용 대상 본문(get_law_article)·2층 타임라인(trace/timetable) 확인을 안내. 준용 문구 없으면 무발동(토큰 0).
+
+### Changed — 준용 범위 전개 (B)
+- `extractJunyongTargets`: "제N항부터 제M항까지 …준용" 범위를 각 항 개별 `{jo,hang}`로 전개(반환 shape 유지 → `collectFor`/`extractJoClauses` 무변경). 실측: 조특령 §6⑦ "제23조제10항부터 제13항까지 준용"이 제10항만 잡히던 것 → 제10~13항 전부. 시작 항이 anchor 항과 일치할 때만 적용(오삼킴 방지), 범위 span·총량 상한(≤6)으로 토큰 bound.
+
+### Changed — 위임 가드 정밀화 (C, D)
+- `buildDelegationGuard` 정규식 확장: 종결형 "…장관/청장이 정한다"·"위원회가 정한다"(toGosi), 조사 "부령이 정하는"(toRule) 포착.
+- **과발동 완화**: 부령 위임이 서식(신청서·계산서·명세서)뿐이면 강한 "시행규칙 확인" 대신 "서식 위임—실체 판단엔 통상 불필요(공리⑥)"로 강등. 하나라도 실체 위임(범위·계산·배율 등)이면 강한 경고 유지. 실측 조특령 §6⑧(세액감면신청서)=강등 / §2④·§23①(계산·사업용자산 범위)=유지.
+- toGosi 가드 텍스트에 **세법집행기준 인출 경로** 명시(`search_taxlaw_all collections=formerLibrary` / `get_taxlaw_document_text`) — 전용도구 부재(별건 F) 보완.
+
+### Changed — 크로스MCP 신호 비대칭 안내 (D)
+- `get_law_article` 도구 설명에 "위임·준용 하강 신호는 본 도구에만 부착 — korean-law get_law_text로 본문을 읽었더라도 하강 판정 시 본 도구 1콜 병행" 명시. INSTRUCTIONS는 2000자 캡(현재 1999)이라 도구 설명에 배치.
+
+### Tests
+- `test/delegation-guard.test.js`: 종결형(정한다)·조사(이) 발동, 서식 위임 강등, 실체 위임 유지 케이스 추가.
+- `test/timetable.test.js`: 범위 준용(제N항부터 제M항까지) 전개 케이스 추가.
+
+### 후속 분리 (미착수)
+- **E** 준용 타법(다른 법 조문)·별표 준용 해소(collectFor 자기법령 MST 전제 + 타법 resolve = 회귀위험).
+- **F** 세법집행기준 전용 조회도구(신규 action.do endpoint = 별도 보안리뷰 필요).
+
 ## [0.22.0] - 2026-07-14
 
 하위 위임(고시·행정규칙·시행규칙) 감지 가드 추가 — 규범 계층 조기 종료(법→시행령에서 멈춤) 방지.

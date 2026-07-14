@@ -39,7 +39,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.21.0"
+const VERSION = "0.24.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -792,7 +792,7 @@ const tools = [
   },
   {
     name: "get_law_article",
-    description: "특정 시점(연도/시행일/MST)의 조문 본문과 '수식 이미지 URL'을 법제처 국가법령정보 DRF에서 회수한다. ⚠ korean-law-mcp의 연혁(시점별 조문) 회수가 사실상 고장(get_historical_law jo 추출 불능, efYd NOT_FOUND)이고 계산식이 이미지라 본문에 안 보이는 문제를 보완. year(예: 2025) 또는 efYd(YYYYMMDD)를 주면 그 시점에 시행 중이던 버전을 자동 선택(시행일 ≤ 기준 중 최신). 수식(계산식)은 flDownload.do 이미지 URL로 반환 — 다운로드 후 Read/브라우저로 확인. 주의: 이 본문은 '그 시점 시행 중이던' 조문일 뿐, 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙)으로 따로 판정. v0.11.0: 과거본 회수 시 '── 후행 개정 확인 ──' 블록 자동 부착 — 현행본의 같은 조문을 자동 대조해 변경/삭제/동일을 판정하고 공포-미시행(시행예정) 개정도 경고한다. 이 블록의 ⚠는 무시 금지: 변경·삭제 경고가 있으면 현재·미래 귀속 결론 전에 현행본을 확인하라('별도 확인 필요' hedge 금지).",
+    description: "특정 시점(연도/시행일/MST)의 조문 본문과 '수식 이미지 URL'을 법제처 국가법령정보 DRF에서 회수한다. ⚠ korean-law-mcp의 연혁(시점별 조문) 회수가 사실상 고장(get_historical_law jo 추출 불능, efYd NOT_FOUND)이고 계산식이 이미지라 본문에 안 보이는 문제를 보완. year(예: 2025) 또는 efYd(YYYYMMDD)를 주면 그 시점에 시행 중이던 버전을 자동 선택(시행일 ≤ 기준 중 최신). 수식(계산식)은 flDownload.do 이미지 URL로 반환 — 다운로드 후 Read/브라우저로 확인. 주의: 이 본문은 '그 시점 시행 중이던' 조문일 뿐, 어느 과세연도 신고에 적용되는지는 trace_article_application(부칙)으로 따로 판정. v0.11.0: 과거본 회수 시 '── 후행 개정 확인 ──' 블록 자동 부착 — 현행본의 같은 조문을 자동 대조해 변경/삭제/동일을 판정하고 공포-미시행(시행예정) 개정도 경고한다. 이 블록의 ⚠는 무시 금지: 변경·삭제 경고가 있으면 현재·미래 귀속 결론 전에 현행본을 확인하라('별도 확인 필요' hedge 금지). ★위임·준용 하강 신호(하위 위임 감지·준용 감지 가드)는 본 도구에만 부착 — 조문 본문을 korean-law get_law_text로 읽었더라도 그 조문의 시행규칙·고시·준용 하강 여부 판정 시 본 도구를 1콜 병행하라(korean-law 경로엔 이 신호가 없다).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1116,7 +1116,7 @@ const tools = [
   {
     name: "call_taxlaw_extra",
     description:
-      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [고용공제계산] 내장 계산기 제거됨(v0.20.0) — 계산은 외부 전용 계산기로, 단가·산식·적용시기는 get_law_article(full=true)·build_application_timetable로 조문 직접 확인. [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(path) / call_taxlaw_action(actionId, paramData, refererPath).",
+      "v0.12.0 — 저빈도 도구 게이트웨이(목록 비노출로 세션 토큰 절감). name에 다음 중 하나, args에 그 도구의 인자 객체. [업종코드·KSIC 매핑] lookup_upjong_code(code) / lookup_ksic_code(code) / lookup_ksic_prefix(prefix, levels?) / search_industry_by_keyword(keyword, levels?) / resolve_industry_class(name, levels?) / classify_industry_for_article(industryName, upjongCode, excludeNames?, excludeLevels?) / upjong_db_info(). [별칭] search_taxlaw_interpretations(=search_taxlaw_documents) / get_taxlaw_interpretation_text(=get_taxlaw_document_text). [고용공제계산] 내장 계산기 제거됨(v0.20.0) — 계산은 외부 전용 계산기로, 단가·산식·적용시기는 get_law_article(full=true)·build_application_timetable로 조문 직접 확인. [세법집행기준] get_execution_standard(law, number?, query?, year?, full?) — 국세청 세법집행기준(행정해석·법규성 없음)을 번호('24-21-1')/제목/연도판본으로 조회. 번호·수록페이지 반환, 본문은 PDF 다운로드(Read pages) 또는 formerLibrary 스니펫. law=국세기본·국세징수·법인세·국제조세·종합소득세·양도소득세·종합부동산세·상속증여세·개별소비세·인지세·주세·주류면허법·증권거래세·부가가치세·조세특례제한법. [기타] get_taxlaw_hometax_counsel_text(id) / search_taxlaw_publications(query) / list_taxlaw_publication_categories() / list_taxlaw_site_menus() / get_taxlaw_page_text(path) / call_taxlaw_action(actionId, paramData, refererPath).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1146,6 +1146,7 @@ export const HIDDEN_TOOL_NAMES = new Set([
   "list_taxlaw_publication_categories",
   "list_taxlaw_site_menus",
   "get_taxlaw_page_text",
+  "get_execution_standard",
   "call_taxlaw_action",
   // v0.20.0(#7) — compute_employment_credit는 v0.20.0에서 계산기능 제거·라우터 응답만 남김. HIDDEN에 유지해야
   // call_taxlaw_extra(name="compute_employment_credit") 게이트가 라우터(전용 계산기 안내)에 도달한다(미등록 시 generic 오류 = CHANGELOG와 모순). tools 배열엔 미등록이라 tools/list 비노출은 유지.
@@ -2047,6 +2048,13 @@ async function searchTaxlawAll(
   if (codeHeader) lines.push(codeHeader, "")
   // v0.9.13 — 행정규칙(훈령·예규·고시) 결과면 법제처 현행본 교차확인 안내(stale 방지).
   if (hasAdminRule) lines.push(ADMIN_RULE_STALE_NOTICE, "")
+  // v0.24.0(F) — 발간책자·집행기준(formerLibrary) 행은 get_taxlaw_document_text로 전문 회수 불가(PDF 전용, 라이브 NOT_FOUND 실증).
+  if (list.some((c) => c.nameEn === "formerLibrary" && (c.resultList || []).length > 0)) {
+    lines.push(
+      "⚠ 발간책자·집행기준(formerLibrary) 행은 get_taxlaw_document_text로 전문 회수 불가(PDF 전용) — 집행기준은 call_taxlaw_extra(name=\"get_execution_standard\", args={law, number}), 기타 발간책자는 search_taxlaw_publications 사용.",
+      "",
+    )
+  }
 
   for (const collection of list) {
     const nameKr = collection.nameKr || collection.nameEn || "컬렉션"
@@ -3159,6 +3167,143 @@ async function getTaxlawPageText(args: TaxlawPageTextArgs): Promise<ToolResponse
   return textResponse(lines.join("\n"))
 }
 
+// ── v0.24.0(F-min) — 세법집행기준 조회(번호·연도판본·수록페이지). 본문은 PDF/스니펫 경로 안내(서버측 PDF 파싱 없음).
+//   레지스트리는 NTS common_st.js 정적 15건(라이브 확인 2026-07-14). 식별키=ntstBscId(유일), ntstPlcnBkId는 MR03 동반 파라미터.
+interface ExecStdLaw { ntstNm: string; ntstBscId: string; ntstPlcnBkId: string; aliases: string[] }
+const EXEC_STD_REGISTRY: ExecStdLaw[] = [
+  { ntstNm: "국세기본법", ntstBscId: "100000000000001586", ntstPlcnBkId: "511100000000000001", aliases: ["국기법", "국세기본"] },
+  { ntstNm: "국세징수법", ntstBscId: "100000000000001585", ntstPlcnBkId: "511100000000000002", aliases: ["국세징수", "징수법"] },
+  { ntstNm: "법인세", ntstBscId: "100000000000001563", ntstPlcnBkId: "511100000000000003", aliases: ["법인세법", "법인"] },
+  { ntstNm: "국제조세", ntstBscId: "100000000000000603", ntstPlcnBkId: "511100000000000004", aliases: ["국조", "국제조세조정"] },
+  { ntstNm: "종합소득세", ntstBscId: "100000000000001565", ntstPlcnBkId: "511100000000000005", aliases: ["소득세", "소득세법", "종소세", "종합소득"] },
+  { ntstNm: "양도소득세", ntstBscId: "200000000000001565", ntstPlcnBkId: "511100000000000006", aliases: ["양도세", "양도"] },
+  { ntstNm: "종합부동산세", ntstBscId: "100000000000009873", ntstPlcnBkId: "511100000000000007", aliases: ["종부세", "종합부동산"] },
+  { ntstNm: "상속증여세", ntstBscId: "100000000000001561", ntstPlcnBkId: "511100000000000008", aliases: ["상증세", "상속세", "증여세", "상속증여"] },
+  { ntstNm: "개별소비세", ntstBscId: "100000000000001570", ntstPlcnBkId: "511100000000000009", aliases: ["개소세"] },
+  { ntstNm: "인지세", ntstBscId: "100000000000001568", ntstPlcnBkId: "511100000000000009", aliases: [] },
+  { ntstNm: "주세", ntstBscId: "100000000000001566", ntstPlcnBkId: "511100000000000009", aliases: ["주세법"] },
+  { ntstNm: "주류면허법", ntstBscId: "100000000000013931", ntstPlcnBkId: "511100000000000009", aliases: ["주류면허"] },
+  { ntstNm: "증권거래세", ntstBscId: "100000000000000621", ntstPlcnBkId: "511100000000000010", aliases: ["증권거래"] },
+  { ntstNm: "부가가치세", ntstBscId: "100000000000001571", ntstPlcnBkId: "510000000000000448", aliases: ["부가세", "부가", "부가가치"] },
+  { ntstNm: "조세특례제한법", ntstBscId: "100000000000001584", ntstPlcnBkId: "510000000000000823", aliases: ["조특법", "조특", "조세특례"] },
+]
+
+export function resolveExecStdLaw(law: string): ExecStdLaw | undefined {
+  const q = String(law || "").replace(/\s+/g, "").replace(/집행기준$/, "")
+  if (!q) return undefined
+  return (
+    EXEC_STD_REGISTRY.find((e) => e.ntstNm === q || e.aliases.includes(q)) ||
+    EXEC_STD_REGISTRY.find((e) => e.ntstNm.startsWith(q) || e.aliases.some((a) => a.startsWith(q))) ||
+    EXEC_STD_REGISTRY.find((e) => q.includes(e.ntstNm) || e.ntstNm.includes(q))
+  )
+}
+
+// 집행기준 번호 정규화: "제24조-제21조-1", "24-21-1", "7의4-6의4-2" → "의N" 리터럴 유지, 제/조/공백 제거.
+export function normalizeExecNo(s: string): string {
+  return String(s || "").replace(/제/g, "").replace(/조/g, "").replace(/[·\s]/g, "").replace(/[–—]/g, "-")
+}
+// ntstTextNm(" 24-21-1  제목") → {no, title}. 개행·다중공백 정규화.
+export function parseExecTitleNo(ntstTextNm: string): { no: string; title: string } {
+  const t = String(ntstTextNm || "").replace(/\s+/g, " ").trim()
+  const m = t.match(/^([0-9의\-]+)\s+(.*)$/)
+  return m ? { no: m[1], title: m[2] } : { no: "", title: t }
+}
+// 사용자 번호 ↔ 목차 번호 매칭: 정확 또는 하이픈 경계 prefix("24-21" → "24-21-1").
+export function matchExecNumber(userNo: string, itemNo: string): boolean {
+  const a = normalizeExecNo(userNo), b = normalizeExecNo(itemNo)
+  if (!a || !b) return false
+  return a === b || b.startsWith(a + "-")
+}
+
+interface ExecEdition { rgtYr?: string; plcnDt?: string; fleId?: string; fleSn?: number | string }
+interface ExecTocRaw { ntstTextNm?: string; srtOrdr?: number | string; lawClCd?: string | number; ntstExrBaseSn?: string }
+interface ExecStdArgs { law?: unknown; number?: unknown; query?: unknown; year?: unknown; full?: unknown }
+
+async function getExecutionStandard(args: ExecStdArgs): Promise<ToolResponse> {
+  const lawArg = requireString("law", args.law)
+  const entry = resolveExecStdLaw(lawArg)
+  if (!entry) {
+    return notFoundResponse(`세법집행기준 법령을 찾지 못했습니다: ${lawArg}`, [
+      `사용 가능 법령: ${EXEC_STD_REGISTRY.map((e) => e.ntstNm).join(", ")}`,
+    ])
+  }
+  const mr03 = await postTaxlawAction<Record<string, { exeBaseDVOList?: ExecEdition[] }>>(
+    "ASISTE001MR03", { ntstBscId: entry.ntstBscId, ntstPlcnBkId: entry.ntstPlcnBkId }, "/st/USESTE001M.do",
+  )
+  const editions = (mr03?.ASISTE001MR03?.exeBaseDVOList || [])
+    .filter((e) => e.rgtYr)
+    .sort((a, b) => Number(b.rgtYr) - Number(a.rgtYr))
+  if (!editions.length) {
+    return notFoundResponse(`${entry.ntstNm} 집행기준 판본을 찾지 못했습니다.`, [
+      "레지스트리 ID가 변경됐을 수 있습니다 — search_taxlaw_all(collections=formerLibrary)로 대체 검색하세요.",
+    ])
+  }
+  const wantYear = typeof args.year === "number" ? args.year : args.year ? Number(args.year) : undefined
+  const ed = wantYear
+    ? (editions.find((e) => Number(e.rgtYr) <= wantYear) || editions[editions.length - 1])
+    : editions[0]
+  const pdfUrl = `${TAXLAW_BASE}/downloadFile.do?fleId=${ed.fleId}&fleSn=${ed.fleSn}`
+
+  const mr02 = await postTaxlawAction<Record<string, { exeBaseDVOList?: ExecTocRaw[] }>>(
+    "ASISTE001MR02", { ntstBscId: entry.ntstBscId, rgtYr: ed.rgtYr }, "/st/USESTE001M.do",
+  )
+  const toc = (mr02?.ASISTE001MR02?.exeBaseDVOList || [])
+    .filter((x) => String(x.lawClCd) === "5")
+    .map((x) => ({ ...parseExecTitleNo(String(x.ntstTextNm || "")), srtOrdr: Number(x.srtOrdr) || 0 }))
+  const pages = [...new Set(toc.map((t) => t.srtOrdr))].sort((a, b) => a - b)
+  const pageEnd = (start: number): string => {
+    const nxt = pages.find((p) => p > start)
+    return nxt ? `${start}~${nxt}` : `${start}~`
+  }
+
+  const header = [
+    `세법집행기준 조회 — ${entry.ntstNm}`,
+    `출처: ${TAXLAW_BASE}/st/USESTE001M.do`,
+    `판본: ${ed.rgtYr}${ed.plcnDt ? ` (발간 ${formatYmd(String(ed.plcnDt))})` : ""} — ⚠ 판본연도는 발간시점 해설이지 귀속연도 아님. 귀속 판정은 부칙(build_application_timetable).`,
+    "⚠ 집행기준은 국세청 행정해석(법규성 없음) — 법령·판례가 우선.",
+    `사용 가능 판본(연도): ${editions.map((e) => e.rgtYr).join(", ")}`,
+    "",
+  ]
+  const numberArg = args.number ? String(args.number).trim() : ""
+  const queryArg = args.query ? String(args.query).trim() : ""
+
+  if (numberArg) {
+    const hits = toc.filter((t) => matchExecNumber(numberArg, t.no))
+    if (!hits.length) {
+      return textResponse([...header,
+        `✗ 번호 "${numberArg}" 미발견 — 이 판본(${ed.rgtYr}) 목차에 없습니다(오기 또는 다른 판본 가능). 실존 확인 실패.`,
+        `전체 목차는 number 없이 재호출(또는 다른 year). PDF: ${pdfUrl}`,
+      ].join("\n"))
+    }
+    const body = hits.slice(0, 20).map((h) => `✔ ${h.no}  ${h.title}  (수록 p.${pageEnd(h.srtOrdr)})`)
+    return textResponse([...header,
+      `[번호 조회: "${numberArg}"] ${hits.length}건 매칭`,
+      ...body, "",
+      `본문 인출: PDF 다운로드 후 Read(pages=시작–끝) — ${pdfUrl}`,
+      `또는 스니펫: search_taxlaw_all(collections=formerLibrary, query="${hits[0].no} ${hits[0].title.slice(0, 12)}")`,
+    ].join("\n"))
+  }
+  if (queryArg) {
+    const hits = toc.filter((t) => t.title.includes(queryArg))
+    if (!hits.length) {
+      return textResponse([...header, `✗ 제목에 "${queryArg}" 포함 항목 없음(판본 ${ed.rgtYr}). PDF: ${pdfUrl}`].join("\n"))
+    }
+    const body = hits.slice(0, 30).map((h) => `· ${h.no}  ${h.title}  (p.${pageEnd(h.srtOrdr)})`)
+    return textResponse([...header,
+      `[제목 검색: "${queryArg}"] ${hits.length}건${hits.length > 30 ? " (상위 30건)" : ""}`,
+      ...body, "",
+      `본문: PDF ${pdfUrl} — 해당 페이지 Read`,
+    ].join("\n"))
+  }
+  const cap = args.full === true ? 400 : 80
+  const body = toc.slice(0, cap).map((h) => `· ${h.no}  ${h.title}  (p.${pageEnd(h.srtOrdr)})`)
+  return textResponse([...header,
+    `[전체 목차] ${toc.length}개 항목${toc.length > cap ? ` (상위 ${cap}건 — number/query로 좁히거나 full=true)` : ""}`,
+    ...body, "",
+    `본문: PDF 다운로드 후 해당 페이지 Read — ${pdfUrl}`,
+  ].join("\n"))
+}
+
 export interface AddendaUnit {
   promulgationDate: string
   promulgationNo: string
@@ -3960,26 +4105,66 @@ export function checkAmendmentBinding(promulgationDate: string, inventoryDates: 
 // 본문에서 '…제N조(의M)(제K항)…준용' 패턴 추출(자기 자신 제외, 최대 3건).
 // '준용' 앵커에서 역방향으로 가장 가까운 조문 참조를 채택(자기 조문 참조가 뒤의 실제 준용 대상을 삼키지 않도록).
 // 준용 구조는 '준용하는 조문'과 '준용 대상 조문' 두 층의 부칙이 적용시기를 따로 정할 수 있다(2층 타임라인).
-export function extractJunyongTargets(articleText: string, selfJo: string): Array<{ jo: string; hang?: string }> {
-  const out: Array<{ jo: string; hang?: string }> = []
+export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string }
+export function extractJunyongTargets(articleText: string, selfJo: string): JunyongTarget[] {
+  const out: JunyongTarget[] = []
   const seen = new Set<string>()
   const flat = String(articleText || "").replace(/\s/g, "")
   const selfKey = String(selfJo || "").replace(/\s/g, "")
+  // v0.24.0(E1) — ctx에서 pos 이전의 마지막 「법령명」 캡처(인접 귀속). 없으면 undefined(=자기 법령).
+  const lawBefore = (ctx: string, pos: number): string | undefined => {
+    const lm = [...ctx.slice(0, pos).matchAll(/「([^」]{2,40})」/g)]
+    return lm.length ? lm[lm.length - 1][1] : undefined
+  }
+  // shape 하위호환: 값이 있는 필드만 포함(기존 소비자·테스트의 {jo,hang} deepEqual 보존).
+  const push = (jo: string | undefined, hang: string | undefined, lawName: string | undefined, annex?: string) => {
+    const key = `${lawName || ""}|${jo || ""}${hang || ""}|${annex || ""}`
+    if (seen.has(key)) return
+    seen.add(key)
+    const t: JunyongTarget = {}
+    if (jo) t.jo = jo
+    if (hang) t.hang = hang
+    if (lawName) t.lawName = lawName
+    if (annex) t.annex = annex
+    out.push(t)
+  }
   for (const m of flat.matchAll(/준용/g)) {
     const idx = m.index ?? 0
     const ctx = flat.slice(Math.max(0, idx - 40), idx)
     const refs = [...ctx.matchAll(/(제\d+조(?:의\d+)?)(제\d+항)?/g)]
-    if (refs.length === 0) continue
-    const last = refs[refs.length - 1]
-    const jo = last[1]
-    if (jo === selfKey) continue
-    const key = `${jo}${last[2] || ""}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({ jo, hang: last[2] || undefined })
-    if (out.length >= 3) break
+    if (refs.length > 0) {
+      const last = refs[refs.length - 1]
+      const jo = last[1]
+      // v0.24.0(E1) — 타법 귀속: ref 바로 앞의 「법령명」이 있으면 그 법 소속으로.
+      const lawName = lawBefore(ctx, last.index ?? 0)
+      // 자기 조문 제외는 '같은 법령'일 때만 — 타법의 동일 조번호는 별개 대상.
+      if (!lawName && jo === selfKey) continue
+      // v0.23.0(B) — 범위 준용 "제N항부터 제M항까지" → 각 항 개별 전개(시작 항이 anchor와 일치할 때만).
+      const range = ctx.match(/제(\d+)항부터제(\d+)항까지/)
+      if (range && last[2] === `제${range[1]}항`) {
+        const start = Number(range[1]), end = Number(range[2])
+        if (end > start && end - start <= 10) {
+          for (let h = start; h <= end && out.length < 6; h++) push(jo, `제${h}항`, lawName)
+        } else {
+          push(jo, last[2] || undefined, lawName)
+        }
+      } else {
+        push(jo, last[2] || undefined, lawName)
+      }
+    } else {
+      // v0.24.0(E1) — 조문 ref 없이 별표만 준용("「X법」 별표3을 준용") — 종전엔 silent skip.
+      const annexM = ctx.match(/별표(\d+(?:의\d+)?)(?!\d)/)
+      if (annexM) push(undefined, undefined, lawBefore(ctx, annexM.index ?? 0), `별표${annexM[1]}`)
+    }
+    if (out.length >= 6) break
   }
   return out
+}
+
+// v0.24.0(E2) — 준용 대상 표시 라벨(타법=「법령명」 병기, 별표 포함).
+export function fmtJunyong(t: JunyongTarget): string {
+  const ref = `${t.jo || ""}${t.hang || ""}${t.annex || ""}`
+  return t.lawName ? `「${t.lawName}」${ref}` : ref
 }
 
 // v0.21.0(#G8) — 순수 함수(네트워크 무관)라 export + 단위테스트 대상. 의미론 보강:
@@ -4145,6 +4330,11 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   // 준용 체인 블록(준용 대상 조문의 인벤토리+부칙 동반 회수)
   const jBlocks: string[] = []
   for (const t of junyongTargets) {
+    // v0.24.0(E2) — 타법·별표 준용은 현재 법령 xml/units로 인벤토리를 뽑으면 오귀속 → 라벨만.
+    if (t.lawName || t.annex || !t.jo) {
+      jBlocks.push(`▷ ${jo} 본문이 ${fmtJunyong(t)}을(를) 준용 — ⚠ 타법·별표라 현재 법령(${lawTitle}) 부칙과 별개. 타법은 build_application_timetable(lawName="${t.lawName || "해당 법령"}"), 별표는 korean-law get_annexes로 2층 확인.`)
+      continue
+    }
     jBlocks.push(`▷ ${jo} 본문이 ${t.jo}${t.hang || ""}을(를) 준용 — 적용시기는 '준용 구조(${jo})'와 '준용 대상(${t.jo}) 내용' 두 층의 부칙이 따로 정할 수 있다(2층 타임라인). 두 층 모두 점검하라.`)
     let tDates: string[] = []
     const tIdx = xml.indexOf(`<![CDATA[${t.jo}(`)
@@ -4270,19 +4460,31 @@ export function buildCreditEligibilityHint(lawTitle: string, jo: string): string
 export function buildDelegationGuard(body: string, jo: string): string[] {
   const text = String(body || "")
   if (!text) return []
-  const toGosi = /(정하여\s*고시|고시로\s*정한다|고시하는\s*바|장관이\s*정하여|장관이\s*정하는|청장이\s*정하여|청장이\s*정하는|위원회가\s*정하여|위원회가\s*정하는)/.test(text)
-  const toRule = /(총리령|[가-힣]{2,12}부령)(?:으로|에)\s*정(?:한다|하는|하도록|하여)/.test(text)
+  // v0.23.0(C) — 종결형('…정한다')도 포착(장관/청장은 '이', 위원회는 '가').
+  const toGosi = /(정하여\s*고시|고시로\s*정한다|고시하는\s*바|(?:장관|청장)이\s*정(?:하여|하는|한다)|위원회가\s*정(?:하여|하는|한다))/.test(text)
+  // v0.23.0(C) — 조사 '이'('부령이 정하는')도 포착.
+  const toRule = /(총리령|[가-힣]{2,12}부령)(?:으로|에|이)\s*정(?:한다|하는|하도록|하여)/.test(text)
   if (!toGosi && !toRule) return []
   const out = [`── 하위 위임 감지 ⚠ (${jo}: 상위 조문에서 종료 금지) ──`]
   if (toGosi) {
     out.push(
-      "이 조문은 세부사항을 고시·행정규칙(고시·훈령·예규)에 위임한다 — 적용시점·판정시점·판정단위·계산방법 등 운영 세부는 상위 조문이 아니라 그 하위규범이 정한다. 결론(특히 그 세부) 전 필수 확인: korean-law discover_tools(intent=\"행정규칙\")→search_admin_rule(knd 3고시/1훈령/2예규)→get_admin_rule로 현행 고시 본문·소관부처 확인. 국세청 소관 위임이면 집행기준·기본통칙(get_taxlaw_basic_ruling_text)도 병행.",
+      "이 조문은 세부사항을 고시·행정규칙(고시·훈령·예규)에 위임한다 — 적용시점·판정시점·판정단위·계산방법 등 운영 세부는 상위 조문이 아니라 그 하위규범이 정한다. 결론(특히 그 세부) 전 필수 확인: korean-law discover_tools(intent=\"행정규칙\")→search_admin_rule(knd 3고시/1훈령/2예규)→get_admin_rule로 현행 고시 본문·소관부처 확인. 국세청 소관 위임이면 집행기준(call_taxlaw_extra name=\"get_execution_standard\", args={law, number})·기본통칙(list_taxlaw_basic_ruling_laws→get_taxlaw_basic_ruling_text)도 병행.",
     )
   }
   if (toRule) {
-    out.push(
-      "이 조문은 시행규칙(총리령·부령)에 위임한다 — 시행령에서 멈추지 말고 해당 시행규칙 조문을 get_law_article(lawName=\"○○시행규칙\", jo) 또는 korean-law get_law_text로 확인하라.",
-    )
+    // v0.23.0(C) — 부령 위임이 서식(신청서·계산서·명세서)뿐이면 과발동 완화(공리⑥: 서식·별지<법령 문언).
+    // 위임 직후 24자 안에 서식류 명사만 있으면 서식 위임으로 강등. 하나라도 실체 위임이면 강한 경고 유지.
+    const ruleRefs = [...text.matchAll(/(?:총리령|[가-힣]{2,12}부령)(?:으로|에|이)\s*정(?:한다|하는|하도록|하여)([^.\n]{0,24})/g)]
+    const substantive = ruleRefs.length === 0 || ruleRefs.some((m) => !/(서식|신청서|신고서|계산서|명세서|증명서|서류|신청)/.test(m[1] || ""))
+    if (substantive) {
+      out.push(
+        "이 조문은 시행규칙(총리령·부령)에 위임한다 — 시행령에서 멈추지 말고 해당 시행규칙 조문을 get_law_article(lawName=\"○○시행규칙\", jo) 또는 korean-law get_law_text로 확인하라.",
+      )
+    } else {
+      out.push(
+        "이 조문의 시행규칙(총리령·부령) 위임은 서식(신청서·계산서·명세서 등)으로 보인다 — 실체 판단엔 통상 불필요(공리⑥: 서식·별지<법령 문언). 서식 자체가 쟁점일 때만 해당 시행규칙 조문을 확인하라.",
+      )
+    }
   }
   return out
 }
@@ -4437,6 +4639,22 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   if (creditHint.length) lines.push("", ...creditHint)
   const delegationGuard = buildDelegationGuard(text, jo)
   if (delegationGuard.length) lines.push("", ...delegationGuard)
+  // v0.23.0(A)/v0.24.0(E2) — 준용 감지: 같은 법령 / 타법 / 별표를 분리 라벨(타법은 현재 법령 부칙과 별개).
+  const junyongTargets = extractJunyongTargets(text, jo)
+  if (junyongTargets.length) {
+    const sameLaw = junyongTargets.filter((t) => t.jo && !t.lawName)
+    const parts = ["", `── 준용 감지 ⚠ (${jo}: 준용 대상도 확인) ──`]
+    if (sameLaw.length) {
+      parts.push(`이 조문은 ${sameLaw.map((t) => t.jo + (t.hang || "")).join(", ")}을(를) 준용 — 대상 본문(get_law_article)·2층 부칙(trace_article_application/build_application_timetable)은 이 조문과 별개다.`)
+    }
+    for (const t of junyongTargets.filter((t) => t.lawName)) {
+      parts.push(`⚠ 타법 준용: ${fmtJunyong(t)} — 현재 법령(${lawTitle || "?"})의 부칙·인벤토리와 별개다. 대상 법령 본문은 korean-law get_law_text, 2층 타임라인은 build_application_timetable(lawName="${t.lawName}")로 별도 확인하라.`)
+    }
+    for (const t of junyongTargets.filter((t) => !t.jo && !t.lawName && t.annex)) {
+      parts.push(`⚠ 별표 준용: ${t.annex} — 별표는 조문 부칙과 별개인 자체 개정 연혁을 가진다. korean-law get_annexes로 확인하라.`)
+    }
+    lines.push(...parts)
+  }
   lines.push(
     "",
     "── 본문 ──",
@@ -4541,11 +4759,15 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
     const { jo, hang } = spec
     const own = articleInfo(jo, hang)
     const junyong = own.body ? extractJunyongTargets(own.body, jo) : []
+    const sameLawJy = junyong.filter((t) => t.jo && !t.lawName)
+    const crossJy = junyong.filter((t) => t.lawName || t.annex)
 
     lines.push(`════════ [조문 ${jo}${hang || ""}] ════════`)
     if (own.dates.length) lines.push(`개정 인벤토리(현행 꼬리표): ${own.dates.join(", ")}`)
     if (junyong.length) {
-      lines.push(`준용 탐지: ${junyong.map((t) => t.jo + (t.hang || "")).join(", ")} — 2층 타임라인(준용 구조/준용 대상 각각의 부칙)을 모두 점검`)
+      lines.push(`준용 탐지: ${junyong.map(fmtJunyong).join(", ")} — 2층 타임라인(준용 구조/준용 대상 각각의 부칙)을 모두 점검`)
+      // v0.24.0(E2) — 타법·별표는 현재 법령 xml/units로 인벤토리 산출 시 오귀속 → 라벨만.
+      for (const t of crossJy) lines.push(`  ⚠ 타법·별표 준용 ${fmtJunyong(t)} — 아래 부칙표는 현재 법령(${lawTitle}) 것만. 타법은 build_application_timetable(lawName="${t.lawName || "해당 법령"}"), 별표는 korean-law get_annexes로 별도 확인.`)
     }
     const delegation = own.body ? buildDelegationGuard(own.body, jo) : []
     if (delegation.length) delegation.forEach((d) => lines.push(d))
@@ -4567,9 +4789,9 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
       }
     }
     collectFor(jo, hang, own.dates)
-    for (const t of junyong.slice(0, 2)) {
-      const ti = articleInfo(t.jo, t.hang)
-      collectFor(t.jo, t.hang, ti.dates, `${t.jo}${t.hang || ""} 준용대상`)
+    for (const t of sameLawJy.slice(0, 2)) {
+      const ti = articleInfo(t.jo!, t.hang)
+      collectFor(t.jo!, t.hang, ti.dates, `${t.jo}${t.hang || ""} 준용대상`)
       if (ti.dates.length) lines.push(`개정 인벤토리(준용대상 ${t.jo}${t.hang || ""}): ${ti.dates.join(", ")}`)
     }
 
@@ -5643,6 +5865,9 @@ export async function handleToolCall(name: string, args: unknown): Promise<ToolR
     }
     if (name === "get_taxlaw_page_text") {
       return await getTaxlawPageText(input as TaxlawPageTextArgs)
+    }
+    if (name === "get_execution_standard") {
+      return await getExecutionStandard(input as ExecStdArgs)
     }
     if (name === "get_law_revision_text") {
       return await getLawRevisionText(input as LawRevisionArgs)

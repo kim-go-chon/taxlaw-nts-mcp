@@ -48,3 +48,34 @@ test("빈 본문/누락 입력 안전", () => {
   assert.equal(buildDelegationGuard("", "제1조").length, 0)
   assert.equal(buildDelegationGuard(undefined, "제1조").length, 0)
 })
+
+// ── v0.23.0(C): 종결형·조사 확장 + 서식/실체 강등 ──
+test("고시 위임(종결형): '국세청장이 정한다' → 발동", () => {
+  const out = buildDelegationGuard("세부 판정기준은 국세청장이 정한다.", "제10조")
+  assert.ok(out.length >= 2)
+  assert.ok(out.some((l) => /행정규칙|집행기준|기본통칙/.test(l)))
+})
+
+test("시행규칙 위임(조사 '이'): '기획재정부령이 정하는' → 발동", () => {
+  const out = buildDelegationGuard("그 계산방법은 기획재정부령이 정하는 바에 따른다.", "제5조")
+  assert.ok(out.length >= 2)
+  assert.ok(out.some((l) => /시행규칙/.test(l)))
+})
+
+test("과발동 완화: 서식(신청서)뿐인 부령 위임 → 강등(멈추지 말고 없음)", () => {
+  const out = buildDelegationGuard("감면받으려는 자는 재정경제부령으로 정하는 세액감면신청서를 제출하여야 한다.", "제6조")
+  assert.ok(out.length >= 2)
+  assert.ok(out.some((l) => /통상 불필요/.test(l)), "서식 위임은 강등 문구여야 함")
+  assert.ok(!out.some((l) => /멈추지 말고/.test(l)), "강한 경고 문구는 없어야 함")
+})
+
+test("실체 위임 유지: 계산·범위 부령 위임은 강한 경고", () => {
+  const out = buildDelegationGuard("매출액 및 자산총액의 계산에 관하여 필요한 사항은 재정경제부령으로 정한다.", "제2조")
+  assert.ok(out.some((l) => /멈추지 말고/.test(l)), "실체 위임은 강한 경고 유지")
+})
+
+test("혼재: 서식+실체 부령 위임이 함께면 강한 경고 유지", () => {
+  const body = "재정경제부령으로 정하는 사업용자산에 대한 투자로 한다. 신청은 재정경제부령으로 정하는 세액공제신청서를 제출한다."
+  const out = buildDelegationGuard(body, "제23조")
+  assert.ok(out.some((l) => /멈추지 말고/.test(l)), "하나라도 실체면 강한 경고")
+})

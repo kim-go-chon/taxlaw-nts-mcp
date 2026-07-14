@@ -10,6 +10,7 @@ const {
   extractAmendmentInventory,
   checkAmendmentBinding,
   extractJunyongTargets,
+  fmtJunyong,
   extractJoClauses,
   targetYearApplicationNote,
   joMentioned,
@@ -112,6 +113,46 @@ test("extractJunyongTargets: 자기 자신 제외 + 복수 준용 수집", () =>
     { jo: "제23조", hang: "제11항" },
     { jo: "제23조", hang: "제13항" },
   ])
+})
+
+// ── v0.23.0(B): 범위 준용 "제N항부터 제M항까지" 전개 ──
+test("extractJunyongTargets(B): 범위 준용 '제10항부터 제13항까지' → 각 항 전개", () => {
+  const body = "⑦ 법 제7조제5항에 따른 상시근로자의 범위 및 계산방법에 관하여는 제23조제10항부터 제13항까지의 규정을 준용한다."
+  const targets = extractJunyongTargets(body, "제6조")
+  assert.deepEqual(targets, [
+    { jo: "제23조", hang: "제10항" },
+    { jo: "제23조", hang: "제11항" },
+    { jo: "제23조", hang: "제12항" },
+    { jo: "제23조", hang: "제13항" },
+  ])
+})
+
+test("extractJunyongTargets(B): 다른 참조의 범위는 오삼키지 않음(anchor 항 불일치 시 단일)", () => {
+  const body = "제7항부터 제9항까지의 규정을 적용할 때 상시근로자는 제23조제10항을 준용한다."
+  const targets = extractJunyongTargets(body, "제6조")
+  assert.deepEqual(targets, [{ jo: "제23조", hang: "제10항" }])
+})
+
+// ── v0.24.0(E1): 타법·별표 준용 귀속(오귀속 버그픽스) ──
+test("extractJunyongTargets(E1): 타법 준용은 lawName 부착(현재 법령 제N조로 오귀속 방지)", () => {
+  const body = "소기업이란 매출액이 「중소기업기본법 시행령」 제13조를 준용하여 산정한 규모 이내인 기업을 말한다."
+  assert.deepEqual(extractJunyongTargets(body, "제6조"), [{ jo: "제13조", lawName: "중소기업기본법시행령" }])
+})
+
+test("extractJunyongTargets(E1): 별표만 준용도 포착(종전 silent skip)", () => {
+  const body = "매출액이 업종별로 「중소기업기본법 시행령」 별표3을 준용하여 산정한 규모 기준 이내"
+  assert.deepEqual(extractJunyongTargets(body, "제6조"), [{ lawName: "중소기업기본법시행령", annex: "별표3" }])
+})
+
+test("extractJunyongTargets(E1): 같은 법령 준용은 lawName 없이(shape 하위호환)", () => {
+  const body = "상시근로자 수의 계산방법에 관하여는 제23조제10항을 준용한다."
+  assert.deepEqual(extractJunyongTargets(body, "제6조"), [{ jo: "제23조", hang: "제10항" }])
+})
+
+test("fmtJunyong: 타법=「법령명」 병기, 같은 법령=조항만, 별표", () => {
+  assert.equal(fmtJunyong({ jo: "제23조", hang: "제10항" }), "제23조제10항")
+  assert.equal(fmtJunyong({ jo: "제13조", lawName: "중소기업기본법시행령" }), "「중소기업기본법시행령」제13조")
+  assert.equal(fmtJunyong({ lawName: "중소기업기본법시행령", annex: "별표3" }), "「중소기업기본법시행령」별표3")
 })
 
 // ── extractJoClauses: "같은 조 제N항" 표기 회수(부칙 제36127호 제11조① 패턴) ──
