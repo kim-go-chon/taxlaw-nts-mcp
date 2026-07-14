@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.25.0] - 2026-07-14
+
+E3 — 준용 타법(cross-law) 자동 해소. E2(v0.24.0)의 "타법 준용 — 별도 호출하라" 라벨을 **실제 2층 타임라인 자동 인출**로 승격(Fable 구조설계 + Opus 구현, 4관점 리뷰: 효과성 상·토큰 조건부 순절감·시간 반나절·보안 무해).
+
+### Added — 준용 타법 자동 인출 (E3)
+- `trace_article_application`·`build_application_timetable`: 「」로 명시된 타법(자기 법령과 다른) 준용 대상을 자동 해소해 **그 법령의 조문 개정 인벤토리 + 부칙 적용례**를 인라인(공리①: 적용시기는 부칙이 정한다 — 결론층을 가져와야 후속 콜이 사라짐).
+- **ctx 파라미터화 리팩터**(회귀 0 설계): `articleInfoFromXml(xml,jo,hang)` 순수함수 추출 → timetable `articleInfo` 클로저·trace 인라인 인벤토리 둘 다 위임(self-law 경로 바이트 동일). timetable `collectFor`에 `ctxUnits` 파라미터(디폴트=self units, 기존 호출부 무변경). trace 준용 블록은 `jctx`(self/cross) 파라미터화.
+- **해소기 `resolveCrossLawCtx`** — 5종 비타협 가드: ① `filterVersionsByNameStrict`(#G2 필터의 폴백 제거 변형 — 정확 제명 일치만, 0건=안전 강등. 폴백 채택=오해소이므로) ② 상한 2개 타법(`makeCrossResolver` 요청당 memo·cap) ③ `prepareMergedAddenda(depth=2)`(mst 명시 전달→resolveLawMst 첫행채택 원천차단, eflaw URL 캐시공유로 추가왕복 0) ④ 15s 시간예산 사전게이트(`TAXLAW_TOOL_BUDGET_MS`) ⑤ 실패 시 E2 라벨+사유 강등(오귀속 인벤토리 생산 금지, 재귀 금지). `CrossLawResult`·`LawCtx` export.
+- **#G2 정합**: self-law 경로(filterVersionsByName)는 무변경, 같은 `lawNameKey` 정확일치 기계를 타법명 기준 strict 재사용(되돌리는 경로 없음).
+
+### Tests
+- `test/timetable.test.js`: `articleInfoFromXml`(항/조/미발견) + `filterVersionsByNameStrict`(정확일치·0건 빈배열, 기존 #G2 폴백과 대조).
+- 라이브 검증(배포 후): 조특→「법인세법」 준용 인라인 / 제명개정 구법명 강등 / `TAXLAW_TOOL_BUDGET_MS=1000` 강등.
+
+### 알려진 한계
+- 초대형 타법(법인세법 등) XML이 캐시 캡(8M chars) 초과 시 반복 콜마다 tail 재fetch(기능 정상, 레이턴시만). E1 한계로 「」 없는 "법 제N조"(모법 참조)는 same-law로 처리(별도 백로그). E4(별표 자체 연혁)·F-full 여전히 보류.
+
 ## [0.24.0] - 2026-07-14
 
 E·F 후속 심층리뷰(Fable 구조설계 + Opus 검증) 반영 — 준용 타법 오귀속 버그픽스(E1+E2) + 세법집행기준 조회도구(F-min). 무거운 E3(cross-law 자동해소)·E4(별표 연혁)·F-full(서버측 PDF 파싱)은 보류.

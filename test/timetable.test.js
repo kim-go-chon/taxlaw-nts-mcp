@@ -14,6 +14,9 @@ const {
   extractJoClauses,
   targetYearApplicationNote,
   joMentioned,
+  articleInfoFromXml,
+  filterVersionsByName,
+  filterVersionsByNameStrict,
 } = await import("../build/index.js")
 
 // ── hangToSymbol ──
@@ -153,6 +156,34 @@ test("fmtJunyong: 타법=「법령명」 병기, 같은 법령=조항만, 별표
   assert.equal(fmtJunyong({ jo: "제23조", hang: "제10항" }), "제23조제10항")
   assert.equal(fmtJunyong({ jo: "제13조", lawName: "중소기업기본법시행령" }), "「중소기업기본법시행령」제13조")
   assert.equal(fmtJunyong({ lawName: "중소기업기본법시행령", annex: "별표3" }), "「중소기업기본법시행령」별표3")
+})
+
+// ── v0.25.0(E3): 순수함수 ──
+const E3_ART_XML =
+  "<법령><조문단위><조문내용><![CDATA[제26조의8(통합고용세액공제)" +
+  "① 첫째 항 내용" +
+  "② 상시근로자 수 계산. <개정 2025.12.31>" +
+  "⑥ 상시근로자 수는 계산식에 따른다. <개정 2025.6.30>" +
+  "]]></조문내용></조문단위></법령>"
+
+test("articleInfoFromXml(E3): 항 지정 시 그 항 꼬리표만, 미지정 시 조 전체, 미발견 시 빈값", () => {
+  assert.deepEqual(articleInfoFromXml(E3_ART_XML, "제26조의8", "제6항").dates, ["2025.6.30"])
+  const all = articleInfoFromXml(E3_ART_XML, "제26조의8").dates
+  assert.ok(all.includes("2025.12.31") && all.includes("2025.6.30"))
+  assert.deepEqual(articleInfoFromXml(E3_ART_XML, "제99조"), { dates: [], body: "" })
+})
+
+test("filterVersionsByNameStrict(E3): 정확 제명만(공백무관), 0건 시 폴백 없이 빈 배열", () => {
+  const versions = [
+    { mst: "1", enforceDate: "20250101", lawName: "조세특례제한법 시행령" },
+    { mst: "2", enforceDate: "20240101", lawName: "조세특례제한법" },
+    { mst: "3", enforceDate: "20230101", lawName: "조세특례제한법 시행규칙" },
+  ]
+  assert.deepEqual(filterVersionsByNameStrict(versions, "조세특례제한법시행령").map((v) => v.mst), ["1"])
+  // strict: 미일치면 빈 배열(오해소 방지)
+  assert.deepEqual(filterVersionsByNameStrict(versions, "없는법"), [])
+  // 대조: 기존 #G2 필터는 0건 시 원본 폴백(self-law용, cross엔 부적합)
+  assert.equal(filterVersionsByName(versions, "없는법").length, 3)
 })
 
 // ── extractJoClauses: "같은 조 제N항" 표기 회수(부칙 제36127호 제11조① 패턴) ──

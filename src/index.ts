@@ -39,7 +39,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.24.0"
+const VERSION = "0.25.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -3768,6 +3768,73 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
   return { mst: primaryMst, lawTitle, url: displayLawServiceUrl(primaryMst), xml: primaryXml, units, sourceMsts: msts, supplementedNos, resolvedNote }
 }
 
+// ── v0.25.0(E3) — 준용 타법 자동 해소(cross-law 2층 타임라인). E2 라벨을 실제 인출로 승격.
+//   안전장치 5종: strict 명칭 게이트(폴백 없음)·상한 2개 타법·depth 2·시간예산 사전게이트·실패 시 E2 강등.
+export interface LawCtx { xml: string; units: AddendaUnit[]; lawTitle: string; mst: string }
+
+// 법령 XML에서 조문(항) 개정 인벤토리+본문 회수(순수). trace·timetable 공용, self/cross 무차별.
+// (기존 timetable articleInfo 클로저·trace 인라인 인벤토리와 의미 동일 — selfCtx 위임 시 바이트 동일.)
+export function articleInfoFromXml(xml: string, tjo: string, thang?: string): { dates: string[]; body: string } {
+  let body = ""
+  const idx = xml.indexOf(`<![CDATA[${tjo}(`)
+  if (idx !== -1) {
+    const s = xml.lastIndexOf("<조문단위", idx)
+    const e = xml.indexOf("</조문단위>", idx)
+    if (s !== -1 && e !== -1) body = extractCdataText(xml.slice(s, e))
+  }
+  if (!body) return { dates: [], body: "" }
+  const inv = extractAmendmentInventory(body)
+  const sym = thang ? hangToSymbol(thang) : null
+  const hd = sym ? inv.byHang[sym] || [] : []
+  return { dates: hd.length ? hd : inv.article, body }
+}
+
+// #G2 filterVersionsByName의 strict 변형: 정확 제명 일치만, 0건 시 폴백 없이 빈 배열.
+// (cross-law 해소에서 폴백 행 채택 = resolveLawMst 첫행채택급 오해소 → 폴백 제거. self-law 경로는 기존 함수 무변경.)
+export function filterVersionsByNameStrict(versions: LawVersion[], lawName: string): LawVersion[] {
+  const key = lawNameKey(lawName)
+  if (!key) return []
+  return versions.filter((v) => v.lawName && lawNameKey(v.lawName) === key)
+}
+
+export type CrossLawResult = { ok: true; ctx: LawCtx } | { ok: false; reason: string }
+const CROSS_MIN_BUDGET_MS = 15000
+
+// 인용부호로 명시된 타법을 정확 제명으로 해소해 그 법령의 부칙 ctx 회수. 실패는 예외 대신 {ok:false}(도구 전체 실패 전파 금지).
+async function resolveCrossLawCtx(oc: string, quotedName: string): Promise<CrossLawResult> {
+  try {
+    if (remainingBudgetMs(currentBudget()?.deadlineAt) < CROSS_MIN_BUDGET_MS) {
+      return { ok: false, reason: "시간예산 부족으로 자동 해소 생략" }
+    }
+    const versions = await fetchEflawVersions(oc, quotedName, 40)
+    const exact = filterVersionsByNameStrict(versions, quotedName)
+    if (!exact.length) return { ok: false, reason: "eflaw 정확 제명 일치 없음(제명개정·약칭 가능 — korean-law search_law로 현행 제명 확인)" }
+    const picked = pickVersionInForce(exact, todayYmd())
+    if (!picked) return { ok: false, reason: "오늘 시행 중 버전 미해소" }
+    const prep = await prepareMergedAddenda(oc, picked.mst, quotedName, 2)
+    return { ok: true, ctx: { xml: prep.xml, units: prep.units, lawTitle: prep.lawTitle, mst: prep.mst } }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : "타법 해소 오류" }
+  }
+}
+
+// 요청당 memoize + 상한 2개 타법(도구 콜 전체 기준). 지역 변수라 요청 간 누수 없음(HTTP 캐시가 요청 간 재사용 담당).
+function makeCrossResolver(oc: string): (lawName: string) => Promise<CrossLawResult> {
+  const memo = new Map<string, Promise<CrossLawResult>>()
+  let capLeft = 2
+  return (name: string) => {
+    const k = lawNameKey(name)
+    let p = memo.get(k)
+    if (!p) {
+      p = capLeft-- > 0
+        ? resolveCrossLawCtx(oc, name)
+        : Promise.resolve({ ok: false as const, reason: "타법 자동 해소 상한(2) 초과 — build_application_timetable로 개별 확인" })
+      memo.set(k, p)
+    }
+    return p
+  }
+}
+
 export async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
   const oc = String(args.oc ?? process.env.LAW_GO_KR_OC ?? "").trim()
   if (!oc) {
@@ -4328,33 +4395,37 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   }
 
   // 준용 체인 블록(준용 대상 조문의 인벤토리+부칙 동반 회수)
+  const getCrossT = makeCrossResolver(oc)
+  const selfCtxT: LawCtx = { xml, units, lawTitle, mst }
   const jBlocks: string[] = []
   for (const t of junyongTargets) {
-    // v0.24.0(E2) — 타법·별표 준용은 현재 법령 xml/units로 인벤토리를 뽑으면 오귀속 → 라벨만.
-    if (t.lawName || t.annex || !t.jo) {
-      jBlocks.push(`▷ ${jo} 본문이 ${fmtJunyong(t)}을(를) 준용 — ⚠ 타법·별표라 현재 법령(${lawTitle}) 부칙과 별개. 타법은 build_application_timetable(lawName="${t.lawName || "해당 법령"}"), 별표는 korean-law get_annexes로 2층 확인.`)
+    // 별표 준용(조문 ref 없음)은 자체 개정 연혁이라 라벨만(E4 미착수).
+    if (t.annex || !t.jo) {
+      jBlocks.push(`▷ ${jo} 본문이 ${fmtJunyong(t)}을(를) 준용 — ⚠ 별표는 자체 개정 연혁(조문 부칙과 별개). korean-law get_annexes로 2층 확인.`)
       continue
     }
-    jBlocks.push(`▷ ${jo} 본문이 ${t.jo}${t.hang || ""}을(를) 준용 — 적용시기는 '준용 구조(${jo})'와 '준용 대상(${t.jo}) 내용' 두 층의 부칙이 따로 정할 수 있다(2층 타임라인). 두 층 모두 점검하라.`)
-    let tDates: string[] = []
-    const tIdx = xml.indexOf(`<![CDATA[${t.jo}(`)
-    if (tIdx !== -1) {
-      const ts = xml.lastIndexOf("<조문단위", tIdx)
-      const te = xml.indexOf("</조문단위>", tIdx)
-      if (ts !== -1 && te !== -1) {
-        const tInv = extractAmendmentInventory(extractCdataText(xml.slice(ts, te)))
-        const tSym = t.hang ? hangToSymbol(t.hang) : null
-        const tHangDates = tSym ? tInv.byHang[tSym] || [] : []
-        tDates = tHangDates.length ? tHangDates : tInv.article
-        if (tDates.length) jBlocks.push(`  개정 인벤토리 ${t.jo}${t.hang || ""}: ${tDates.join(", ")}`)
+    // v0.25.0(E3) — 타법(「」 명시·자기법령과 다름) 준용은 그 법령을 자동 해소해 2층 인출. 실패 시 E2 강등.
+    let jctx = selfCtxT
+    let viaLabel = ""
+    if (t.lawName && lawNameKey(t.lawName) !== lawNameKey(lawTitle)) {
+      const cr = await getCrossT(t.lawName)
+      if (!cr.ok) {
+        jBlocks.push(`▷ ${jo} 본문이 ${fmtJunyong(t)}을(를) 준용 — ⚠ 타법 자동 해소 실패(${cr.reason}). build_application_timetable(lawName="${t.lawName}")로 별도 확인.`)
+        continue
       }
+      jctx = cr.ctx
+      viaLabel = `「${t.lawName}」`
     }
+    jBlocks.push(`▷ ${jo} 본문이 ${viaLabel}${t.jo}${t.hang || ""}을(를) 준용 — 적용시기는 '준용 구조(${jo})'와 '준용 대상(${viaLabel}${t.jo}) 내용' 두 층의 부칙이 따로 정할 수 있다(2층 타임라인). 두 층 모두 점검하라.`)
+    const ti = articleInfoFromXml(jctx.xml, t.jo, t.hang)
+    const tDates = ti.dates
+    if (tDates.length) jBlocks.push(`  개정 인벤토리 ${viaLabel}${t.jo}${t.hang || ""}: ${tDates.join(", ")}`)
     const tKey = t.jo.replace(/\s/g, "")
-    const tMatched = units
+    const tMatched = jctx.units
       .filter((u) => joMentioned(u.text.replace(/\s/g, ""), tKey)) // v0.21.0(#X-11)
       .sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
     if (tMatched.length === 0) {
-      jBlocks.push(`  (부칙에서 ${t.jo} 언급 적용례 없음)`)
+      jBlocks.push(`  (부칙에서 ${viaLabel}${t.jo} 언급 적용례 없음)`)
       continue
     }
     for (const u of tMatched.slice(0, args.full === true ? 8 : 4)) {
@@ -4724,21 +4795,10 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
   // v0.21.0(#G2) — 교차법령(시행령·시행규칙 등) 행 배제. '연말 시행본' 참고표기가 타법 버전으로 오염되는 것 방지.
   versions = filterVersionsByName(versions, lawName || lawTitle)
 
-  // 조문 본문 회수(현행 XML 내) + 인벤토리
-  const articleInfo = (tjo: string, thang?: string): { dates: string[]; body: string } => {
-    let body = ""
-    const idx = xml.indexOf(`<![CDATA[${tjo}(`)
-    if (idx !== -1) {
-      const s = xml.lastIndexOf("<조문단위", idx)
-      const e = xml.indexOf("</조문단위>", idx)
-      if (s !== -1 && e !== -1) body = extractCdataText(xml.slice(s, e))
-    }
-    if (!body) return { dates: [], body: "" }
-    const inv = extractAmendmentInventory(body)
-    const sym = thang ? hangToSymbol(thang) : null
-    const hd = sym ? inv.byHang[sym] || [] : []
-    return { dates: hd.length ? hd : inv.article, body }
-  }
+  // 조문 본문 회수(현행 XML 내) + 인벤토리 — 순수 함수 위임(v0.25.0 E3 리팩터, 동작 동일).
+  const articleInfo = (tjo: string, thang?: string) => articleInfoFromXml(xml, tjo, thang)
+  // v0.25.0(E3) — 준용 타법 자동 해소기(요청당 memo·상한 2). specs 루프 밖에서 1회 생성(캡 공유).
+  const getCross = makeCrossResolver(oc)
 
   const clauseCap = full ? 1500 : 320
   const lines: string[] = [
@@ -4759,23 +4819,24 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
     const { jo, hang } = spec
     const own = articleInfo(jo, hang)
     const junyong = own.body ? extractJunyongTargets(own.body, jo) : []
-    const sameLawJy = junyong.filter((t) => t.jo && !t.lawName)
-    const crossJy = junyong.filter((t) => t.lawName || t.annex)
+    const sameLawJy = junyong.filter((t) => t.jo && (!t.lawName || lawNameKey(t.lawName) === lawNameKey(lawTitle)))
+    const crossLawJy = junyong.filter((t) => t.jo && t.lawName && lawNameKey(t.lawName) !== lawNameKey(lawTitle))
+    const annexJy = junyong.filter((t) => !t.jo)
 
     lines.push(`════════ [조문 ${jo}${hang || ""}] ════════`)
     if (own.dates.length) lines.push(`개정 인벤토리(현행 꼬리표): ${own.dates.join(", ")}`)
     if (junyong.length) {
       lines.push(`준용 탐지: ${junyong.map(fmtJunyong).join(", ")} — 2층 타임라인(준용 구조/준용 대상 각각의 부칙)을 모두 점검`)
-      // v0.24.0(E2) — 타법·별표는 현재 법령 xml/units로 인벤토리 산출 시 오귀속 → 라벨만.
-      for (const t of crossJy) lines.push(`  ⚠ 타법·별표 준용 ${fmtJunyong(t)} — 아래 부칙표는 현재 법령(${lawTitle}) 것만. 타법은 build_application_timetable(lawName="${t.lawName || "해당 법령"}"), 별표는 korean-law get_annexes로 별도 확인.`)
+      // v0.24.0(E2) — 별표는 조문 부칙과 다른 자체 연혁 → 라벨만(E4 미착수).
+      for (const t of annexJy) lines.push(`  ⚠ 별표 준용 ${fmtJunyong(t)} — 별표는 자체 개정 연혁(조문 부칙과 별개). korean-law get_annexes로 별도 확인.`)
     }
     const delegation = own.body ? buildDelegationGuard(own.body, jo) : []
     if (delegation.length) delegation.forEach((d) => lines.push(d))
 
     const entries: TtEntry[] = []
-    const collectFor = (tjo: string, thang: string | undefined, dates: string[], via?: string) => {
+    const collectFor = (tjo: string, thang: string | undefined, dates: string[], via: string | undefined, ctxUnits: AddendaUnit[] = units) => {
       const key = tjo.replace(/\s/g, "")
-      const ms = units
+      const ms = ctxUnits
         .filter((u) => joMentioned(u.text.replace(/\s/g, ""), key)) // v0.21.0(#X-11)
         .sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
       for (const u of ms) {
@@ -4788,11 +4849,22 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
         }
       }
     }
-    collectFor(jo, hang, own.dates)
+    collectFor(jo, hang, own.dates, undefined)
     for (const t of sameLawJy.slice(0, 2)) {
       const ti = articleInfo(t.jo!, t.hang)
       collectFor(t.jo!, t.hang, ti.dates, `${t.jo}${t.hang || ""} 준용대상`)
       if (ti.dates.length) lines.push(`개정 인벤토리(준용대상 ${t.jo}${t.hang || ""}): ${ti.dates.join(", ")}`)
+    }
+    // v0.25.0(E3) — 타법 준용 자동 인출(2층 타임라인). 실패 시 E2 라벨로 강등(오귀속 금지).
+    for (const t of crossLawJy.slice(0, 2)) {
+      const cr = await getCross(t.lawName!)
+      if (!cr.ok) {
+        lines.push(`  ⚠ 타법 준용 ${fmtJunyong(t)} — 자동 해소 실패(${cr.reason}). build_application_timetable(lawName="${t.lawName}")로 별도 확인.`)
+        continue
+      }
+      const ti = articleInfoFromXml(cr.ctx.xml, t.jo!, t.hang)
+      collectFor(t.jo!, t.hang, ti.dates, `${fmtJunyong(t)} 준용대상`, cr.ctx.units)
+      lines.push(`개정 인벤토리(준용대상 ${fmtJunyong(t)} @${cr.ctx.lawTitle}): ${ti.dates.length ? ti.dates.join(", ") : "없음"}`)
     }
 
     if (entries.length === 0) {
