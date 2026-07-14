@@ -49,6 +49,7 @@ const {
   extractArticleBody,
   pruneEmpty,
   remainingBudgetMs,
+  compactBodyText,
   TaxlawMcpError,
   ErrorCodes,
 } = await import("../build/index.js")
@@ -952,4 +953,23 @@ test("remainingBudgetMs: 과거·동일 deadline → 소진(<=0)", () => {
   assert.equal(remainingBudgetMs(500, 500), 0)
   assert.ok(remainingBudgetMs(500, 500) <= 0)
   assert.ok(remainingBudgetMs(400, 1000) <= 0)
+})
+
+// ── v0.25.0(리뷰 SEC-4b·O2-1) ──
+test("SEC-4b: htmlToText 무종결 <script 1M자 폭주 — 선형(<5s) + 결과 동일", () => {
+  const evil = "<script".repeat(150000)
+  const t0 = Date.now()
+  assert.equal(htmlToText("safe<p>ok</p>" + evil), htmlToText("safe<p>ok</p>"))
+  assert.ok(Date.now() - t0 < 5000)   // 종전 정규식 실측 68s → 명확 분리
+})
+test("SEC-4b: extractCdataText 무종결 CDATA 1M자 폭주 — 선형(<5s) + 무종결 미채택", () => {
+  const evil = "<![CDATA[".repeat(120000)
+  const t0 = Date.now()
+  extractCdataText(evil)
+  assert.ok(Date.now() - t0 < 5000)   // 종전 9.2s
+})
+test("compactBodyText(O2-1): 관련법령 절단 시 생략 마커(무언 손실 금지)", () => {
+  const out = compactBodyText("1. 사실관계\n본문\n3. 관련법령\n소득세법 제1조 전문", false)
+  assert.ok(out.includes("생략") && out.includes("full=true"))
+  assert.ok(!out.includes("소득세법 제1조"))
 })

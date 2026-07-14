@@ -79,3 +79,14 @@ test("혼재: 서식+실체 부령 위임이 함께면 강한 경고 유지", ()
   const out = buildDelegationGuard(body, "제23조")
   assert.ok(out.some((l) => /멈추지 말고/.test(l)), "하나라도 실체면 강한 경고")
 })
+
+// ── v0.25.0(리뷰 O2-7): 고시 위임 종결형 보강 ──
+test("O2-7 고시 위임(종결형): '…장관이 고시한다' → 발동", () => {
+  assert.ok(buildDelegationGuard("적용 기간은 환경부장관이 고시한다.", "제5조").length >= 2)
+})
+test("O2-7 고시 위임: '고시로 정하는 바에 따라' → 발동", () => {
+  assert.ok(buildDelegationGuard("그 기준은 고시로 정하는 바에 따라 적용한다.", "제5조").length >= 2)
+})
+test("O2-7 과발동 방지: 단순 '고시된 가격' 언급은 비발동", () => {
+  assert.equal(buildDelegationGuard("고시된 분양가격을 기준으로 계산한다.", "제5조").length, 0)
+})

@@ -15,8 +15,10 @@ const {
   targetYearApplicationNote,
   joMentioned,
   articleInfoFromXml,
+  findArticleInXml,
   filterVersionsByName,
   filterVersionsByNameStrict,
+  capJunyongBlocks,
 } = await import("../build/index.js")
 
 // ── hangToSymbol ──
@@ -170,7 +172,60 @@ test("articleInfoFromXml(E3): 항 지정 시 그 항 꼬리표만, 미지정 시
   assert.deepEqual(articleInfoFromXml(E3_ART_XML, "제26조의8", "제6항").dates, ["2025.6.30"])
   const all = articleInfoFromXml(E3_ART_XML, "제26조의8").dates
   assert.ok(all.includes("2025.12.31") && all.includes("2025.6.30"))
-  assert.deepEqual(articleInfoFromXml(E3_ART_XML, "제99조"), { dates: [], body: "" })
+  assert.deepEqual(articleInfoFromXml(E3_ART_XML, "제99조"), { dates: [], body: "", status: "missing" })
+})
+
+// ── v0.25.0(리뷰 EF-2): 부칙 bare-CDATA 오매칭 차단 + 삭제 감지 ──
+test("articleInfoFromXml(EF-2): 부칙 bare-CDATA는 조문으로 오매칭 금지 + 삭제 감지", () => {
+  const xml = "<법령><조문단위><조문내용><![CDATA[제1조(목적) 내용]]></조문내용></조문단위>" +
+    "<조문단위><조문내용><![CDATA[제2조 삭제 <2019.12.31>]]></조문내용></조문단위>" +
+    "<부칙><부칙단위><부칙내용><![CDATA[제9조(자기관리 부동산투자회사) 부칙 본문 <개정 2020.1.1>]]></부칙내용></부칙단위></부칙></법령>"
+  assert.equal(articleInfoFromXml(xml, "제9조").status, "missing")   // 구현 전엔 가짜 body+2020.1.1 반환(재현)
+  assert.deepEqual(articleInfoFromXml(xml, "제9조").dates, [])
+  const del = articleInfoFromXml(xml, "제2조")
+  assert.equal(del.status, "deleted"); assert.match(del.deletedDate, /2019/)
+  assert.equal(articleInfoFromXml(xml, "제1조").status, "found")
+})
+
+// ── v0.25.0(리뷰 EF-3): 비인접 「타법」 오귀속 강등 + 인접 체인 유지 ──
+test("extractJunyongTargets(EF-3): 정의목적 비인접 「타법」은 오귀속 금지(자기법+lawHint)", () => {
+  const body = "「소득세법」에 따른 양도소득과세표준의 계산에 관하여는 제95조를 준용한다."
+  assert.deepEqual(extractJunyongTargets(body, "제100조의32"), [{ jo: "제95조", lawHint: "소득세법" }])
+})
+test("extractJunyongTargets(EF-3): 인접 연쇄(제N조 및 제M조)는 타법 귀속 유지", () => {
+  const body = "「소득세법」 제95조 및 제97조를 준용한다."
+  assert.deepEqual(extractJunyongTargets(body, "제55조"), [{ jo: "제97조", lawName: "소득세법" }])
+})
+
+// ── v0.26.0(리뷰 완결성): EF-3 whitelist 'ㆍ'(U+318D) + EF-2 앵커 attr 관용 ──
+test("extractJunyongTargets(EF-3 v0.26.0): 인접 연쇄 구분자 'ㆍ'(U+318D)도 타법 귀속 유지(over-reject 방지)", () => {
+  // 실 법문 다빈도 가운뎃점(U+318D)이 whitelist에 없어 "제95조ㆍ제97조"를 자기법으로 과강등하던 것 수정.
+  const body = "「소득세법」 제95조ㆍ제97조를 준용한다."
+  assert.deepEqual(extractJunyongTargets(body, "제55조"), [{ jo: "제97조", lawName: "소득세법" }])
+})
+test("findArticleInXml(EF-2 v0.26.0): <조문내용>에 속성(<조문내용 ...>)이 있어도 조문·삭제 감지", () => {
+  const xml = '<법령><조문단위><조문내용 lang="ko"><![CDATA[제5조(정의) 본문]]></조문내용></조문단위></법령>'
+  assert.equal(findArticleInXml(xml, "제5조").status, "found")
+  assert.equal(articleInfoFromXml(xml, "제5조").status, "found")
+  const delXml = '<법령><조문단위><조문내용 x="1"><![CDATA[제9조 삭제 <2019.12.31>]]></조문내용></조문단위></법령>'
+  assert.equal(findArticleInXml(delXml, "제9조").status, "deleted")
+})
+
+// ── v0.25.0(리뷰 TK-1): 준용 체인 블록 공유상한 ──
+test("capJunyongBlocks(TK-1): 상한 이하 배열은 원본 그대로", () => {
+  const blocks = ["a", "b", "c"]
+  assert.deepEqual(capJunyongBlocks(blocks, false), blocks)
+})
+test("capJunyongBlocks(TK-1): 비full 8000자 초과 시 절단 + 명시 생략 라벨", () => {
+  const blocks = ["x".repeat(3000), "x".repeat(3000), "x".repeat(3000), "x".repeat(3000)]
+  const out = capJunyongBlocks(blocks, false)
+  assert.equal(out.length, 3)   // block0, block1, 라벨(합계 9003 > 8000에서 i=2 절단)
+  assert.ok(out[out.length - 1].includes("출력 상한"))
+  assert.ok(out[out.length - 1].includes("8,000"))
+})
+test("capJunyongBlocks(TK-1): full=true는 캡 24000 — 8000 초과분도 유지", () => {
+  const blocks = ["x".repeat(3000), "x".repeat(3000), "x".repeat(3000)]  // 합계 ~9002 > 8000 but < 24000
+  assert.deepEqual(capJunyongBlocks(blocks, true), blocks)
 })
 
 test("filterVersionsByNameStrict(E3): 정확 제명만(공백무관), 0건 시 폴백 없이 빈 배열", () => {

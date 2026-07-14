@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.26.0] - 2026-07-15
+
+### Fixed — 수정배치 재검증(Codex gpt-5.6-sol + Fable) 후속 완결성 3건
+- EF-3(완결성): 인접성 whitelist에 한글 가운뎃점 'ㆍ'(U+318D) 추가 — "제95조ㆍ제97조" 다빈도 연결자가 자기법으로 과강등(over-reject)되던 것 수정(U+00B7·쉼표는 이미 통과).
+- EF-3(완결성): `get_law_article`의 준용 감지 블록도 비인접 lawHint 타깃을 ⚠ 라벨로 렌더(trace·timetable만 렌더하고 이 도구는 자기법으로 침묵하던 갭).
+- EF-2(보험): `findArticleInXml` <조문내용> 앵커를 속성 관용(`<조문내용 ...>`)으로 — 실 피드는 bare지만 방어(strict superset, bare도 계속 매칭).
+
+### Fixed — v0.25.0 배포 후 4관점 리뷰(O1~O4·Codex gpt-5.6-sol) 반영 (EF-3 P0 외 12건)
+- EF-3(P0): 준용 「법령명」 귀속 인접성 게이트(개재문자 whitelist) — 정의목적 타법 오귀속의 데이터 승격 차단, 비인접은 자기법 처리+귀속 모호 ⚠ 라벨(lawHint).
+- A1: trace self 부칙 0건이어도 준용 탐지 시 조기 NOT_FOUND 금지 — 준용 체인 층 회수 + self 미발견 ⚠.
+- A3/A6: cross 층에 '현행(오늘) 시행본 기준 해소' caveat + 타법 MST·URL provenance 병기(trace·timetable).
+- A4+EF-2: articleInfoFromXml을 findArticleInXml 앵커·삭제감지 기반으로 재작성(부칙 bare-CDATA 오매칭 제거) + status 존재게이트 — 조문 부재·삭제를 "적용례 없음" 정상결과로 둔갑 금지.
+- A5: trace 부칙 유형 self/준용 층 분리 집계 — 타법 유형이 "같은 조문 충돌"로 오표시되던 것 수정.
+- A2: timetable full=false slice 생략분에 준용 층 포함 시 명시 라벨.
+- TK-1: trace 준용 체인 공유상한 capJunyongBlocks(full 24,000/기본 8,000자)+생략 라벨.
+- A8: resolveCrossLawCtx lawService 제명 사후 재검증(불일치·빈값 안전 강등).
+- O2-1: 해석례 '관련 법령' 절 절단에 생략 마커. O2-7: 고시위임 가드 종결형('…이 고시한다'·'고시로 정하는') 보강.
+- SEC-4b: htmlToText script/style 제거·extractCdataText CDATA 추출을 선형 스캔으로(무종결 태그 O(n²) ReDoS 차단 — 실측 1M자 68s/9.2s→ms).
+
+### Tests
+- `test/cross-law.test.js`(신규): globalThis.fetch mock 통합경로 6종(C1~C6 = Codex 8종 매핑) + C7(get_law_article lawHint 렌더). `test/timetable.test.js` EF-2·EF-3·TK-1 + 완결성(ㆍU+318D·조문내용 attr), `test/utils.test.js` SEC-4b·O2-1, `test/delegation-guard.test.js` O2-7 추가. 총 265→286.
+
 ## [0.25.0] - 2026-07-14
 
 E3 — 준용 타법(cross-law) 자동 해소. E2(v0.24.0)의 "타법 준용 — 별도 호출하라" 라벨을 **실제 2층 타임라인 자동 인출**로 승격(Fable 구조설계 + Opus 구현, 4관점 리뷰: 효과성 상·토큰 조건부 순절감·시간 반나절·보안 무해).

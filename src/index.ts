@@ -39,7 +39,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.25.0"
+const VERSION = "0.26.0"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1659,10 +1659,29 @@ export function decodeHtml(text: string): string {
     .replace(/&amp;/g, "&")
 }
 
+// v0.25.0(리뷰 SEC-4b) — <script>/<style> 블록 제거를 선형 스캔으로. 종전 /<tag[\s\S]*?<\/tag>/ lazy 정규식은
+// 무종결 '<script' 다수(악성·파손 응답)에서 O(n²) ReDoS — 실측 1M자 68s 동기 블록. 닫는 태그가 없으면
+// 그 지점 이후를 폐기한다(종전엔 미매칭 방치로 스크립트 원문이 텍스트로 누출 — 폐기가 더 안전).
+function stripTagBlocks(html: string, tag: string): string {
+  const lower = html.toLowerCase()
+  const openTok = `<${tag}`
+  const closeTok = `</${tag}`
+  let out = ""
+  let i = 0
+  while (i < html.length) {
+    const s = lower.indexOf(openTok, i)
+    if (s === -1) { out += html.slice(i); break }
+    out += html.slice(i, s)
+    const c = lower.indexOf(closeTok, s + openTok.length)
+    if (c === -1) break
+    const gt = lower.indexOf(">", c + closeTok.length)
+    i = gt === -1 ? html.length : gt + 1
+  }
+  return out
+}
+
 export function htmlToText(html: string): string {
-  const prepared = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
+  const prepared = stripTagBlocks(stripTagBlocks(html, "script"), "style")
     .replace(/<img\b[^>]*>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
@@ -1730,10 +1749,13 @@ export function normalizeDate(value: unknown): string {
   return `${digits.slice(0, 4)}.${digits.slice(4, 6)}.${digits.slice(6, 8)}`
 }
 
-function compactBodyText(text: string, full = false, code?: string): string {
+export function compactBodyText(text: string, full = false, code?: string): string {
   if (full) return truncate(text, 45000)
   const relatedLawIndex = text.search(/\n?3\.\s*관련\s*법령/)
-  const compact = relatedLawIndex >= 0 ? text.slice(0, relatedLawIndex).trim() : text
+  // v0.25.0(리뷰 O2-1) — '관련 법령' 절 절단을 무언 손실 대신 명시 마커로(인용 조문 원문이 조용히 사라지는 것 방지).
+  const compact = relatedLawIndex >= 0
+    ? `${text.slice(0, relatedLawIndex).trim()}\n…[이하 '관련 법령' 절 ${(text.length - relatedLawIndex).toLocaleString()}자 생략 — 전문은 full=true]`
+    : text
   // v0.10.0 — 판례·결정례(05~10)는 '주문·판단(결론부)'이 본문 뒤쪽에 있어 head-only 압축이
   // 결론부를 항상 자른다(→ full=true 45000자 재조회 강제). head+tail 분할로 결론부를 요약본에
   // 보존해 트리아지 단계의 재조회를 줄인다. 인용 전 full=true 검증 의무는 그대로(가드 유지).
@@ -3314,10 +3336,18 @@ export interface AddendaUnit {
 // 조각 안에는 <제35999호,2025.12.31> 같은 '리터럴 꺾쇠'가 들어있다. 따라서 일반 태그 제거를
 // 적용하면 부칙 헤더가 잘린다. CDATA 조각만 추출해 이어 붙이고, 수식 <img>만 마커로 치환한다.
 export function extractCdataText(block: string): string {
+  // v0.25.0(리뷰 SEC-4b) — CDATA 조각 추출을 indexOf 선형 스캔으로(의미 동일: 각 '<![CDATA[' 이후 첫 ']]>'까지,
+  // 무종결 조각은 종전과 동일하게 미채택). 종전 lazy 정규식은 무종결 '<![CDATA[' 다수에서 O(n²) — 실측 1M자 9.2s.
   const chunks: string[] = []
-  const re = /<!\[CDATA\[([\s\S]*?)\]\]>/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(block))) chunks.push(m[1])
+  let i = 0
+  for (;;) {
+    const s = block.indexOf("<![CDATA[", i)
+    if (s === -1) break
+    const e = block.indexOf("]]>", s + 9)
+    if (e === -1) break
+    chunks.push(block.slice(s + 9, e))
+    i = e + 3
+  }
   const joined = (chunks.length > 0 ? chunks.join("") : block)
     .replace(/<img\b[^>]*>/gi, " [수식이미지] ")
   return joined
@@ -3498,19 +3528,20 @@ export function normalizeArticleForCompare(t: string): string {
 // 부칙내용의 bare CDATA(조 단위 분할, '제9조(자기관리…)' 류 1,293개 실측)에 오매칭되어
 // 삭제 조문이 부칙 garbage와 대조되는 결함이 있었다(리뷰 실증). <조문내용> 래퍼로 앵커링해 배제.
 // 전부 삭제된 조문은 '<조문내용><![CDATA[제9조 삭제 <2019.12.31>]]>' 형태(괄호 없음) → deleted로 적극 보고.
+// v0.26.0(리뷰 EF-2 보험) — <조문내용>에 속성이 붙은 변형(<조문내용 ...>)도 앵커가 관용(실 피드는 bare지만 방어). 여전히 bare도 매칭(strict superset).
 export function findArticleInXml(
   xml: string,
   jo: string,
 ): { status: "found" | "deleted" | "missing"; block?: string; deletedDate?: string } {
   const joEsc = jo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const open = new RegExp(`<조문내용>\\s*<!\\[CDATA\\[\\s*${joEsc}\\(`).exec(xml)
+  const open = new RegExp(`<조문내용(?:\\s[^>]*)?>\\s*<!\\[CDATA\\[\\s*${joEsc}\\(`).exec(xml)
   if (open) {
     const s = xml.lastIndexOf("<조문단위", open.index)
     const e = xml.indexOf("</조문단위>", open.index)
     if (s !== -1 && e !== -1) return { status: "found", block: xml.slice(s, e) }
     return { status: "missing" } // 구조 파손 — 안전 측으로 미발견 처리
   }
-  const del = new RegExp(`<조문내용>\\s*<!\\[CDATA\\[\\s*${joEsc}\\s*삭제\\s*<([^>]*)>`).exec(xml)
+  const del = new RegExp(`<조문내용(?:\\s[^>]*)?>\\s*<!\\[CDATA\\[\\s*${joEsc}\\s*삭제\\s*<([^>]*)>`).exec(xml)
   if (del) return { status: "deleted", deletedDate: del[1].trim() }
   return { status: "missing" }
 }
@@ -3773,20 +3804,24 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
 export interface LawCtx { xml: string; units: AddendaUnit[]; lawTitle: string; mst: string }
 
 // 법령 XML에서 조문(항) 개정 인벤토리+본문 회수(순수). trace·timetable 공용, self/cross 무차별.
-// (기존 timetable articleInfo 클로저·trace 인라인 인벤토리와 의미 동일 — selfCtx 위임 시 바이트 동일.)
-export function articleInfoFromXml(xml: string, tjo: string, thang?: string): { dates: string[]; body: string } {
-  let body = ""
-  const idx = xml.indexOf(`<![CDATA[${tjo}(`)
-  if (idx !== -1) {
-    const s = xml.lastIndexOf("<조문단위", idx)
-    const e = xml.indexOf("</조문단위>", idx)
-    if (s !== -1 && e !== -1) body = extractCdataText(xml.slice(s, e))
-  }
-  if (!body) return { dates: [], body: "" }
+// v0.25.0(리뷰 EF-2) — naive indexOf('<![CDATA[제N조(')는 부칙 bare-CDATA(조 단위 분할)에 오매칭되어
+//   가짜 body+가짜 개정일을 반환했다(v0.11.0 findArticleInXml과 동일 결함) → <조문내용> 앵커·삭제감지 재사용.
+// v0.25.0(리뷰 A4) — status 동반 반환: 소비자(trace·timetable cross 층)가 '조문 부재'를 "적용례 없음"
+//   정상결과로 둔갑시키지 않도록 존재게이트 재료 제공. deleted는 삭제일 병기.
+export function articleInfoFromXml(
+  xml: string,
+  tjo: string,
+  thang?: string,
+): { dates: string[]; body: string; status: "found" | "deleted" | "missing"; deletedDate?: string } {
+  const found = findArticleInXml(xml, tjo)
+  if (found.status === "deleted") return { dates: [], body: "", status: "deleted", deletedDate: found.deletedDate }
+  if (found.status !== "found") return { dates: [], body: "", status: "missing" }
+  const body = extractCdataText(found.block || "")
+  if (!body) return { dates: [], body: "", status: "missing" }
   const inv = extractAmendmentInventory(body)
   const sym = thang ? hangToSymbol(thang) : null
   const hd = sym ? inv.byHang[sym] || [] : []
-  return { dates: hd.length ? hd : inv.article, body }
+  return { dates: hd.length ? hd : inv.article, body, status: "found" }
 }
 
 // #G2 filterVersionsByName의 strict 변형: 정확 제명 일치만, 0건 시 폴백 없이 빈 배열.
@@ -3812,6 +3847,11 @@ async function resolveCrossLawCtx(oc: string, quotedName: string): Promise<Cross
     const picked = pickVersionInForce(exact, todayYmd())
     if (!picked) return { ok: false, reason: "오늘 시행 중 버전 미해소" }
     const prep = await prepareMergedAddenda(oc, picked.mst, quotedName, 2)
+    // v0.25.0(리뷰 A8) — lawService 응답 제명 사후검증: eflaw 행은 정확해도 XML 제명이 빈값·불일치·이상이면
+    // 안전 강등(malformed 원격 응답이 권위 데이터로 전파 금지). 강등 방향이라 오탐 시에도 E2 라벨로 수렴.
+    if (!prep.lawTitle || lawNameKey(prep.lawTitle) !== lawNameKey(quotedName)) {
+      return { ok: false, reason: `타법 XML 제명 검증 실패(응답 제명 "${(prep.lawTitle || "").slice(0, 60) || "빈값"}" ≠ "${quotedName}") — korean-law search_law로 확인` }
+    }
     return { ok: true, ctx: { xml: prep.xml, units: prep.units, lawTitle: prep.lawTitle, mst: prep.mst } }
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : "타법 해소 오류" }
@@ -4172,19 +4212,26 @@ export function checkAmendmentBinding(promulgationDate: string, inventoryDates: 
 // 본문에서 '…제N조(의M)(제K항)…준용' 패턴 추출(자기 자신 제외, 최대 3건).
 // '준용' 앵커에서 역방향으로 가장 가까운 조문 참조를 채택(자기 조문 참조가 뒤의 실제 준용 대상을 삼키지 않도록).
 // 준용 구조는 '준용하는 조문'과 '준용 대상 조문' 두 층의 부칙이 적용시기를 따로 정할 수 있다(2층 타임라인).
-export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string }
+export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string; lawHint?: string }
 export function extractJunyongTargets(articleText: string, selfJo: string): JunyongTarget[] {
   const out: JunyongTarget[] = []
   const seen = new Set<string>()
   const flat = String(articleText || "").replace(/\s/g, "")
   const selfKey = String(selfJo || "").replace(/\s/g, "")
-  // v0.24.0(E1) — ctx에서 pos 이전의 마지막 「법령명」 캡처(인접 귀속). 없으면 undefined(=자기 법령).
-  const lawBefore = (ctx: string, pos: number): string | undefined => {
+  // v0.24.0(E1)→v0.25.0(리뷰 EF-3, P0) — 「법령명」 귀속은 '인접성 게이트' 통과 시만.
+  //   」와 조문 ref 사이 개재문자가 조문참조 연쇄·연결사(제N조…/및/부터/까지/·/,/같은법 등)뿐이면 인접=그 법 귀속.
+  //   산문 개재(정의목적 인용 "「소득세법」에 따른 …" 뒤 자기법 조문 — §100의32류 오귀속 재현 5/6 문형)는
+  //   rejected로 강등: 자기법 처리 + lawHint(렌더층 모호 라벨용). 오귀속 데이터 무경고 승격의 근본 차단.
+  const lawBefore = (ctx: string, pos: number): { name?: string; rejected?: string } => {
     const lm = [...ctx.slice(0, pos).matchAll(/「([^」]{2,40})」/g)]
-    return lm.length ? lm[lm.length - 1][1] : undefined
+    if (!lm.length) return {}
+    const last = lm[lm.length - 1]
+    const gap = ctx.slice((last.index ?? 0) + last[0].length, pos)
+    const adjacent = /^(?:제\d+조(?:의\d+)?(?:제\d+항)?(?:제\d+호)?|같은법|동법|[·ㆍ,]|및|내지|부터|까지|와|과|의)*$/.test(gap)
+    return adjacent ? { name: last[1] } : { rejected: last[1] }
   }
   // shape 하위호환: 값이 있는 필드만 포함(기존 소비자·테스트의 {jo,hang} deepEqual 보존).
-  const push = (jo: string | undefined, hang: string | undefined, lawName: string | undefined, annex?: string) => {
+  const push = (jo: string | undefined, hang: string | undefined, lawName: string | undefined, annex?: string, lawHint?: string) => {
     const key = `${lawName || ""}|${jo || ""}${hang || ""}|${annex || ""}`
     if (seen.has(key)) return
     seen.add(key)
@@ -4193,6 +4240,7 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
     if (hang) t.hang = hang
     if (lawName) t.lawName = lawName
     if (annex) t.annex = annex
+    if (lawHint) t.lawHint = lawHint
     out.push(t)
   }
   for (const m of flat.matchAll(/준용/g)) {
@@ -4202,8 +4250,9 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
     if (refs.length > 0) {
       const last = refs[refs.length - 1]
       const jo = last[1]
-      // v0.24.0(E1) — 타법 귀속: ref 바로 앞의 「법령명」이 있으면 그 법 소속으로.
-      const lawName = lawBefore(ctx, last.index ?? 0)
+      // v0.25.0(리뷰 EF-3) — 타법 귀속은 인접성 게이트 통과 시만. 비인접은 자기법 처리 + lawHint.
+      const lb = lawBefore(ctx, last.index ?? 0)
+      const lawName = lb.name
       // 자기 조문 제외는 '같은 법령'일 때만 — 타법의 동일 조번호는 별개 대상.
       if (!lawName && jo === selfKey) continue
       // v0.23.0(B) — 범위 준용 "제N항부터 제M항까지" → 각 항 개별 전개(시작 항이 anchor와 일치할 때만).
@@ -4211,17 +4260,20 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
       if (range && last[2] === `제${range[1]}항`) {
         const start = Number(range[1]), end = Number(range[2])
         if (end > start && end - start <= 10) {
-          for (let h = start; h <= end && out.length < 6; h++) push(jo, `제${h}항`, lawName)
+          for (let h = start; h <= end && out.length < 6; h++) push(jo, `제${h}항`, lawName, undefined, lb.rejected)
         } else {
-          push(jo, last[2] || undefined, lawName)
+          push(jo, last[2] || undefined, lawName, undefined, lb.rejected)
         }
       } else {
-        push(jo, last[2] || undefined, lawName)
+        push(jo, last[2] || undefined, lawName, undefined, lb.rejected)
       }
     } else {
       // v0.24.0(E1) — 조문 ref 없이 별표만 준용("「X법」 별표3을 준용") — 종전엔 silent skip.
       const annexM = ctx.match(/별표(\d+(?:의\d+)?)(?!\d)/)
-      if (annexM) push(undefined, undefined, lawBefore(ctx, annexM.index ?? 0), `별표${annexM[1]}`)
+      if (annexM) {
+        const lb = lawBefore(ctx, annexM.index ?? 0)
+        push(undefined, undefined, lb.name, `별표${annexM[1]}`, lb.rejected)
+      }
     }
     if (out.length >= 6) break
   }
@@ -4295,6 +4347,24 @@ export function targetYearApplicationNote(
   return ""
 }
 
+// v0.25.0(리뷰 TK-1) — 준용 체인 블록 공유상한(순수): E3 cross 승격(full=true 타법당 최대 ~36,794자)이
+// trace 전체 truncate(80,000)를 소진해 자기층·후순위 준용층이 무언 절단되는 것 방지.
+// 상한 도달 시 timetable과 동일 원칙의 명시 생략 라벨("…외 N행 생략").
+export function capJunyongBlocks(blocks: string[], full: boolean): string[] {
+  const capChars = full ? 24000 : 8000
+  let acc = 0
+  for (let i = 0; i < blocks.length; i++) {
+    acc += blocks[i].length + 1
+    if (acc > capChars) {
+      return [
+        ...blocks.slice(0, i),
+        `… 준용 체인 출력 상한(${capChars.toLocaleString()}자) 도달 — 외 ${blocks.length - i}행 생략. 준용 대상별 상세는 build_application_timetable(lawName=…)로 개별 확인.`,
+      ]
+    }
+  }
+  return blocks
+}
+
 const TRACE_GUARD = [
   "⚠ 적용시점 판정 규칙(반드시 준수):",
   "① 어느 과세연도 신고에 적용되는 조문은 '그 해 시행 중이던 본문'이 아니라 '부칙 적용례'가 정한다.",
@@ -4353,7 +4423,9 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
     .filter((u) => joMentioned(u.text.replace(/\s/g, ""), joKey)) // v0.21.0(#X-11) — "제2조" vs "제2조의2" 오매칭 방지
     .sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
 
-  if (matched.length === 0) {
+  // v0.25.0(리뷰 A1) — self 부칙 0건이어도 준용 대상 탐지 시 조기종료하지 않고 준용 체인 층을 회수
+  // (준용 대상 타법에만 적용례가 있는 입력에서 2층 타임라인 통째 드롭 방지). 둘 다 0건일 때만 NOT_FOUND.
+  if (matched.length === 0 && junyongTargets.length === 0) {
     return notFoundResponse(
       `MST ${mst}의 부칙에서 ${jo}${hang ? " " + hang : ""}을(를) 언급하는 적용례/경과조치를 찾지 못했습니다.`,
       [
@@ -4364,7 +4436,10 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
     )
   }
 
-  const allTypes = new Set<string>()
+  // v0.25.0(리뷰 A5) — 자기 조문 층과 준용 대상 층(타법 포함)의 부칙 유형을 분리 집계.
+  // 단일 세트 병합은 서로 다른 법률의 유형을 "같은 조문에 공존"으로 오표시했다.
+  const selfTypes = new Set<string>()
+  const junyongTypes = new Set<string>()
   const blocks: string[] = []
   for (const u of matched) {
     const enforce = extractEnforceDate(u.text, u.promulgationDate)
@@ -4381,7 +4456,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
     )
     for (const c of clauses) {
       const type = classifyApplicationClause(c.clause)
-      allTypes.add(type)
+      selfTypes.add(type)
       blocks.push(`· [${type}] ${truncate(c.clause, args.full === true ? 4000 : 1200)}`)
       if (type === "경과조치(종전규정)" && binding === "개정 흔적 없음") {
         blocks.push(`   └▶ ⚠ 사정거리: 경과조치는 '자기 개정령의 개정규정'만 유예한다. 이 개정령이 ${targetLabel}을(를) 고치지 않았다면, 이 경과조치로 ${targetLabel}의 후행 개정까지 유예할 수 없다(미래 개정 선제유예 불가).`)
@@ -4401,7 +4476,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   for (const t of junyongTargets) {
     // 별표 준용(조문 ref 없음)은 자체 개정 연혁이라 라벨만(E4 미착수).
     if (t.annex || !t.jo) {
-      jBlocks.push(`▷ ${jo} 본문이 ${fmtJunyong(t)}을(를) 준용 — ⚠ 별표는 자체 개정 연혁(조문 부칙과 별개). korean-law get_annexes로 2층 확인.`)
+      jBlocks.push(`▷ ${jo} 본문이 ${fmtJunyong(t)}을(를) 준용 — ⚠ 별표는 자체 개정 연혁(조문 부칙과 별개). korean-law get_annexes로 2층 확인.${t.lawHint && !t.lawName ? ` (⚠ 귀속 모호 — 「${t.lawHint}」 별표일 수 있음)` : ""}`)
       continue
     }
     // v0.25.0(E3) — 타법(「」 명시·자기법령과 다름) 준용은 그 법령을 자동 해소해 2층 인출. 실패 시 E2 강등.
@@ -4417,7 +4492,20 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
       viaLabel = `「${t.lawName}」`
     }
     jBlocks.push(`▷ ${jo} 본문이 ${viaLabel}${t.jo}${t.hang || ""}을(를) 준용 — 적용시기는 '준용 구조(${jo})'와 '준용 대상(${viaLabel}${t.jo}) 내용' 두 층의 부칙이 따로 정할 수 있다(2층 타임라인). 두 층 모두 점검하라.`)
+    // v0.25.0(리뷰 EF-3) — 비인접 「법령명」 귀속 모호 힌트(자기법 처리 공지, 무언 강등 금지).
+    if (!t.lawName && t.lawHint) {
+      jBlocks.push(`  ⚠ 준용 귀속 주의: 본문에 「${t.lawHint}」 언급이 선행하나 조문 참조와 비인접 — 자기 법령(${lawTitle}) 조문으로 처리함. 타법 조문일 가능성 있으면 build_application_timetable(lawName="${t.lawHint}")로 교차 확인.`)
+    }
+    // v0.25.0(리뷰 A6+A3) — 타법 provenance(MST·URL) 병기 + '현행 시행본 기준 해소' caveat.
+    if (viaLabel) {
+      jBlocks.push(`  타법 출처: ${jctx.lawTitle} (MST ${jctx.mst}) ${displayLawServiceUrl(jctx.mst)} — ⚠ 타법은 현행(오늘) 시행본 기준으로 해소됨: 과거 귀속연도 질의 시 타법 조문번호 재편(전부개정 등) 가능. 필요시 get_law_article(lawName="${t.lawName}", year=귀속연도)로 그 시점 본문 확인.`)
+    }
     const ti = articleInfoFromXml(jctx.xml, t.jo, t.hang)
+    // v0.25.0(리뷰 A4) — 존재게이트: 대상 조문 미발견·삭제를 정상 데이터처럼 승격 금지(라벨 강등).
+    // 부칙 스캔은 계속한다 — 삭제 조문의 과거 적용례·경과조치는 법적으로 유효한 연혁이므로 데이터 억제 대신 라벨.
+    if (ti.status !== "found") {
+      jBlocks.push(`  ⚠ 준용 대상 ${viaLabel}${t.jo} — ${jctx.lawTitle || "현행본"}에서 ${ti.status === "deleted" ? `삭제됨 <${ti.deletedDate || "?"}>` : "미발견(조번호 이동·재편 가능)"} — 아래 부칙 언급(있는 경우)은 동번호 기계검색이니 별도 확인 필수.`)
+    }
     const tDates = ti.dates
     if (tDates.length) jBlocks.push(`  개정 인벤토리 ${viaLabel}${t.jo}${t.hang || ""}: ${tDates.join(", ")}`)
     const tKey = t.jo.replace(/\s/g, "")
@@ -4425,7 +4513,10 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
       .filter((u) => joMentioned(u.text.replace(/\s/g, ""), tKey)) // v0.21.0(#X-11)
       .sort((a, b) => (b.promulgationDate || "").localeCompare(a.promulgationDate || ""))
     if (tMatched.length === 0) {
-      jBlocks.push(`  (부칙에서 ${viaLabel}${t.jo} 언급 적용례 없음)`)
+      // v0.25.0(리뷰 A4) — 조문 부재 시 "적용례 없음"을 정상 결과처럼 표시 금지.
+      jBlocks.push(ti.status === "found"
+        ? `  (부칙에서 ${viaLabel}${t.jo} 언급 적용례 없음)`
+        : `  (부칙 언급도 없음 — '적용례 없음' 단정 금지, 위 ⚠ 미발견/삭제 라벨 참조)`)
       continue
     }
     for (const u of tMatched.slice(0, args.full === true ? 8 : 4)) {
@@ -4433,7 +4524,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
       const binding = checkAmendmentBinding(u.promulgationDate || "", tDates)
       for (const c of clauses.slice(0, 3)) {
         const type = classifyApplicationClause(c.clause)
-        allTypes.add(type)
+        junyongTypes.add(type)
         const revs = detectAddendumRevisionTails(c.clause, u.promulgationDate)
         jBlocks.push(`  · [제${u.promulgationNo || "?"}호${binding === "개정 흔적 없음" ? "·결박⚠" : binding === "개정함" ? "·결박✓" : ""}][${type}]${revs.length ? `[부칙개정⚠ ${revs.map(formatYmd).join("·")}]` : ""} ${truncate(c.clause, args.full === true ? 1500 : 500)}`)
         if (revs.length) {
@@ -4448,14 +4539,14 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   }
 
   const lines: string[] = [TRACE_GUARD, ""]
-  if (allTypes.has("최초공제연도기준")) {
+  if (selfTypes.has("최초공제연도기준") || junyongTypes.has("최초공제연도기준")) {
     lines.push(
       "⚠⚠ [차수 확인 필수] 적용례에 '최초공제연도' 기준 검출 — 귀속연도만으로 판정 불가.",
       '   답변 전에 사용자에게 질문하라: "해당 연도가 1차공제(최초공제연도)인지, 이전 연도 최초공제 사이클의 추가공제인지?" (다년 사이클 공제: 통합고용 §29의8, 구 고용증대 §29의7 등)',
       "",
     )
   }
-  if (allTypes.has("신고시점기준") && targetYear === undefined) {
+  if ((selfTypes.has("신고시점기준") || junyongTypes.has("신고시점기준")) && targetYear === undefined) {
     lines.push("⚠ 신고시점 기준 적용례 존재 — targetYear·filingMonth를 지정해 재호출하면 연도별 소급 판단노트가 생성된다.", "")
   }
   lines.push("조문 적용시점 추적", `출처: ${url}`, `법령: ${lawTitle || "N/A"} (MST ${mst}) / 대상 조문: ${jo}${hang ? " " + hang : ""}`)
@@ -4464,11 +4555,17 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
     lines.push(`⚠ 현행 MST(${mst}) 부칙에 없어 다른 시행본에서 보강한 공포번호: ${supplementedNos.join(", ")} — 이 보강 적용례가 결론에 영향 줄 수 있으니 반드시 확인.`)
   }
   if (targetYear !== undefined) lines.push(`targetYear: ${targetYear} 귀속 (신고시점 추정 ${targetYear + 1}.${filingMonth}월)`)
-  // 충돌 경고
-  if (allTypes.has("경과조치(종전규정)") && [...allTypes].some((t) => t !== "경과조치(종전규정)" && t !== "유형미상")) {
-    lines.push(`⚠ 부칙 충돌 가능: 같은 조문에 [경과조치(종전규정)]와 [${[...allTypes].filter((t) => t !== "경과조치(종전규정)" && t !== "유형미상").join(", ")}]가 공존 → 어느 적용례가 우선하는지(후행·특정 우선 + 결박검증) 반드시 판단하라.`)
+  // 충돌 경고 — v0.25.0(리뷰 A5): '같은 조문' 판정은 자기 조문 층(selfTypes)만. 준용 대상 층은 별도 표기.
+  if (selfTypes.has("경과조치(종전규정)") && [...selfTypes].some((t) => t !== "경과조치(종전규정)" && t !== "유형미상")) {
+    lines.push(`⚠ 부칙 충돌 가능: 같은 조문에 [경과조치(종전규정)]와 [${[...selfTypes].filter((t) => t !== "경과조치(종전규정)" && t !== "유형미상").join(", ")}]가 공존 → 어느 적용례가 우선하는지(후행·특정 우선 + 결박검증) 반드시 판단하라.`)
+  }
+  if (junyongTypes.size) {
+    lines.push(`준용 대상 층 부칙 유형: [${[...junyongTypes].join(", ")}] — 자기 조문(${jo}) 층과 별개 층이므로 충돌·우선순위는 층별로 분리 판단.`)
   }
   lines.push(`부칙 적용례: ${jo} 언급 개정 ${matched.length}건 (최신순)`, "")
+  if (matched.length === 0) {
+    lines.push(`⚠ 이 조문(${jo}) 자체의 부칙 적용례 미발견 — jo 표기 확인(예: '제26조의8')·get_law_addenda로 전체 부칙 확인. 아래는 준용 체인 층만 회수됨.`, "")
+  }
   if (inventory.article.length) {
     lines.push("── 개정 인벤토리(현행본 <개정·신설> 꼬리표 = 이 조문을 실제 고친 개정일) ──")
     lines.push(`${jo} 전체: ${inventory.article.join(", ")}`)
@@ -4482,7 +4579,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
     lines.push(`── 현행 ${jo} 본문 발췌(앵커, 적용 버전 확정 후 사용) ──`, truncate(currentBody, args.full === true ? 3000 : 1000), "")
   }
   lines.push("── 부칙 적용례 타임라인 ──", ...blocks)
-  if (jBlocks.length) lines.push("── 준용 체인(자동 추적) ──", ...jBlocks, "")
+  if (jBlocks.length) lines.push("── 준용 체인(자동 추적) ──", ...capJunyongBlocks(jBlocks, args.full === true), "")
   lines.push("구버전/시점별 조문 본문·수식이미지는 get_law_article(jo, year 또는 efYd/mst)로 회수. 여러 조문×여러 귀속연도 매트릭스는 build_application_timetable로 한 번에 조립.")
   return textResponse(truncate(lines.join("\n"), args.full === true ? 80000 : 32000))
 }
@@ -4532,7 +4629,9 @@ export function buildDelegationGuard(body: string, jo: string): string[] {
   const text = String(body || "")
   if (!text) return []
   // v0.23.0(C) — 종결형('…정한다')도 포착(장관/청장은 '이', 위원회는 '가').
-  const toGosi = /(정하여\s*고시|고시로\s*정한다|고시하는\s*바|(?:장관|청장)이\s*정(?:하여|하는|한다)|위원회가\s*정(?:하여|하는|한다))/.test(text)
+  // v0.25.0(리뷰 O2-7) — 누락 종결형 보강: '…이 고시한다/고시하는'(주체 결합 한정)·'고시로 정하는/정하도록/정하여'.
+  //   무주체 '고시한다'는 과발동 위험으로 제외(주체 anchor 유지).
+  const toGosi = /(정하여\s*고시|고시로\s*정(?:한다|하는|하도록|하여)|고시하는\s*바|(?:장관|청장)이\s*(?:정|고시)(?:하여|하는|한다)|위원회가\s*(?:정|고시)(?:하여|하는|한다))/.test(text)
   // v0.23.0(C) — 조사 '이'('부령이 정하는')도 포착.
   const toRule = /(총리령|[가-힣]{2,12}부령)(?:으로|에|이)\s*정(?:한다|하는|하도록|하여)/.test(text)
   if (!toGosi && !toRule) return []
@@ -4718,6 +4817,10 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
     if (sameLaw.length) {
       parts.push(`이 조문은 ${sameLaw.map((t) => t.jo + (t.hang || "")).join(", ")}을(를) 준용 — 대상 본문(get_law_article)·2층 부칙(trace_article_application/build_application_timetable)은 이 조문과 별개다.`)
     }
+    // v0.26.0(리뷰 EF-3 완결성) — 비인접 「법령명」 귀속 모호(lawHint) 타깃도 trace·timetable처럼 명시 라벨(get_law_article만 침묵하던 갭).
+    for (const t of junyongTargets.filter((t) => !t.lawName && t.lawHint)) {
+      parts.push(`⚠ 준용 귀속 주의 ${fmtJunyong(t)} — 본문에 「${t.lawHint}」 언급이 선행하나 조문 참조와 비인접이라 자기 법령(${lawTitle || "?"}) 조문으로 처리. 타법 조문일 가능성 있으면 build_application_timetable(lawName="${t.lawHint}")로 교차 확인.`)
+    }
     for (const t of junyongTargets.filter((t) => t.lawName)) {
       parts.push(`⚠ 타법 준용: ${fmtJunyong(t)} — 현재 법령(${lawTitle || "?"})의 부칙·인벤토리와 별개다. 대상 법령 본문은 korean-law get_law_text, 2층 타임라인은 build_application_timetable(lawName="${t.lawName}")로 별도 확인하라.`)
     }
@@ -4829,6 +4932,8 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
       lines.push(`준용 탐지: ${junyong.map(fmtJunyong).join(", ")} — 2층 타임라인(준용 구조/준용 대상 각각의 부칙)을 모두 점검`)
       // v0.24.0(E2) — 별표는 조문 부칙과 다른 자체 연혁 → 라벨만(E4 미착수).
       for (const t of annexJy) lines.push(`  ⚠ 별표 준용 ${fmtJunyong(t)} — 별표는 자체 개정 연혁(조문 부칙과 별개). korean-law get_annexes로 별도 확인.`)
+      // v0.25.0(리뷰 EF-3) — 비인접 「법령명」 귀속 모호 힌트(자기법 처리 공지).
+      for (const t of junyong.filter((x) => !x.lawName && x.lawHint)) lines.push(`  ⚠ 준용 귀속 주의 ${fmtJunyong(t)} — 본문에 「${t.lawHint}」 언급이 선행하나 비인접이라 자기 법령(${lawTitle}) 조문으로 처리. 타법 가능성 시 build_application_timetable(lawName="${t.lawHint}")로 교차 확인.`)
     }
     const delegation = own.body ? buildDelegationGuard(own.body, jo) : []
     if (delegation.length) delegation.forEach((d) => lines.push(d))
@@ -4863,6 +4968,12 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
         continue
       }
       const ti = articleInfoFromXml(cr.ctx.xml, t.jo!, t.hang)
+      // v0.25.0(리뷰 A6+A3) — 타법 provenance(MST·URL) 병기 + '현행 시행본 기준 해소' caveat.
+      lines.push(`  타법 출처: ${cr.ctx.lawTitle} (MST ${cr.ctx.mst}) ${displayLawServiceUrl(cr.ctx.mst)} — ⚠ 타법은 현행(오늘) 시행본 기준으로 해소됨: 과거 귀속연도는 타법 조문번호 재편(전부개정 등) 가능.`)
+      // v0.25.0(리뷰 A4) — 존재게이트: 미발견·삭제 라벨 강등(부칙 스캔은 유지 — 삭제 조문 연혁은 유효).
+      if (ti.status !== "found") {
+        lines.push(`  ⚠ 준용 대상 ${fmtJunyong(t)} — ${cr.ctx.lawTitle}에서 ${ti.status === "deleted" ? `삭제됨 <${ti.deletedDate || "?"}>` : "미발견(조번호 이동·재편 가능)"} — 아래 부칙표의 동번호 언급은 별도 확인 필수.`)
+      }
       collectFor(t.jo!, t.hang, ti.dates, `${fmtJunyong(t)} 준용대상`, cr.ctx.units)
       lines.push(`개정 인벤토리(준용대상 ${fmtJunyong(t)} @${cr.ctx.lawTitle}): ${ti.dates.length ? ti.dates.join(", ") : "없음"}`)
     }
@@ -4884,7 +4995,11 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
         lines.push("   └▶ ⚠ 사정거리: 이 개정령은 대상 조항을 고친 흔적이 없음 — 경과조치는 자기 개정령의 개정규정만 유예하므로 후행 개정을 선제 유예할 수 없다.")
       }
     }
-    if (entries.length > shown.length) lines.push(`… 외 ${entries.length - shown.length}건 생략(full=true로 더 보기).`)
+    if (entries.length > shown.length) {
+      // v0.25.0(리뷰 A2) — full=false slice에서 준용 층 entries가 통째로 밀릴 때 무언 드롭 금지(명시 라벨).
+      const omittedVia = entries.slice(shown.length).filter((e) => e.via).length
+      lines.push(`… 외 ${entries.length - shown.length}건 생략(full=true로 더 보기${omittedVia ? ` — ⚠ 생략분에 준용 대상 층 ${omittedVia}건 포함(타법 층 포함 가능)` : ""}).`)
+    }
     lines.push("── 귀속연도별 판단노트 ──")
     for (const y of years) {
       const notes: string[] = []
