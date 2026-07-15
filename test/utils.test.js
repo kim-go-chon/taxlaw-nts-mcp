@@ -895,6 +895,18 @@ test("interpretiveForkGuard: 고용 세액공제 사후관리 '적용하지 아�
   assert.ok(!g.some((l) => l.includes("해석 분기 가드(폐쇄 호구분형)")))
 })
 
+// v0.26.1(리뷰 O2-6) — '공제하지 아니'(공제 배제형)·'줄어든'(감소형) 문형 갭 보강
+test("interpretiveForkGuard(O2-6): '공제하지 아니'+'줄어든' 조합도 발화(종전 '적용하지'만 포착)", () => {
+  const t = "상시근로자 수가 직전 과세연도보다 줄어든 경우에는 제1항제1호에 따른 금액을 공제하지 아니한다."
+  const g = buildInterpretiveForkGuard(t, "제29조의8")
+  assert.ok(g.length > 0, "공제하지 아니+줄어든 4-AND 충족 시 발화")
+  assert.ok(g[0].includes("해석 분기 가드"))
+})
+test("interpretiveForkGuard(O2-6): '납부하여야'만으로는 과발동 안 함(4-AND 유지)", () => {
+  // 공제·배제·사후관리 문언 없이 납부의무만 있으면 비발화
+  assert.equal(buildInterpretiveForkGuard("세액을 납부하여야 한다.", "제5조").length, 0)
+})
+
 // v0.20.1 — 폐쇄 호구분형 신규 가드(구 조특법 §30의4② 사보 2차 사후관리)
 test("interpretiveForkGuard: 폐쇄 호구분형('각 호의 구분에 따른 금액…상당액') → 신규 가드 발화", () => {
   const t =

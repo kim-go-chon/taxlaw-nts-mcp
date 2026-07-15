@@ -39,7 +39,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.26.0"
+const VERSION = "0.26.1"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -3658,10 +3658,11 @@ export function buildLaterRevisionGuard(opts: {
 export function buildInterpretiveForkGuard(text: string, jo: string): string[] {
   if (!text) return []
   const lines: string[] = []
-  const hasExclusion = /적용하지\s*(?:아니|않)/.test(text) // 적용하지 아니한다/아니하고/아니하며/않는다/않으며
+  // v0.26.1(리뷰 O2-6) — '공제하지 아니'(공제 배제형)도 포착. '납부하여야'는 모든 납부의무 과발동이라 제외.
+  const hasExclusion = /(?:적용|공제)하지\s*(?:아니|않)/.test(text) // 적용/공제하지 아니한다/아니하고/않는다 등
   const refsClause = /제\d+호|제\d+항/.test(text)
   const isCredit = /공제/.test(text)
-  const isSunset = /감소|추징|사후관리/.test(text)
+  const isSunset = /감소|줄어든|추징|사후관리/.test(text) // v0.26.1(리뷰 O2-6) — '줄어든'(근로자 수 감소형) 추가
   if (hasExclusion && refsClause && isCredit && isSunset) {
     lines.push(
       "── 해석 분기 가드(세액공제 사후관리) ──",
@@ -4212,7 +4213,7 @@ export function checkAmendmentBinding(promulgationDate: string, inventoryDates: 
 // 본문에서 '…제N조(의M)(제K항)…준용' 패턴 추출(자기 자신 제외, 최대 3건).
 // '준용' 앵커에서 역방향으로 가장 가까운 조문 참조를 채택(자기 조문 참조가 뒤의 실제 준용 대상을 삼키지 않도록).
 // 준용 구조는 '준용하는 조문'과 '준용 대상 조문' 두 층의 부칙이 적용시기를 따로 정할 수 있다(2층 타임라인).
-export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string; lawHint?: string }
+export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string; lawHint?: string; joRange?: string }
 export function extractJunyongTargets(articleText: string, selfJo: string): JunyongTarget[] {
   const out: JunyongTarget[] = []
   const seen = new Set<string>()
@@ -4231,7 +4232,7 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
     return adjacent ? { name: last[1] } : { rejected: last[1] }
   }
   // shape 하위호환: 값이 있는 필드만 포함(기존 소비자·테스트의 {jo,hang} deepEqual 보존).
-  const push = (jo: string | undefined, hang: string | undefined, lawName: string | undefined, annex?: string, lawHint?: string) => {
+  const push = (jo: string | undefined, hang: string | undefined, lawName: string | undefined, annex?: string, lawHint?: string, joRange?: string) => {
     const key = `${lawName || ""}|${jo || ""}${hang || ""}|${annex || ""}`
     if (seen.has(key)) return
     seen.add(key)
@@ -4241,6 +4242,7 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
     if (lawName) t.lawName = lawName
     if (annex) t.annex = annex
     if (lawHint) t.lawHint = lawHint
+    if (joRange) t.joRange = joRange
     out.push(t)
   }
   for (const m of flat.matchAll(/준용/g)) {
@@ -4255,6 +4257,10 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
       const lawName = lb.name
       // 자기 조문 제외는 '같은 법령'일 때만 — 타법의 동일 조번호는 별개 대상.
       if (!lawName && jo === selfKey) continue
+      // v0.26.1(리뷰 라이브) — 조-범위 준용 "제N조부터 제M조까지"(법인세법 §14~54 통째 준용 류)는 대량 편입이라
+      //   각 조 개별 전개 대신 마지막 조를 대표로 2층 추적하되 joRange로 범위를 명시(마지막 조만 표시되는 무언 누락 방지).
+      const joRangeM = ctx.match(/(제\d+조(?:의\d+)?)부터(제\d+조(?:의\d+)?)까지/)
+      const joRange = joRangeM && !last[2] && last[1] === joRangeM[2] ? `${joRangeM[1]}~${joRangeM[2]}` : undefined
       // v0.23.0(B) — 범위 준용 "제N항부터 제M항까지" → 각 항 개별 전개(시작 항이 anchor와 일치할 때만).
       const range = ctx.match(/제(\d+)항부터제(\d+)항까지/)
       if (range && last[2] === `제${range[1]}항`) {
@@ -4265,7 +4271,7 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
           push(jo, last[2] || undefined, lawName, undefined, lb.rejected)
         }
       } else {
-        push(jo, last[2] || undefined, lawName, undefined, lb.rejected)
+        push(jo, last[2] || undefined, lawName, undefined, lb.rejected, joRange)
       }
     } else {
       // v0.24.0(E1) — 조문 ref 없이 별표만 준용("「X법」 별표3을 준용") — 종전엔 silent skip.
@@ -4283,7 +4289,9 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
 // v0.24.0(E2) — 준용 대상 표시 라벨(타법=「법령명」 병기, 별표 포함).
 export function fmtJunyong(t: JunyongTarget): string {
   const ref = `${t.jo || ""}${t.hang || ""}${t.annex || ""}`
-  return t.lawName ? `「${t.lawName}」${ref}` : ref
+  const base = t.lawName ? `「${t.lawName}」${ref}` : ref
+  // v0.26.1 — 조-범위 준용은 대표 조 뒤에 범위 명시(마지막 조만 보이는 오해 방지).
+  return t.joRange ? `${base}(범위 준용 ${t.joRange} — 대표 ${t.jo}만 2층 추적)` : base
 }
 
 // v0.21.0(#G8) — 순수 함수(네트워크 무관)라 export + 단위테스트 대상. 의미론 보강:
@@ -4491,7 +4499,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
       jctx = cr.ctx
       viaLabel = `「${t.lawName}」`
     }
-    jBlocks.push(`▷ ${jo} 본문이 ${viaLabel}${t.jo}${t.hang || ""}을(를) 준용 — 적용시기는 '준용 구조(${jo})'와 '준용 대상(${viaLabel}${t.jo}) 내용' 두 층의 부칙이 따로 정할 수 있다(2층 타임라인). 두 층 모두 점검하라.`)
+    jBlocks.push(`▷ ${jo} 본문이 ${viaLabel}${t.jo}${t.hang || ""}을(를) 준용 — 적용시기는 '준용 구조(${jo})'와 '준용 대상(${viaLabel}${t.jo}) 내용' 두 층의 부칙이 따로 정할 수 있다(2층 타임라인). 두 층 모두 점검하라.${t.joRange ? ` ⚠ 범위 준용 ${t.joRange} — 대표 ${t.jo}만 2층 추적(전체 조는 build_application_timetable/korean-law로).` : ""}`)
     // v0.25.0(리뷰 EF-3) — 비인접 「법령명」 귀속 모호 힌트(자기법 처리 공지, 무언 강등 금지).
     if (!t.lawName && t.lawHint) {
       jBlocks.push(`  ⚠ 준용 귀속 주의: 본문에 「${t.lawHint}」 언급이 선행하나 조문 참조와 비인접 — 자기 법령(${lawTitle}) 조문으로 처리함. 타법 조문일 가능성 있으면 build_application_timetable(lawName="${t.lawHint}")로 교차 확인.`)
@@ -4829,11 +4837,16 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
     }
     lines.push(...parts)
   }
+  const bodyCap = args.full === true ? 16000 : 6000
   lines.push(
     "",
     "── 본문 ──",
-    truncate(text, args.full === true ? 16000 : 6000),
+    truncate(text, bodyCap),
   )
+  // v0.26.1(리뷰 O2-2) — 본문 절단 시 능동 재조회 안내(후미 항·호·계산식 소실 대비). cap 상향은 금지(토큰).
+  if (text.length > bodyCap) {
+    lines.push(`⚠ 본문 ${text.length.toLocaleString()}자 중 ${bodyCap.toLocaleString()}자만 표시(절단) — 후미 항·호·계산식 잘림 가능.${args.full === true ? " 특정 항은 trace_article_application(hang=)·diff_article_versions로 확인." : " full=true로 재조회하거나 특정 항을 지정하라."}`)
+  }
   if (imageUrls.length) {
     lines.push("", `── 수식 이미지(${imageUrls.length}) — 다운로드 후 Read 또는 브라우저로 확인 ──`)
     imageUrls.forEach((u) => lines.push(u))

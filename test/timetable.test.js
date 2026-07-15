@@ -211,6 +211,17 @@ test("findArticleInXml(EF-2 v0.26.0): <조문내용>에 속성(<조문내용 ...
   assert.equal(findArticleInXml(delXml, "제9조").status, "deleted")
 })
 
+// ── v0.26.1(리뷰 라이브): 조-범위 준용 라벨(조특령 §100의16⑥ → 법인세법 §14~54 실사례) ──
+test("extractJunyongTargets(v0.26.1): 조-범위 '제N조부터 제M조까지'는 대표 조+joRange 라벨", () => {
+  const body = "준청산소득금액을 계산할 때 「법인세법」 제14조부터 제54조까지를 준용한다."
+  assert.deepEqual(extractJunyongTargets(body, "제100조의16"), [{ jo: "제54조", lawName: "법인세법", joRange: "제14조~제54조" }])
+})
+test("fmtJunyong(v0.26.1): joRange 있으면 범위 준용 명시", () => {
+  assert.match(fmtJunyong({ jo: "제54조", lawName: "법인세법", joRange: "제14조~제54조" }), /범위 준용 제14조~제54조/)
+  // joRange 없으면 종전 포맷 불변(하위호환)
+  assert.equal(fmtJunyong({ jo: "제54조", lawName: "법인세법" }), "「법인세법」제54조")
+})
+
 // ── v0.25.0(리뷰 TK-1): 준용 체인 블록 공유상한 ──
 test("capJunyongBlocks(TK-1): 상한 이하 배열은 원본 그대로", () => {
   const blocks = ["a", "b", "c"]

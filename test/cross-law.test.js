@@ -161,3 +161,11 @@ test("C7(EF-3 완결성): get_law_article이 lawHint 귀속 모호를 ⚠ 라벨
   assert.ok(text.includes("준용 귀속 주의"), "lawHint ⚠ 라벨 렌더(수정 전엔 자기법으로 침묵)")
   assert.ok(text.includes("「소득세법」"), "귀속 모호 법령명 표기")
 })
+
+// ── C8(v0.26.1 리뷰 O2-2): get_law_article 본문 표시상한 초과 절단 시 능동 재조회 노트 ──
+LAWS["8010"] = lawXml({ title: "O2법", articles: ["제3조(정의) " + "가".repeat(7000)] })
+test("C8(O2-2): 본문 6000자 초과 시 절단 능동 노트", async () => {
+  const text = textOf(await getLawArticle({ jo: "제3조", mst: "8010", oc: "OCO2" }))
+  assert.ok(text.includes("표시(절단)"), "절단 능동 노트(수정 전엔 마커만·능동 안내 없음)")
+  assert.ok(text.includes("full=true"), "재조회 안내")
+})

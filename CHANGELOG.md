@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.1] - 2026-07-15
+
+### Fixed — v0.26.0 배포 후 라이브 검증(실 MCP) 반영 (저비용 확정 3건)
+- 조-범위 준용(라이브 발견): `extractJunyongTargets`가 "제N조부터 제M조까지 준용"(예: 조특령 §100의16⑥ → 법인세법 §14~54 통째 준용)에서 마지막 조만 표시하던 것 → `joRange`로 범위 명시(대표 조만 2층 추적, 전체 조는 build_application_timetable 안내). trace·timetable·get_law_article(fmtJunyong) 렌더.
+- O2-2: `get_law_article` 본문이 표시상한(full 16k/기본 6k) 초과 절단 시 능동 재조회 안내(후미 항·호·계산식 소실 대비). cap 상향은 금지(토큰).
+- O2-6: `buildInterpretiveForkGuard` — '공제하지 아니'(공제 배제형)·'줄어든'(근로자 수 감소형) 포착 추가('납부하여야'는 과발동으로 제외, 4-AND 게이트 유지).
+
+### 라이브 검증 결과(배포후 큐)
+- v0.26.0 A3 caveat·A6 provenance·EF-3 과강등 방지 = 실조문(조특령 §100의16⑥ → 「법인세법」)에서 정상 작동 확인.
+- A3 국세징수법 2020 전부개정 조번호 재편 위험은 실재하나 좁음(라벨로 충분) → 시점맞춤 재fetch는 예산 충돌로 보류.
+- 보류(사유): A3 시점맞춤·EF-1(cross depth2)·E4(별표 연혁, DRF 스키마 실측 필요)·F-full(집행기준 PDF 서버추출, 시각 Read 상위호환).
+
 ## [0.26.0] - 2026-07-15
 
 ### Fixed — 수정배치 재검증(Codex gpt-5.6-sol + Fable) 후속 완결성 3건
