@@ -5,6 +5,8 @@ process.env.TAXLAW_MCP_TEST_MODE = "1"
 
 const {
   truncate,
+  budgetedJoin,
+  fitBlocks,
   decodeHtml,
   htmlToText,
   cleanText,
@@ -984,4 +986,68 @@ test("compactBodyText(O2-1): 관련법령 절단 시 생략 마커(무언 손실
   const out = compactBodyText("1. 사실관계\n본문\n3. 관련법령\n소득세법 제1조 전문", false)
   assert.ok(out.includes("생략") && out.includes("full=true"))
   assert.ok(!out.includes("소득세법 제1조"))
+})
+
+// ── v0.27.0(리뷰 P2) OC 마스킹 우회 형태 ────────────────────────────────
+test("redactSecrets(v0.27.0): HTML 엔티티·선행구분자 없음·JSON 표기 우회 차단", () => {
+  for (const s of ["?OC=secret", "&OC=secret", "?a=1&amp;OC=secret", "OC=secret", '"OC":"secret"']) {
+    assert.ok(!redactSecrets(s).includes("secret"), `미마스킹: ${s} → ${redactSecrets(s)}`)
+  }
+})
+
+test("redactSecrets(v0.27.0): OC 아닌 파라미터는 보존(과발동 방지)", () => {
+  assert.equal(redactSecrets("?doc=secret"), "?doc=secret")
+  assert.ok(redactSecrets("?MST=12345&target=law").includes("12345"))
+})
+
+// ── v0.27.1(리뷰 P1) 경고 우선 예산 배분 ────────────────────────────────
+test("budgetedJoin: 본문이 상한을 초과해도 안전 경고는 살아남는다", () => {
+  // 실제 시나리오: 원문 45,000자 + 요지·회신·판례목록이 더해져 상한 50,000을 넘는 경우.
+  const head = ["A".repeat(45000), "요지 ".repeat(2000), "판례 ".repeat(2000)]
+  const guard = ["⚠ 사문화 경고", "⚠ 기본통칙 현행 번호 미확인", "강제 절차: ..."]
+  const out = budgetedJoin(head, guard, 50000)
+  for (const g of guard) assert.ok(out.includes(g), `경고 소실: ${g}`)
+  assert.ok(out.includes("[truncated"), "본문이 잘렸으면 절단 표기가 있어야 함")
+  assert.ok(out.length <= 50000 + 200, `상한 초과: ${out.length}`)
+})
+
+test("budgetedJoin: 종전 방식이었다면 경고가 사라졌을 입력에서 경고 보존 확인", () => {
+  const head = ["A".repeat(50000)]
+  const guard = ["⚠ 반드시 살아남아야 하는 경고"]
+  // 종전: truncate([head, guard].join("\n"), 50000) → 경고가 꼬리라 절단됨
+  const oldWay = truncate([...head, ...guard].join("\n"), 50000)
+  assert.ok(!oldWay.includes("반드시 살아남아야"), "전제 확인: 종전 방식에서는 경고가 잘려야 함")
+  // 신규: 경고 우선 예산
+  assert.ok(budgetedJoin(head, guard, 50000).includes("반드시 살아남아야"))
+})
+
+test("budgetedJoin: 경고가 없으면 종전과 동일하게 본문만 절단(회귀)", () => {
+  assert.equal(budgetedJoin(["짧은 본문"], [], 50000), "짧은 본문")
+  assert.ok(budgetedJoin(["B".repeat(60000)], [], 50000).includes("[truncated"))
+})
+
+test("budgetedJoin: 본문이 짧으면 아무것도 자르지 않는다", () => {
+  const out = budgetedJoin(["본문"], ["⚠ 경고"], 50000)
+  assert.equal(out, "본문\n⚠ 경고")
+})
+
+// ── v0.27.1(리뷰 P2) 블록 예산 채우기 ──────────────────────────────────
+test("fitBlocks: 예산에 맞춰 채우고 생략 개수를 정확히 보고", () => {
+  const blocks = Array.from({ length: 10 }, () => "X".repeat(1000))
+  const { kept, omitted } = fitBlocks(blocks, 3500)
+  assert.equal(kept.length, 3)
+  assert.equal(omitted, 7)
+  assert.equal(kept.length + omitted, blocks.length, "표시+생략이 전체와 불일치")
+})
+
+test("fitBlocks: 예산이 0이어도 최소 1건은 렌더(빈 응답 금지)", () => {
+  const { kept, omitted } = fitBlocks(["X".repeat(9999)], 0)
+  assert.equal(kept.length, 1)
+  assert.equal(omitted, 0)
+})
+
+test("fitBlocks: 전부 들어가면 생략 0", () => {
+  const { kept, omitted } = fitBlocks(["a", "b"], 1000)
+  assert.deepEqual(kept, ["a", "b"])
+  assert.equal(omitted, 0)
 })

@@ -18,6 +18,7 @@ const {
   findArticleInXml,
   filterVersionsByName,
   filterVersionsByNameStrict,
+  lawNameFallbackNote,
   capJunyongBlocks,
 } = await import("../build/index.js")
 
@@ -193,15 +194,25 @@ test("extractJunyongTargets(EF-3): 정의목적 비인접 「타법」은 오귀
   assert.deepEqual(extractJunyongTargets(body, "제100조의32"), [{ jo: "제95조", lawHint: "소득세법" }])
 })
 test("extractJunyongTargets(EF-3): 인접 연쇄(제N조 및 제M조)는 타법 귀속 유지", () => {
+  // v0.27.0 — 이 테스트의 의도는 '연결사(및)를 넘어 「소득세법」 귀속이 유지되는가'(EF-3 over-reject 방지)다.
+  //   종전 기대값이 1건이었던 것은 열거 추출 버그(마지막 참조만 채택)를 그대로 굳혀둔 것으로,
+  //   제95조도 정당한 준용 대상이라 무경고로 소실되고 있었다. 귀속 검증 의도는 그대로 두고 건수만 정정.
   const body = "「소득세법」 제95조 및 제97조를 준용한다."
-  assert.deepEqual(extractJunyongTargets(body, "제55조"), [{ jo: "제97조", lawName: "소득세법" }])
+  assert.deepEqual(extractJunyongTargets(body, "제55조"), [
+    { jo: "제95조", lawName: "소득세법" },
+    { jo: "제97조", lawName: "소득세법" },
+  ])
 })
 
 // ── v0.26.0(리뷰 완결성): EF-3 whitelist 'ㆍ'(U+318D) + EF-2 앵커 attr 관용 ──
 test("extractJunyongTargets(EF-3 v0.26.0): 인접 연쇄 구분자 'ㆍ'(U+318D)도 타법 귀속 유지(over-reject 방지)", () => {
   // 실 법문 다빈도 가운뎃점(U+318D)이 whitelist에 없어 "제95조ㆍ제97조"를 자기법으로 과강등하던 것 수정.
   const body = "「소득세법」 제95조ㆍ제97조를 준용한다."
-  assert.deepEqual(extractJunyongTargets(body, "제55조"), [{ jo: "제97조", lawName: "소득세법" }])
+  // v0.27.0 — 위와 동일: whitelist 'ㆍ' 귀속 유지 검증은 그대로, 열거 건수만 정정(제95조 소실 수정).
+  assert.deepEqual(extractJunyongTargets(body, "제55조"), [
+    { jo: "제95조", lawName: "소득세법" },
+    { jo: "제97조", lawName: "소득세법" },
+  ])
 })
 test("findArticleInXml(EF-2 v0.26.0): <조문내용>에 속성(<조문내용 ...>)이 있어도 조문·삭제 감지", () => {
   const xml = '<법령><조문단위><조문내용 lang="ko"><![CDATA[제5조(정의) 본문]]></조문내용></조문단위></법령>'
@@ -317,4 +328,70 @@ test("targetYearApplicationNote(#G8): 경과조치 범위 문언은 정확일치
   const exact = targetYearApplicationNote("경과조치(종전규정)", "2024년 개시 과세연도분은 개정규정에도 불구하고 종전의 규정에 따른다.", 2024, "", 3)
   assert.match(exact, /포함 → 원칙 종전규정/)
   assert.equal(/범위 문언/.test(exact), false)
+})
+
+// v0.27.0(리뷰 P1) — 제명 정확일치 0건 폴백의 '무경고' 제거.
+// filterVersionsByName은 가용성을 위해 원본을 그대로 돌려주지만(기존 동작 유지),
+// 그 사실을 호출부가 사용자에게 알릴 수 있어야 한다.
+test("lawNameFallbackNote: 정확일치 0건이면 경고 문자열 반환", () => {
+  const rows = [{ mst: "111", lawName: "요청법 시행령", enforceDate: "20250101", promDate: "20241231" }]
+  const note = lawNameFallbackNote(rows, "요청법")
+  assert.ok(note, "정확일치 0건인데 경고가 없음")
+  assert.match(note, /제명 정확일치 0건/)
+  assert.match(note, /요청법 시행령/, "실제 검색된 제명을 보여줘야 함")
+  // 폴백 자체는 그대로 유지(회귀 금지)
+  assert.equal(filterVersionsByName(rows, "요청법").length, 1)
+})
+
+test("lawNameFallbackNote: 정확일치가 있으면 침묵", () => {
+  const rows = [
+    { mst: "111", lawName: "요청법", enforceDate: "20250101", promDate: "20241231" },
+    { mst: "222", lawName: "요청법 시행령", enforceDate: "20250101", promDate: "20241231" },
+  ]
+  assert.equal(lawNameFallbackNote(rows, "요청법"), null)
+})
+
+test("lawNameFallbackNote: 빈 목록·제명 미상은 침묵(과발동 방지)", () => {
+  assert.equal(lawNameFallbackNote([], "요청법"), null)
+  assert.equal(lawNameFallbackNote([{ mst: "1", lawName: "", enforceDate: "", promDate: "" }], "요청법"), null)
+})
+
+// ── v0.27.0(리뷰 P1) 열거형 준용 ────────────────────────────────────────
+// 종전: 준용 앵커마다 '가장 가까운 참조' 1건만 채택 → 열거 대상이 무경고로 소실.
+test("extractJunyongTargets(v0.27.0): 자기법 열거 3건 전부 추출", () => {
+  assert.deepEqual(extractJunyongTargets("제10조, 제11조 및 제12조를 준용한다.", "제99조"), [
+    { jo: "제10조" }, { jo: "제11조" }, { jo: "제12조" },
+  ])
+})
+
+test("extractJunyongTargets(v0.27.0): 가운뎃점(ㆍ) 열거도 전부 추출", () => {
+  assert.deepEqual(extractJunyongTargets("제95조ㆍ제97조를 준용한다.", "제99조"), [
+    { jo: "제95조" }, { jo: "제97조" },
+  ])
+})
+
+test("extractJunyongTargets(v0.27.0): 타법 열거는 각자 법령명 귀속", () => {
+  const r = extractJunyongTargets("「가법」제11조, 「나법」제12조를 준용한다.", "제99조")
+  assert.equal(r.length, 2)
+  assert.deepEqual(r.map((t) => t.lawName), ["가법", "나법"])
+})
+
+test("extractJunyongTargets(v0.27.0): 산문이 끼면 체인 중단(과확장 방지)", () => {
+  // 제10조는 별개 문장 성분 — 준용 대상 집합이 아니다.
+  const r = extractJunyongTargets("제10조에 불구하고 제20조를 준용한다.", "제99조")
+  assert.deepEqual(r, [{ jo: "제20조" }])
+})
+
+test("extractJunyongTargets(v0.27.0): 조-범위 준용은 대표 1건 유지(회귀)", () => {
+  assert.deepEqual(extractJunyongTargets("제14조부터 제54조까지를 준용한다.", "제99조"), [
+    { jo: "제54조", joRange: "제14조~제54조" },
+  ])
+})
+
+test("extractJunyongTargets(v0.27.0): 상한 초과 시 마지막 대상에 capped 라벨", () => {
+  const text = "「가법」제11조, 「가법」제12조, 「가법」제13조, 「가법」제14조, 「가법」제15조, 「가법」제16조, 「가법」제17조, 「가법」제18조를 준용한다."
+  const r = extractJunyongTargets(text, "제99조")
+  assert.equal(r.length, 6, `상한 6건 초과: ${JSON.stringify(r)}`)
+  assert.equal(r[r.length - 1].capped, true, "상한 도달이 무라벨로 절단됨")
+  assert.match(fmtJunyong(r[r.length - 1]), /상한 도달/)
 })

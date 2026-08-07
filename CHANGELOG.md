@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.27.2] - 2026-08-07
+
+리뷰 보류분 중 마지막 P1 — **응답 body 읽기가 타임아웃·도구 예산 밖이라 무한 대기하던 것** 수정. 반증 테스트로 종전 코드가 실제로 멈추는 것을 확인한 뒤 고쳤다.
+
+### Fixed — 응답 body 무한 대기 (P1)
+- **증상**: `fetchWithRetry`가 헤더 수신 직후 `clearTimeout(timeout)`하고 `Response`를 반환했다. 이후 호출부의 `.json()`/`.text()`는 **15초 fetch 타임아웃도 90초 도구 예산도 적용받지 못했다**. 서버가 헤더만 200으로 보내고 본문 스트림을 끝내지 않으면 도구 호출이 사실상 무한 대기하고, MCP 콜이 영영 반환되지 않아 **에이전트가 영구히 막힌다**(대화형에서 최악의 실패 모드).
+- **반증 확인(counterfactual)**: 빌드 산출물을 종전 로직(`clearTimeout` → body 읽기)으로 되돌린 뒤 동일 테스트를 실행 → **30초 시간초과, 완료된 테스트 0건**(exit 124). 신규 로직에서는 동일 테스트가 **0.88초에 4/4 통과**. 즉 이 테스트는 해당 결함을 실제로 검출한다.
+- **수정**: 재시도 루프 코어를 `fetchWithRetryCore(url, init, retries, read)`로 파라미터화해 **body 읽기를 `clearTimeout` 이전**, 같은 `AbortController` 아래에서 수행한다. 본문 스트림이 멈추면 abort가 스트림까지 실제로 끊는다.
+  - `fetchTextWithRetry(url, init)` 신설 → body를 deadline 안에서 읽는 경로. `postTaxlawActionAttempt`(action.do JSON)·`getTaxlawPageText`·`fetchMolegXml` 3곳 마이그레이션. 이미 읽은 body를 쓰므로 해당 경로의 `consume(response)`는 제거.
+  - `fetchWithRetry(url, init)`는 `read=null` 래퍼로 존치 — 세션 초기화는 헤더(set-cookie)만 쓰고 body를 읽지 않으므로 종전 동작 그대로다.
+  - 재시도 대상 응답(429/503/504)의 `consume`도 타이머 안으로 이동(종전엔 `clearTimeout` 이후라 같은 구멍이 있었다).
+- **부수**: `FETCH_TIMEOUT_MS`를 `fetchTimeoutMs()`로 감싸 `TAXLAW_FETCH_TIMEOUT_MS`로 조정 가능(기본 15,000ms, 0·음수·비수치는 기본값). 기존 튜너블(`TAXLAW_TOOL_BUDGET_MS`·`TAXLAW_RECENT_THRESHOLD_YEARS`)과 동일한 함수형 패턴이며, 단위테스트가 짧은 타임아웃으로 abort 전달을 검증하는 데 쓴다.
+
+### Tests
+- 320 → **324**. `test/fetch-deadline.test.js`(신규): body 정지 시 abort 전달·소요시간 상한 / `read=null`이면 body 미접촉(세션 경로 회귀) / 정상 응답 body 반환 / `fetchTimeoutMs` env override·잘못된 값 fallback.
+- 핵심 단언은 `abortedDuringBody` — **body 읽기 시점에도 타이머가 살아 있었다는 증거**다(단순 거부 여부만 보면 종전 코드도 통과할 수 있다).
+- `npx tsc --noEmit` 통과, `npm test` 324/324 통과.
+
+### 보류 (사유 유지)
+- **tools/list `inputSchema` 13,289자 감량**(P2): 도구 설명은 문서가 아니라 에이전트 행동 지시라 줄이면 동반 호출·가드 안내가 누락될 위험. INSTRUCTIONS도 1,999자로 한계선(2,000)에 붙어 옮길 여지 없음. 별도 큐: `call_taxlaw_extra.name` enum 부재(토큰이 아닌 기계 검증 문제).
+- 기존 보류 유지: A3 시점맞춤 · EF-1 · E4(별표 연혁) · F-full · `credit-eligibility.json` 연계표 정확도 재검토(`provisional: true`).
+
+## [0.27.1] - 2026-08-07
+
+v0.27.0 리뷰 잔여분 중 '뿌리가 겹치는 4건' 처리. 핵심은 **꼬리 절단으로 안전 신호가 소실되던 두 지점**(출력 조립 순서 결함)이다. 나머지 2건(응답 body 무한대기, inputSchema 감량)은 별도 사이클로 보류.
+
+### Fixed — 안전 신호 소실 (P1)
+- **안전 경고가 본문에 밀려 잘리던 것 차단** `get_taxlaw_document_text`: 종전 조립은 `[요지·회신·원문(full이면 45,000자)·판례목록] → [연도검증·구조개편·기본통칙·holding 경고] → truncate(50,000/30,000)` 이었다. full=true면 본문만으로 45,000자를 써 **여유가 ~5,000자뿐**이라 회신문이 조금만 길어도 경고 4종이 통째로 사라졌다. 하필 full=true는 인용을 진지하게 검증할 때 쓰는 옵션이라 **가장 필요한 순간에 가드가 없어지는 역전**이었다. 게다가 본문 절단은 `[truncated to N chars]`를 남기지만 **경고 소실은 아무 흔적도 안 남겨** '경고 없음 = 안전'으로 오독된다 — 이 비대칭이 핵심.
+  → 경고를 `guardLines`로 분리 조립하고 신규 순수함수 `budgetedJoin(head, guard, cap)`으로 **경고 예산을 먼저 확보한 뒤 본문을 남은 예산으로** 자른다.
+- **"표시 N개"와 실제 렌더 개수 불일치** `get_law_addenda`: `maxUnits`개를 각 `perUnit`까지 전부 조립한 뒤 마지막에 한 번 잘랐다. full=true면 최대 50×8,000=**400,000자를 조립해 60,000자 상한에서 ~7개만 생존**하는데 헤더는 `표시 50개`라고 보고했고, 꼬리의 `… 외 N개 생략` 안내마저 함께 잘려 **사용자가 '부칙 전부를 확인했다'고 오인**할 수 있었다(적용시기 판정에서 부칙 누락은 결론을 바꾼다).
+  → 신규 순수함수 `fitBlocks(blocks, budget)`로 예산에 맞춰 채우고, **실제 렌더 개수**를 헤더에 반영하며 미표시분은 상단 ⚠ + 하단 안내 양쪽에 표기. `maxUnits`로 잘린 분과 예산으로 잘린 분을 합산해 보고한다.
+
+### Fixed — 성능·위생 (P2)
+- **타법 준용 해소 병렬화** `makeCrossResolver`에 `prewarm()` 추가: memo가 Promise를 담으므로 루프 진입 전 서로 다른 타법명을 await 없이 태워두면 그 시점부터 병렬로 달린다. 종전엔 서로 다른 타법 2건이 각각 ~15초면 **30초가 직렬 소모**됐다. `trace_article_application`·`build_application_timetable` 두 지점 배선. 상한(2) 소진 순서는 루프 순서와 동일하게 유지해 기존 선택과 일치.
+- **캐시 키에서 OC(인증키) 제거** 신규 `molegCacheKey(url)`: 종전 `moleg:${url}`은 OC를 키에 그대로 실어 ① 응답은 OC와 무관한 공개 법령 XML인데 캐시가 분산되고 ② **비밀키가 Map 키로 24시간 메모리에 잔류**했다. OC 파라미터만 치환한 canonical URL을 키로 쓴다(응답을 결정하는 나머지 파라미터는 유지).
+
+### Tests
+- 313 → **320** (신규 7건). `utils.test.js`: `budgetedJoin` 4건(본문 초과 시 경고 생존 / **종전 방식이었다면 잘렸을 입력**을 대조군으로 명시 / 경고 없을 때 회귀 / 무절단), `fitBlocks` 3건(예산 채움·개수 정합, 최소 1건 보장, 전량 수용).
+- `npx tsc --noEmit` 통과, `npm test` 320/320 통과.
+
+### 보류 (사유 명시)
+- **응답 body 읽기가 fetch 타임아웃·도구 예산 밖**(P1): `fetchWithRetry`가 헤더 수신 직후 `clearTimeout`하고 Response를 반환해, 호출부의 `.json()`/`.text()`가 무한 대기할 수 있다. 영향(에이전트 영구 대기)은 크지만 발생 조건이 좁고(헤더는 정상·본문만 정지) **재현하지 못했다(코드 판독으로만 확인)**. fetch 계층을 'fetch+body를 단일 deadline으로 묶는' 형태로 바꾸고 호출부를 마이그레이션해야 해 별도 작업.
+- **tools/list `inputSchema` 13,289자 감량**(P2): 이득은 세션당 ~2,000토큰인데, 도구 설명은 문서가 아니라 **에이전트 행동 지시**라 줄이면 해당 도구에서 동반 호출·가드 안내가 누락될 위험이 있다. INSTRUCTIONS도 1,999자로 한계선(2,000)에 붙어 있어 옮길 여지가 없다. 다만 `call_taxlaw_extra.name`에 enum이 없어 기계 검증이 안 되는 것은 토큰이 아닌 정확성 문제로 별도 큐.
+- 기존 보류 유지: A3 시점맞춤 · EF-1 · E4(별표 연혁) · F-full · `credit-eligibility.json` 연계표 정확도 재검토(`provisional: true`).
+
+## [0.27.0] - 2026-08-07
+
+4관점 코드리뷰(Opus 독립 리뷰 + Codex gpt-5.6-sol 교차) 반영 — 효과성 P1 5건 + P2 5건. 모든 발견은 빌드된 모듈을 직접 실행해 재현 확인 후 수정했다. P0 없음.
+
+### Fixed — 인용·판정 정확성 (P1)
+- **합성 인용 차단** `citation-extract.ts` `extractLawArticleRefs`: 법령명 뒤 80자에서 조·항·호를 각각 **독립 첫 매칭**해 결합하던 것 수정. `"소득세법 제1조의 정의를 따르고 제2조 제3항을 적용한다"` → `소득세법 제1조 제3항`이라는 **실존하지 않는 인용**을 합성했다(재현). 인용 환각 방지 모듈이 스스로 환각을 생산하던 구조. 이제 항·호는 `[첫 조문 끝, 다음 조문 시작)` 범위 안의 것만 결합한다. tail을 잘라 매칭하지 않는 이유는 ITEM_PATTERN의 lookbehind(`법률/대통령령 제N호`는 호가 아님)가 앞 문맥을 잃으면 오탐하기 때문.
+- **제명 폴백 무경고 제거** `index.ts` `lawNameFallbackNote`(신규): `filterVersionsByName`은 정확일치 0건이면 검색 결과 원본을 그대로 돌려준다(가용성 우선, 기존 동작). 문제는 `"요청법"` 검색에 `"요청법 시행령"`만 잡히면 그 시행령이 채택되고 이후 본문·부칙·후행개정 가드가 전부 **엉뚱한 법령을 대상으로 일관되게** 돌아 오류 신호가 하나도 안 뜨던 것(재현). 폴백은 유지하되(제명 변경·표기 흔들림에서 회수 실패를 만들지 않기 위해) `get_law_article`·`build_application_timetable`·`diff_article_versions` 3개 출력에 ⚠ 부착.
+- **혼재 시점 은폐 차단** `year-check.ts`: `allLatest.reduce(Math.max)`로 **가장 늦은 일자 1건만** targetYear와 비교해, 소득세법 제1조(2015) + 법인세법 제2조(2026)/targetYear=2026 에서 **valid_current + 경고 0건**이 나왔다(재현). 분류 라벨은 유지하고(doctrine-assess가 값별로 분기하므로 신규 값 추가는 회귀 위험) 구법 인용을 경고·가이드로 명시 노출.
+- **날짜 결박(date binding)** `year-check.ts` `LAW_VINTAGE_MARKER`(신규): 조문이 든 줄의 **모든** `YYYY.M.D`를 법령 시점으로 채택하던 것 수정. `"2026.1.1. 지급한 소득은 소득세법 제12조에 따른다"`에서 **지급일을 법령 개정일로 오인**해 valid_current로 분류했다(재현). 법령 시점 표지(법률/대통령령/부령 제N호, 개정·신설·폐지·제정·시행일)가 같은 chunk에 있을 때만 결박하고, 없으면 `citations_no_dates`로 보낸다. `datesAreLawVintage` 필드 추가. `시행`은 `시행령/시행규칙`에 포함돼 과결박을 일으키므로 표지에서 제외.
+- **열거형 준용 소실 차단** `index.ts` `extractJunyongTargets`: 준용 앵커마다 **가장 가까운 참조 1건만** 채택해 `"제10조, 제11조 및 제12조를 준용한다"` → `[제12조]`로 **2건이 무경고 소실**됐다(재현). `"제95조ㆍ제97조"`도 동일 — v0.26.0이 인접성 whitelist에 `ㆍ`(U+318D)를 추가한 바로 그 문형인데 법령명 귀속만 고치고 추출은 그대로였다. 연결사(`,·ㆍ및·와·과·또는` + `「법령명」`)로만 이어진 참조는 하나의 대상 집합으로 전개한다. 범위형(`부터/까지`)은 기존 대표 1건 + `joRange` 동작 유지(연결사 집합에서 제외).
+
+### Fixed — 신호·마스킹·오류 (P2)
+- **준용 컨텍스트 창 40 → 120자**: 40자는 ① 열거 앞 항목이 창 밖으로 밀려 소실 ② 「법령명」이 창 밖이면 `lawBefore`가 아무것도 못 찾아 **lawHint(귀속 모호 신호)조차 미부착**이었다. 실측: 「조특법 시행령」제100조의16…및 제100조의17제3항 준용 → 법령명·모호신호 둘 다 소실. 확대해도 오귀속은 늘지 않는다(EF-3 인접성 게이트가 별도 판정, 비인접은 자기법 + lawHint 강등).
+- **준용 대상 상한 무라벨 절단 제거**: `JUNYONG_TARGET_CAP`(=6, 기존과 동일) 도달 시 마지막 대상에 `capped` 플래그를 실어 `fmtJunyong`이 ⚠ 라벨을 렌더. `capJunyongBlocks`는 글자수 상한만 라벨링해 개수 상한은 침묵했다.
+- **해석분기 가드가 '감면' 조문에 침묵** `buildInterpretiveForkGuard`: 4-AND 게이트의 `isCredit`이 `/공제/`만 요구해, 조특법 §6·§7 등 세액**감면** 사후관리(동일한 "배제 vs 단가 강등" 해석 분기)가 통째로 빠졌다 → `/(?:공제|감면)/`.
+- **위임 가드 문언 변형 2종** `buildDelegationGuard`: `부령에서 정하는`(조사 `에서` 미포함)·`위원장이 정하는`(주체 목록에 위원장 없음) 침묵 → 각각 보강. `대통령령`·서식 위임 강등 등 과발동 방지 로직은 그대로.
+- **OC 마스킹 우회 3종** `redactSecrets`: `&amp;OC=`(HTML 엔티티)·선행 구분자 없는 `OC=`·JSON `"OC":"..."`가 그대로 남았다(재현). 이 함수는 OC 포함 URL이 실리는 `출처:` 3개 지점의 **실질 단일 방어선**이라 계약 미달이었다.
+- **재시도 중 오류 퇴화** `fetchWithRetry`: 429/503/504 응답을 `lastError`에 기록하지 않아, 백오프 전 예산 부족으로 break하면 `[EXTERNAL_API_ERROR] undefined`가 나왔다 → status/statusText 기록.
+- **`extractRelatedSection` 헤더 잔재**(검증 중 발견): `headerMatch.index` 미반영으로 `"관련 법령:"` 헤더가 섹션 본문에 `"령:"`로 남았다.
+
+### Tests
+- 291 → **313** (신규 22건). `citation-extract.test.js`(합성 인용 3), `timetable.test.js`(제명 폴백 3 + 열거형 준용 6), `year-check.test.js`(혼재 시점·날짜 결박·헤더 5), `delegation-guard.test.js`(문언 변형 3), `utils.test.js`(OC 마스킹 2).
+- **기존 테스트 2건 기대값 정정**: `extractJunyongTargets(EF-3)` 계열은 `「소득세법」 제95조 및 제97조` → `[제97조]` 1건을 기대했는데, 이는 열거 추출 버그를 그대로 굳혀둔 것이었다(제95조도 정당한 준용 대상). 원래 검증 의도인 **연결사를 넘은 법령명 귀속 유지**는 그대로 두고 건수만 정정.
+
+### 검증 방법
+- 모든 P1/P2를 빌드된 모듈 직접 실행으로 재현 → 수정 → 재실행 확인.
+- `npx tsc --noEmit` 통과, `npm test` 313/313 통과.
+
+### 알려진 한계 / 보류
+- Codex 지적 중 **미수정**: 긴 상세 본문(45,000자)이 뒤쪽 안전 경고를 최종 50,000자 절단으로 밀어내는 문제(P1) — 출력 조립 순서 재설계가 필요해 별도 작업. 응답 body 읽기가 fetch 타임아웃·도구 예산 밖(P1). 타법 준용 2건 직렬 해소(P2). OC가 Moleg 캐시 키에 포함(P2). `"표시 50개"` 헤더와 실제 렌더 개수 불일치(P2). tools/list `inputSchema` 13,289자 감량(P2).
+- 기존 보류 유지: A3 시점맞춤 · EF-1 · E4(별표 연혁) · F-full · `credit-eligibility.json` 연계표 정확도 재검토(`provisional: true`).
+
 ## [0.26.1] - 2026-07-15
 
 ### Fixed — v0.26.0 배포 후 라이브 검증(실 MCP) 반영 (저비용 확정 3건)

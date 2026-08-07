@@ -141,3 +141,29 @@ test("formatLawArticleRef: composes a readable label", () => {
   }
   assert.equal(formatLawArticleRef(ref), "조세특례제한법 제6조 제3항 제16호")
 })
+
+// v0.27.0 — 조·항·호 합성 인용 차단(리뷰 P1).
+// 종전: tail 80자에서 조/항/호를 각각 독립 첫 매칭 → 서로 다른 인용의 조각을 결합.
+test("extractLawArticleRefs: 다른 조문의 항을 앞 조문에 결합하지 않는다 (합성 인용 차단)", () => {
+  const refs = extractLawArticleRefs("소득세법 제1조의 정의를 따르고 제2조 제3항을 적용한다.")
+  const synthesized = refs.find((r) => r.article === "제1조" && r.paragraph === "제3항")
+  assert.ok(!synthesized, `존재하지 않는 합성 인용 생성됨: ${JSON.stringify(refs)}`)
+  // 첫 조문은 항 없이 추출되어야 한다.
+  const first = refs.find((r) => r.article === "제1조")
+  assert.ok(first, `제1조 ref 누락: ${JSON.stringify(refs)}`)
+  assert.equal(first.paragraph, null, `제1조에 엉뚱한 항이 붙음: ${JSON.stringify(first)}`)
+})
+
+test("extractLawArticleRefs: 다른 조문의 호도 앞 조문에 결합하지 않는다", () => {
+  const refs = extractLawArticleRefs("법인세법 제10조에 불구하고 제20조 제2항 제5호를 적용한다.")
+  const bad = refs.find((r) => r.article === "제10조" && (r.paragraph || r.item))
+  assert.ok(!bad, `제10조에 뒤 조문의 항·호가 결합됨: ${JSON.stringify(refs)}`)
+})
+
+test("extractLawArticleRefs: 같은 조문에 붙은 항·호는 정상 결합 (회귀)", () => {
+  const refs = extractLawArticleRefs("조특법 제6조 제3항 제16호에 따라")
+  assert.equal(refs.length, 1)
+  assert.equal(refs[0].article, "제6조")
+  assert.equal(refs[0].paragraph, "제3항")
+  assert.equal(refs[0].item, "제16호")
+})

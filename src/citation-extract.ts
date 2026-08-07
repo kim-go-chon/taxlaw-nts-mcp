@@ -124,19 +124,35 @@ export function extractLawArticleRefs(text: string): LawArticleRef[] {
         if (overlapped) continue
         claimed.push([start, end])
         const tail = line.slice(start, start + 80)
-        const art = tail.match(ARTICLE_PATTERN)
-        const par = tail.match(PARAGRAPH_PATTERN)
-        const it = tail.match(ITEM_PATTERN)
-        const article = art ? (art[2] ? `제${art[1]}조의${art[2]}` : `제${art[1]}조`) : null
-        const paragraph = par ? `제${par[1]}항` : null
-        // 호(item)는 조(article) 또는 항(paragraph) 없이 단독으로 존재하지 않는다.
-        // 단독 "제N호"는 통상 "법령 번호 노이즈이므로 무시.
-        const item = it && (article || paragraph) ? `제${it[1]}호` : null
         // v0.9.12 — 조(article) 없이 항/호만 있는 ref는 거부.
         // "소득세법 제1항" 같은 표기는 법령명+항(項) 단독 노이즈로, 같은 줄에 다수의 법령명이
         // 등장하면서 80자 window 안에 조 번호 없이 항만 매치되는 경우 발생.
         // 정식 법령 인용은 항상 조 번호를 포함하므로, article 없는 ref는 항상 거부.
-        if (!article) continue
+        const arts = [...tail.matchAll(new RegExp(ARTICLE_PATTERN.source, "g"))]
+        if (arts.length === 0) continue
+        const art = arts[0]
+        const article = art[2] ? `제${art[1]}조의${art[2]}` : `제${art[1]}조`
+        // v0.27.0 — 항·호는 '그 조문에 문법적으로 붙은 것'만 결합한다.
+        //   종전엔 tail 80자 전체에서 조·항·호를 각각 독립 첫 매칭해 결합했다.
+        //   "소득세법 제1조의 정의를 따르고 제2조 제3항을 적용한다" → "소득세법 제1조 제3항"이라는
+        //   실존하지 않는 인용을 합성(리뷰 재현). 인용 환각 방지 모듈이 스스로 환각을 만드는 구조였다.
+        //   범위 = [첫 조문 끝, 다음 조문 시작). tail을 잘라 매칭하지 않는 이유는 ITEM_PATTERN의
+        //   lookbehind("법률/대통령령 제N호"는 호가 아님)가 앞 문맥을 잃으면 오탐하기 때문.
+        const scopeStart = (art.index ?? 0) + art[0].length
+        const scopeEnd = arts.length > 1 ? (arts[1].index ?? tail.length) : tail.length
+        const firstInScope = (pattern: RegExp): RegExpMatchArray | null => {
+          for (const m of tail.matchAll(new RegExp(pattern.source, "g"))) {
+            const at = m.index ?? -1
+            if (at >= scopeStart && at < scopeEnd) return m
+          }
+          return null
+        }
+        const par = firstInScope(PARAGRAPH_PATTERN)
+        const it = firstInScope(ITEM_PATTERN)
+        const paragraph = par ? `제${par[1]}항` : null
+        // 호(item)는 조(article) 또는 항(paragraph) 없이 단독으로 존재하지 않는다.
+        // 단독 "제N호"는 통상 법령 번호 노이즈이므로 무시.
+        const item = it ? `제${it[1]}호` : null
         const key = `${entry.canonical}|${article || ""}|${paragraph || ""}|${item || ""}`
         if (seen.has(key)) continue
         seen.add(key)

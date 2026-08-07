@@ -90,3 +90,18 @@ test("O2-7 고시 위임: '고시로 정하는 바에 따라' → 발동", () =>
 test("O2-7 과발동 방지: 단순 '고시된 가격' 언급은 비발동", () => {
   assert.equal(buildDelegationGuard("고시된 분양가격을 기준으로 계산한다.", "제5조").length, 0)
 })
+
+// ── v0.27.0(리뷰 P2) 위임 문언 변형 ────────────────────────────────────
+test("buildDelegationGuard(v0.27.0): '부령에서 정하는'도 포착(조사 '에서')", () => {
+  const g = buildDelegationGuard("기획재정부령에서 정하는 방법으로 계산한다.", "제1조")
+  assert.ok(g.length > 0, "조사 '에서'형 위임에 침묵")
+})
+
+test("buildDelegationGuard(v0.27.0): '위원장이 정하는'도 포착", () => {
+  const g = buildDelegationGuard("그 밖에 필요한 사항은 위원장이 정하는 바에 따른다.", "제1조")
+  assert.ok(g.length > 0, "위원장 위임에 침묵")
+})
+
+test("buildDelegationGuard(v0.27.0): '대통령령으로 정하는'은 여전히 침묵(과발동 방지 회귀)", () => {
+  assert.equal(buildDelegationGuard("대통령령으로 정하는 바에 따라 계산한다.", "제1조").length, 0)
+})

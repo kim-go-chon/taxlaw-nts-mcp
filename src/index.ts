@@ -39,7 +39,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.26.1"
+const VERSION = "0.27.2"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1165,7 +1165,11 @@ export function visibleTools(): typeof tools {
 // redactSecrets는 에러·미래 경로용 최후 방어선으로 존치한다.
 export function redactSecrets(text: string): string {
   // gi: 대소문자(Oc/oC)·URL인코딩(%4F%43) 변형까지 마스킹(Codex v0.16.1 재대조 반영).
-  return String(text || "").replace(/([?&](?:oc|%4f%43)=)[^&\s"'<>]+/gi, "$1***")
+  // v0.27.0(리뷰 P2) — 우회 형태 3종 보강(실측): HTML 엔티티 '&amp;OC=', 선행 구분자 없는 'OC=',
+  //   JSON 표기 '"OC":"..."'. 종전엔 ?/& 직후 형태만 마스킹돼 "모든 출력의 최후 방어선" 계약에 미달했다.
+  return String(text || "")
+    .replace(/((?:^|[?&;\s]|&amp;)(?:oc|%4f%43)\s*=\s*)[^&\s"'<>]+/gi, "$1***")
+    .replace(/(["']oc["']\s*:\s*["'])[^"']+/gi, "$1***")
 }
 
 function textResponse(text: string, isError = false): ToolResponse {
@@ -1252,6 +1256,33 @@ function formatToolError(error: unknown, context: string): ToolResponse {
 export function truncate(text: string, max = 50000): string {
   if (text.length <= max) return text
   return `${text.slice(0, max)}\n\n[truncated to ${max.toLocaleString()} chars]`
+}
+
+// v0.27.1(리뷰 P1) — '경고 우선' 예산 배분. 안전 경고(guard)를 먼저 확보하고 본문(head)을 남은 예산으로 자른다.
+//   종전처럼 [본문 + 경고]를 이어붙여 마지막에 한 번 자르면 경고가 꼬리라서 통째로 사라진다.
+//   비대칭이 핵심: 본문 절단은 truncate가 "[truncated…]"를 남기지만, 경고 소실은 흔적이 없어
+//   '경고 없음 = 안전'으로 오독된다. guard가 cap을 통째로 넘기는 병리적 경우만 guard를 자른다.
+export function budgetedJoin(head: string[], guard: string[], cap: number, minHead = 4000): string {
+  const guardText = guard.join("\n")
+  if (!guardText) return truncate(head.join("\n"), cap)
+  const headBudget = Math.max(minHead, cap - guardText.length - 200)
+  const headText = truncate(head.join("\n"), headBudget)
+  return `${headText}\n${truncate(guardText, Math.max(0, cap - headText.length - 1))}`
+}
+
+// v0.27.1(리뷰 P2) — 블록 목록을 문자 예산에 맞춰 채우고 '실제 렌더 개수'와 '생략 개수'를 함께 돌려준다.
+//   종전처럼 전부 조립한 뒤 마지막에 자르면 헤더의 "표시 N개"가 실제와 어긋나고
+//   꼬리의 "… 외 N개 생략" 안내까지 함께 잘려 '전부 봤다'는 오인을 만든다.
+//   최소 1건은 예산을 넘겨도 렌더한다(빈 응답 금지).
+export function fitBlocks(blocks: string[], budget: number): { kept: string[]; omitted: number } {
+  const kept: string[] = []
+  let left = budget
+  for (const b of blocks) {
+    if (kept.length > 0 && b.length > left) break
+    kept.push(b)
+    left -= b.length
+  }
+  return { kept, omitted: blocks.length - kept.length }
 }
 
 // 한국 세법 용어는 가운뎃점("·"), 공백, 하이픈 변형이 흔함.
@@ -1452,7 +1483,7 @@ async function postTaxlawActionAttempt<T>(
   form.set("actionId", actionId)
   form.set("paramData", JSON.stringify(paramData))
 
-  const response = await fetchWithRetry(`${TAXLAW_BASE}/action.do`, {
+  const { response, text: rawBody } = await fetchTextWithRetry(`${TAXLAW_BASE}/action.do`, {
     method: "POST",
     headers: {
       accept: "application/json, text/javascript, */*; q=0.01",
@@ -1466,7 +1497,7 @@ async function postTaxlawActionAttempt<T>(
   })
 
   if (!response.ok) {
-    await consume(response)
+    // v0.27.2 — body는 fetchTextWithRetry가 이미 deadline 안에서 읽었다(consume 불필요).
     if (allowRefresh && (response.status === 401 || response.status === 403)) {
       cachedSession = null
       return postTaxlawActionAttempt<T>(actionId, paramData, refererPath, false)
@@ -1476,7 +1507,7 @@ async function postTaxlawActionAttempt<T>(
 
   let payload: TaxlawActionResponse<T>
   try {
-    payload = await response.json() as TaxlawActionResponse<T>
+    payload = JSON.parse(rawBody) as TaxlawActionResponse<T>
   } catch (error) {
     if (allowRefresh) {
       cachedSession = null
@@ -1502,6 +1533,13 @@ async function consume(response: Response): Promise<void> {
 }
 
 const FETCH_TIMEOUT_MS = 15000
+// v0.27.2 — 개별 fetch 타임아웃을 env로 조정 가능(기본 15초). 기존 튜너블(TAXLAW_TOOL_BUDGET_MS,
+//   TAXLAW_RECENT_THRESHOLD_YEARS)과 동일한 함수형 패턴. 단위테스트가 짧은 타임아웃으로
+//   'body 정지 시 abort가 실제로 끊는지'를 검증하는 데도 쓴다.
+export function fetchTimeoutMs(): number {
+  const raw = Number(process.env.TAXLAW_FETCH_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : FETCH_TIMEOUT_MS
+}
 
 // v0.21.0(#G14) — 도구 콜 단위 시간예산(tail-latency 방어, CHANGELOG DEFER #6 해소).
 // CallTool 디스패치 진입점에서 store를 설정하고, 모든 네트워크 왕복(fetchWithRetry)이 매 시도 전 남은 예산을
@@ -1535,7 +1573,18 @@ function runWithToolBudget<T>(fn: () => Promise<T>): Promise<T> {
   return toolBudgetStore.run({ deadlineAt: Date.now() + budgetMs, budgetMs }, fn)
 }
 
-async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Promise<Response> {
+// v0.27.2(리뷰 P1) — fetch와 body 읽기를 하나의 AbortController/타이머 아래로 묶는다.
+//   종전: 헤더 수신 직후 clearTimeout하고 Response를 반환 → 호출부의 .json()/.text()는
+//   15초 fetch 타임아웃도 90초 도구 예산도 적용받지 못했다. 서버가 헤더만 보내고 본문 스트림을
+//   끝내지 않으면 도구 호출이 사실상 무한 대기하고, 에이전트가 영구히 막힌다(최악의 실패 모드).
+//   read를 넘기면 body를 타이머 안에서 읽고, 중단 시 abort가 스트림까지 실제로 끊는다.
+//   read=null(세션 초기화처럼 헤더만 쓰는 경로)은 종전 동작 그대로.
+export async function fetchWithRetryCore<T>(
+  url: string,
+  init: RequestInit,
+  retries: number,
+  read: ((r: Response) => Promise<T>) | null,
+): Promise<{ response: Response; body: T | null }> {
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt++) {
     // v0.21.0(#G14) — 매 시도 전 남은 예산 확인. 소진이면 즉시 중단(부분 결과만 유효, 재호출 권장).
@@ -1549,14 +1598,20 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Prom
     }
     const controller = new AbortController()
     // 개별 fetch 타임아웃을 min(15000, 남은예산)으로 캡 — 마지막 왕복이 예산을 초과해 늘어지지 않게.
-    const timeout = setTimeout(() => controller.abort(), Math.min(FETCH_TIMEOUT_MS, remaining))
+    const timeout = setTimeout(() => controller.abort(), Math.min(fetchTimeoutMs(), remaining))
     try {
       const response = await fetch(url, { ...init, signal: controller.signal })
-      clearTimeout(timeout)
       if (response.ok || ![429, 503, 504].includes(response.status) || attempt === retries) {
-        return response
+        // ★ body 읽기를 타이머 해제 '전'에 수행 — 본문 스트림 정지도 abort로 끊긴다.
+        const body = read ? await read(response) : null
+        clearTimeout(timeout)
+        return { response, body }
       }
+      // v0.27.0(리뷰 P2) — 재시도 대상 HTTP 응답도 lastError에 기록. 종전엔 catch 경로만 기록해
+      //   "503 → 남은 예산 부족으로 break" 시 undefined로 남아 [EXTERNAL_API_ERROR] undefined로 퇴화했다.
+      lastError = new Error(`HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`)
       await consume(response)
+      clearTimeout(timeout)
     } catch (error) {
       clearTimeout(timeout)
       lastError = error
@@ -1572,6 +1627,21 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Prom
   const cause = (err as Error & { cause?: unknown }).cause
   const causeText = cause instanceof Error ? `: ${cause.message}` : ""
   throw new TaxlawMcpError(`${err.message}${causeText}`, ErrorCodes.API_ERROR)
+}
+
+// 헤더만 쓰는 경로(세션 초기화) — body를 읽지 않으므로 종전 동작과 동일.
+async function fetchWithRetry(url: string, init: RequestInit, retries = 3): Promise<Response> {
+  return (await fetchWithRetryCore<never>(url, init, retries, null)).response
+}
+
+// v0.27.2 — body까지 deadline 보호가 필요한 경로(전 호출부 기본). 본문 정지 시 abort로 끊긴다.
+async function fetchTextWithRetry(
+  url: string,
+  init: RequestInit,
+  retries = 3,
+): Promise<{ response: Response; text: string }> {
+  const { response, body } = await fetchWithRetryCore<string>(url, init, retries, (r) => r.text())
+  return { response, text: body ?? "" }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -2862,6 +2932,12 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   }
 
   // 연도 적용여부 검증 (관련규정 섹션 파싱). 본문이 없으면 답변 텍스트를 사용.
+  // v0.27.1(리뷰 P1) — 안전 경고를 본문과 분리 조립한다.
+  //   종전: 본문(full이면 45,000자)+판례 목록을 lines에 먼저 쌓고, 연도검증·구조개편·기본통칙·holding
+  //   경고를 뒤에 붙인 뒤 전체를 50,000/30,000자로 잘랐다. full=true면 여유가 ~5,000자뿐이라
+  //   회신문이 조금만 길어도 경고 전체가 통째로 사라졌다 — 그런데 full=true는 인용을 진지하게
+  //   검증할 때 쓰는 옵션이라, 가장 필요한 순간에 가드가 사라지는 역전이 발생했다.
+  const guardLines: string[] = []
   // 본문에서 헤더를 못 찾으면 문서 메타데이터의 관련법령 목록(relatedLaws)으로 fallback.
   const sourceForYearCheck = [gist, answer, bodyText].filter(Boolean).join("\n\n")
   if (sourceForYearCheck || relatedLaws) {
@@ -2872,7 +2948,7 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
       metadataCitations: relatedLaws,
       productionDate: productionDateForCheck,
     })
-    lines.push("", ...formatYearCheck(result), "")
+    guardLines.push("", ...formatYearCheck(result), "")
 
     // v0.9.0 — 본문·메타에서 추출한 인용 조문에 옛 위치(전부개정 전) 매핑이 있으면 추가 안내.
     // v0.9.2 — bodyText 전달로 본문 substring 재확인 (citation 80자 윈도우 노이즈 차단).
@@ -2880,10 +2956,10 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
     const verifyBody = [gist, answer, bodyText].filter(Boolean).join("\n")
     const restructureHits = detectPreRestructureCitations(citedRefs, verifyBody)
     if (restructureHits.length > 0) {
-      lines.push("", ...formatRestructureHits(restructureHits), "")
+      guardLines.push("", ...formatRestructureHits(restructureHits), "")
     }
 
-    lines.push(
+    guardLines.push(
       "동반 호출 필수: 위 검증은 본문 휴리스틱입니다. 인용 법조문의 현행 적용가능성은 반드시 korean-law-mcp의 search_law + get_law_text(law=..., jo=...)로 직접 대조 후 사용자에게 보고하세요.",
       "",
     )
@@ -2897,26 +2973,26 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
     if (rulingRefs.length > 0) {
       const legacy = rulingRefs.filter((r) => r.format === "legacy_candidate")
       const current = rulingRefs.filter((r) => r.format === "current")
-      lines.push("── 기본통칙 인용 검증 ──")
+      guardLines.push("── 기본통칙 인용 검증 ──")
       if (legacy.length > 0) {
-        lines.push(
+        guardLines.push(
           `⚠ 옛 번호 형식("N-N") 통칙 인용 ${legacy.length}건 검출 — 현행 번호 체계는 "N-N…M". 답변에 그대로 옮기지 말 것:`,
         )
         for (const ref of legacy) {
-          lines.push(`  - ${formatBasicRulingRef(ref)} → 현행 번호 미확인. get_taxlaw_basic_ruling_text 호출 필수`)
+          guardLines.push(`  - ${formatBasicRulingRef(ref)} → 현행 번호 미확인. get_taxlaw_basic_ruling_text 호출 필수`)
         }
       }
       if (current.length > 0) {
-        lines.push(`현행 형식 통칙 인용 ${current.length}건:`)
+        guardLines.push(`현행 형식 통칙 인용 ${current.length}건:`)
         for (const ref of current) {
-          lines.push(`  - ${formatBasicRulingRef(ref)}`)
+          guardLines.push(`  - ${formatBasicRulingRef(ref)}`)
         }
       }
-      lines.push("강제 절차:")
-      lines.push("  1) list_taxlaw_basic_ruling_laws(query=세법명)로 lawId 확보")
-      lines.push("  2) get_taxlaw_basic_ruling_text(lawId, query=주제어)로 현행 본문/번호 직접 확인")
-      lines.push("  3) 단건이 아닌 주제어로 호출 → 인접 번호대 일괄 수집 (관련 통칙 군집 누락 방지)")
-      lines.push("")
+      guardLines.push("강제 절차:")
+      guardLines.push("  1) list_taxlaw_basic_ruling_laws(query=세법명)로 lawId 확보")
+      guardLines.push("  2) get_taxlaw_basic_ruling_text(lawId, query=주제어)로 현행 본문/번호 직접 확인")
+      guardLines.push("  3) 단건이 아닌 주제어로 호출 → 인접 번호대 일괄 수집 (관련 통칙 군집 누락 방지)")
+      guardLines.push("")
     }
   }
 
@@ -2930,10 +3006,11 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
       gist,
       structuredReply: answer, // v0.21.0(#G5) — 구조화 회신 필드(CNTN). 채워졌으면 결론이 전량 표시돼 해석례 tail 가드 무발화.
     })
-    if (holdingWarn.length > 0) lines.push(...holdingWarn, "")
+    if (holdingWarn.length > 0) guardLines.push(...holdingWarn, "")
   }
 
-  return truncate(lines.join("\n"), full ? 50000 : 30000)
+  // v0.27.1 — 경고 우선 예산 배분(budgetedJoin). 안전 경고는 잘리지 않고 본문이 남은 예산으로 잘린다.
+  return budgetedJoin(lines, guardLines, full ? 50000 : 30000)
 }
 
 async function assessDoctrineValidityTool(args: AssessDoctrineArgs): Promise<ToolResponse> {
@@ -3153,19 +3230,17 @@ export function isEmptyPayload(data: unknown): boolean {
 async function getTaxlawPageText(args: TaxlawPageTextArgs): Promise<ToolResponse> {
   // v0.21.0(#G10) — path 미지정 시 "/index.do" 무음 폴백 제거(엉뚱한 홈 페이지 반환 방지). 명시 필수.
   const path = normalizeTaxlawPath(requireString("path", args.path))
-  const response = await fetchWithRetry(`${TAXLAW_BASE}${path}`, {
+  const { response, text: raw } = await fetchTextWithRetry(`${TAXLAW_BASE}${path}`, {
     headers: {
       accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
       "user-agent": userAgent(),
     },
   })
   if (!response.ok) {
-    await consume(response)
     throw new TaxlawMcpError(`Taxlaw page fetch failed (${response.status})`, ErrorCodes.API_ERROR)
   }
 
   const contentType = response.headers.get("content-type") || "N/A"
-  const raw = await response.text()
   const body = /html|xml/i.test(contentType) || /<[^>]+>/.test(raw) ? htmlToText(raw) : decodeHtml(raw)
   const trimmedLength = body.trim().length
   if (trimmedLength < 40) {
@@ -3376,18 +3451,24 @@ export function parseLawAddenda(xml: string): AddendaUnit[] {
   return units
 }
 
+// v0.27.1(리뷰 P2) — 캐시 키에서 OC(인증키) 제거.
+//   종전 `moleg:${url}`은 OC를 그대로 키에 실었다. ① 응답은 OC와 무관한 공개 법령 XML인데
+//   OC가 다르면 캐시가 분산되고 ② 비밀키가 Map 키로 24시간 메모리에 잔류했다.
+//   OC 파라미터만 제거한 canonical URL을 키로 쓴다(나머지 파라미터는 응답을 결정하므로 유지).
+export function molegCacheKey(url: string): string {
+  return `moleg:${String(url).replace(/([?&])(?:oc|%4f%43)=[^&]*/gi, "$1__oc__")}`
+}
+
 async function fetchMolegXml(url: string, label: string): Promise<string> {
-  const cacheKey = `moleg:${url}`
+  const cacheKey = molegCacheKey(url)
   const cached = cacheGet(cacheKey)
   if (cached !== null) return cached
-  const response = await fetchWithRetry(url, {
+  const { response, text: xml } = await fetchTextWithRetry(url, {
     headers: { accept: "application/xml,text/xml;q=0.9,*/*;q=0.5", "user-agent": userAgent() },
   })
   if (!response.ok) {
-    await consume(response)
     throw new TaxlawMcpError(`법제처 ${label} 실패 (${response.status})`, ErrorCodes.API_ERROR)
   }
-  const xml = await response.text()
   cacheSet(cacheKey, xml, MOLEG_CACHE_TTL_MS)
   return xml
 }
@@ -3470,6 +3551,20 @@ export function filterVersionsByName(versions: LawVersion[], lawName: string): L
   if (!key) return versions
   const hit = versions.filter((v) => v.lawName && lawNameKey(v.lawName) === key)
   return hit.length ? hit : versions
+}
+
+// v0.27.0(리뷰 P1) — 위 폴백('일치 0건이면 원본')은 가용성을 위해 유지하되 '무경고'만 없앤다.
+//   실측 문제: "요청법"을 검색해 "요청법 시행령" 행만 잡히면 그 시행령이 그대로 채택되고,
+//   이후 본문·부칙·후행개정 가드가 전부 엉뚱한 법령을 대상으로 '일관되게' 돌아 오류 신호가 하나도 안 뜬다.
+//   폴백 자체를 막지 않는 이유: 제명 변경·표기 흔들림(구법명 등)에서 정상 회수를 실패시키면 더 나쁘다.
+//   타법(cross-law) 경로는 오귀속 비용이 더 커서 filterVersionsByNameStrict(0건=안전 강등)를 계속 쓴다.
+export function lawNameFallbackNote(versions: LawVersion[], lawName: string): string | null {
+  const key = lawNameKey(lawName)
+  if (!key || versions.length === 0) return null
+  if (versions.some((v) => v.lawName && lawNameKey(v.lawName) === key)) return null
+  const names = [...new Set(versions.map((v) => v.lawName).filter(Boolean))].slice(0, 3)
+  if (names.length === 0) return null
+  return `⚠ 제명 정확일치 0건 — 요청 "${lawName}"과 검색 결과 제명(${names.join(", ")})이 다릅니다. 아래 시점본·부칙·개정 판정이 '다른 법령'을 대상으로 수행됐을 수 있습니다. 정확한 제명으로 다시 지정하거나, korean-law-mcp search_law로 MST를 확보해 mst로 직접 전달하세요.`
 }
 
 // eflaw 검색으로 (mst, 시행일자, 공포일자, 법령명)을 시행일 내림차순으로. 시점별 조문 회수용.
@@ -3661,7 +3756,9 @@ export function buildInterpretiveForkGuard(text: string, jo: string): string[] {
   // v0.26.1(리뷰 O2-6) — '공제하지 아니'(공제 배제형)도 포착. '납부하여야'는 모든 납부의무 과발동이라 제외.
   const hasExclusion = /(?:적용|공제)하지\s*(?:아니|않)/.test(text) // 적용/공제하지 아니한다/아니하고/않는다 등
   const refsClause = /제\d+호|제\d+항/.test(text)
-  const isCredit = /공제/.test(text)
+  // v0.27.0(리뷰 P2) — 감면 조문 포착. 조특법 §6·§7 등 세액'감면' 사후관리도 공제와 동일한
+  //   "배제 vs 단가 강등" 해석 분기를 갖는데 4-AND 게이트가 '공제'만 요구해 통째로 침묵했다.
+  const isCredit = /(?:공제|감면)/.test(text)
   const isSunset = /감소|줄어든|추징|사후관리/.test(text) // v0.26.1(리뷰 O2-6) — '줄어든'(근로자 수 감소형) 추가
   if (hasExclusion && refsClause && isCredit && isSunset) {
     lines.push(
@@ -3860,10 +3957,13 @@ async function resolveCrossLawCtx(oc: string, quotedName: string): Promise<Cross
 }
 
 // 요청당 memoize + 상한 2개 타법(도구 콜 전체 기준). 지역 변수라 요청 간 누수 없음(HTTP 캐시가 요청 간 재사용 담당).
-function makeCrossResolver(oc: string): (lawName: string) => Promise<CrossLawResult> {
+// v0.27.1(리뷰 P2) — prewarm 지원. memo가 Promise를 담으므로, 루프 진입 전에 서로 다른 타법명을
+//   await 없이 한 번씩 태워두면 그 시점부터 병렬로 달리고 루프의 await는 진행 중인 것을 받기만 한다.
+//   (종전: 서로 다른 타법 2건이 각각 ~15초면 30초가 직렬로 소모)
+function makeCrossResolver(oc: string): ((lawName: string) => Promise<CrossLawResult>) & { prewarm: (names: Array<string | undefined>) => void } {
   const memo = new Map<string, Promise<CrossLawResult>>()
   let capLeft = 2
-  return (name: string) => {
+  const resolver = (name: string) => {
     const k = lawNameKey(name)
     let p = memo.get(k)
     if (!p) {
@@ -3874,6 +3974,11 @@ function makeCrossResolver(oc: string): (lawName: string) => Promise<CrossLawRes
     }
     return p
   }
+  // 상한(capLeft) 소진 순서는 prewarm 호출 순서를 따른다 — 루프 순서와 동일하게 넘겨야 기존 선택과 일치.
+  resolver.prewarm = (names: Array<string | undefined>) => {
+    for (const n of names) if (n) resolver(n)
+  }
+  return resolver
 }
 
 export async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse> {
@@ -3922,33 +4027,52 @@ export async function getLawAddenda(args: LawAddendaArgs): Promise<ToolResponse>
   const perUnit = args.full === true ? 8000 : 2500
   const shown = filtered.slice(0, maxUnits)
 
+  // v0.27.1(리뷰 P2) — 전역 문자 예산으로 조립한다. 종전엔 maxUnits개를 각 perUnit까지 전부 조립한 뒤
+  //   마지막에 전체를 한 번 잘랐다. full=true면 최대 50×8,000=400,000자를 조립해 60,000자 상한에서
+  //   실제로는 ~7개만 살아남는데 헤더는 "표시 50개"라고 보고했고, 맨 끝의 "… 외 N개 생략" 안내도
+  //   함께 잘려 사용자가 '부칙 전부를 확인했다'고 오인할 수 있었다(적용시기 판정에서 부칙 누락은 결론을 바꾼다).
+  const totalCap = args.full === true ? 60000 : 20000
+  const allBlocks: string[] = []
+
   const lines = [
     "법제처 법령 부칙(시행일·적용례·경과조치)",
     `출처: ${url}`,
     `법령: ${lawTitle || "N/A"} (MST ${mst})${resolvedNote}`,
     `부칙 union 출처 MST: ${sourceMsts.join(", ")} (타법개정 통합본의 직전 일부개정 부칙 누락 보정)`,
-    `부칙단위: 전체 ${units.length}개${no || q ? ` / 필터 일치 ${filtered.length}개` : ""} / 표시 ${shown.length}개 (최신 공포일순)`,
+    "",  // ← 부칙단위 요약행 placeholder(실제 렌더 개수 확정 후 아래에서 교체)
     ...(supplementedNos.length > 0
       ? [`⚠ 현행 MST(${mst}) 부칙에 없어 다른 시행본에서 보강한 공포번호: ${supplementedNos.join(", ")} — 통합본 consolidation lag. 적용시점 판단 시 이 보강분 누락 주의.`]
       : []),
     "주의: 적용례는 '○○ 개정규정은 …부터 적용한다'로 구조문(개정 전 본문)과 짝입니다. 구조문은 korean-law-mcp.compare_old_new의 [개정 전]으로 대조하세요. 아래는 법제처 원문이며, 명시되지 않은 사실은 추론·생성하지 마세요.",
     "",
   ]
-  shown.forEach((u) => {
-    lines.push(`──────── [제${u.promulgationNo || "?"}호, ${u.promulgationDate || "?"}] ────────`)
+  for (const u of shown) {
+    const parts = [`──────── [제${u.promulgationNo || "?"}호, ${u.promulgationDate || "?"}] ────────`]
     const revs = detectAddendumRevisionTails(u.text, u.promulgationDate)
     if (revs.length > 0) {
-      lines.push(
+      parts.push(
         `⚠ [부칙 자체개정] 이 부칙은 후행 개정령에 의해 변경된 현행화 문구(<개정 ${revs.map(formatYmd).join(", ")}> 꼬리표). 적용시기 anchor 자체가 바뀌었을 수 있다 — 고친 지시문 원문은 get_law_revision_text(promulgationDate=${revs[0]})로 회수하고, 개정 전 문구는 그 개정일 이전 시행본 MST를 mst로 지정해 재호출해 대조하라.`,
       )
     }
-    lines.push(truncate(u.text, perUnit))
-    lines.push("")
-  })
-  if (filtered.length > shown.length) {
-    lines.push(`… 외 ${filtered.length - shown.length}개 부칙단위 생략. promulgationNo/query로 좁히거나 full=true로 더 보세요.`)
+    parts.push(truncate(u.text, perUnit), "")
+    allBlocks.push(parts.join("\n"))
   }
-  return textResponse(truncate(lines.join("\n"), args.full === true ? 60000 : 20000))
+  // 헤더·주의문·생략안내 예약분 1,200자를 빼고 채운다.
+  const { kept: unitBlocks, omitted: budgetOmitted } = fitBlocks(allBlocks, totalCap - 1200)
+  const rendered = unitBlocks.length
+  // maxUnits로 이미 잘린 분(filtered - shown) + 예산으로 잘린 분
+  const omitted = (filtered.length - shown.length) + budgetOmitted
+  lines[4] = `부칙단위: 전체 ${units.length}개${no || q ? ` / 필터 일치 ${filtered.length}개` : ""} / 표시 ${rendered}개 (최신 공포일순)`
+  lines.splice(
+    5,
+    0,
+    ...(omitted > 0
+      ? [`⚠ 미표시 ${omitted}개 — 아래 목록이 전부가 아니다. 출력 상한(${totalCap.toLocaleString()}자) 또는 표시 개수 제한으로 생략됐다. promulgationNo/query로 좁히거나${args.full === true ? "" : " full=true로"} 재호출해 나머지를 확인하라.`]
+      : []),
+  )
+  lines.push(...unitBlocks)
+  if (omitted > 0) lines.push(`… 외 ${omitted}개 부칙단위 생략(위 ⚠ 참조).`)
+  return textResponse(truncate(lines.join("\n"), totalCap))
 }
 
 // 법령 XML 끝의 <개정문>(없으면 <제정문>) 노드에서 개정 지시문 원문을 추출한다.
@@ -4213,10 +4337,19 @@ export function checkAmendmentBinding(promulgationDate: string, inventoryDates: 
 // 본문에서 '…제N조(의M)(제K항)…준용' 패턴 추출(자기 자신 제외, 최대 3건).
 // '준용' 앵커에서 역방향으로 가장 가까운 조문 참조를 채택(자기 조문 참조가 뒤의 실제 준용 대상을 삼키지 않도록).
 // 준용 구조는 '준용하는 조문'과 '준용 대상 조문' 두 층의 부칙이 적용시기를 따로 정할 수 있다(2층 타임라인).
-export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string; lawHint?: string; joRange?: string }
+export type JunyongTarget = { jo?: string; hang?: string; lawName?: string; annex?: string; lawHint?: string; joRange?: string; capped?: boolean }
+// v0.27.0(리뷰 P1) — 준용 대상 개수 상한. 종전에도 6이었으나 도달 사실이 무라벨이라
+//   초과분이 조용히 사라졌다(capJunyongBlocks는 글자수 상한만 라벨링). 마지막 대상에 capped를 실어 렌더층에 알린다.
+const JUNYONG_TARGET_CAP = 6
+// 열거형 준용의 연결사. 범위형(부터/까지/내지)은 아래 joRange·항범위 로직이 따로 처리하므로 제외한다.
+// 「법령명」 토큰도 허용한다 — "「가법」제11조, 「나법」제12조를 준용" 처럼 항목마다 법령이 붙는 열거에서
+// 체인이 끊겨 앞 항목이 통째로 사라지던 것 방지. 귀속은 항목별 lawBefore(인접성 게이트)가 각자 판정하므로
+// 오귀속 위험은 늘지 않는다. 산문이 끼면("…에도 불구하고…") 여전히 중단된다.
+const ENUM_CONNECTOR_ONLY = /^(?:[·ㆍ,、]|및|와|과|또는|「[^」]{2,40}」)*$/
 export function extractJunyongTargets(articleText: string, selfJo: string): JunyongTarget[] {
   const out: JunyongTarget[] = []
   const seen = new Set<string>()
+  let capped = false
   const flat = String(articleText || "").replace(/\s/g, "")
   const selfKey = String(selfJo || "").replace(/\s/g, "")
   // v0.24.0(E1)→v0.25.0(리뷰 EF-3, P0) — 「법령명」 귀속은 '인접성 게이트' 통과 시만.
@@ -4247,31 +4380,57 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
   }
   for (const m of flat.matchAll(/준용/g)) {
     const idx = m.index ?? 0
-    const ctx = flat.slice(Math.max(0, idx - 40), idx)
+    // v0.27.0(리뷰 P2/E2) — 컨텍스트 창 40 → 120자.
+    //   40자는 ① 열거형 준용에서 앞 항목들이 창 밖으로 밀려 통째로 소실되고
+    //   ② 「법령명」이 창 밖이면 lawBefore가 아무것도 못 찾아 lawHint(귀속 모호 신호)조차 못 붙였다.
+    //   → 실측: 「조특법 시행령」제100조의16…및 제100조의17제3항을 준용 → 법령명·모호신호 둘 다 소실.
+    //   넓혀도 오귀속이 늘지 않는 이유: 타법 귀속은 EF-3 인접성 게이트가 별도 판정하고,
+    //   비인접이면 자기법 처리 + lawHint로 강등된다(창 확대는 '신호 없음'을 '신호 있음'으로 바꿀 뿐).
+    const ctx = flat.slice(Math.max(0, idx - 120), idx)
     const refs = [...ctx.matchAll(/(제\d+조(?:의\d+)?)(제\d+항)?/g)]
     if (refs.length > 0) {
       const last = refs[refs.length - 1]
-      const jo = last[1]
-      // v0.25.0(리뷰 EF-3) — 타법 귀속은 인접성 게이트 통과 시만. 비인접은 자기법 처리 + lawHint.
-      const lb = lawBefore(ctx, last.index ?? 0)
-      const lawName = lb.name
-      // 자기 조문 제외는 '같은 법령'일 때만 — 타법의 동일 조번호는 별개 대상.
-      if (!lawName && jo === selfKey) continue
       // v0.26.1(리뷰 라이브) — 조-범위 준용 "제N조부터 제M조까지"(법인세법 §14~54 통째 준용 류)는 대량 편입이라
       //   각 조 개별 전개 대신 마지막 조를 대표로 2층 추적하되 joRange로 범위를 명시(마지막 조만 표시되는 무언 누락 방지).
       const joRangeM = ctx.match(/(제\d+조(?:의\d+)?)부터(제\d+조(?:의\d+)?)까지/)
       const joRange = joRangeM && !last[2] && last[1] === joRangeM[2] ? `${joRangeM[1]}~${joRangeM[2]}` : undefined
       // v0.23.0(B) — 범위 준용 "제N항부터 제M항까지" → 각 항 개별 전개(시작 항이 anchor와 일치할 때만).
       const range = ctx.match(/제(\d+)항부터제(\d+)항까지/)
-      if (range && last[2] === `제${range[1]}항`) {
-        const start = Number(range[1]), end = Number(range[2])
-        if (end > start && end - start <= 10) {
-          for (let h = start; h <= end && out.length < 6; h++) push(jo, `제${h}항`, lawName, undefined, lb.rejected)
-        } else {
-          push(jo, last[2] || undefined, lawName, undefined, lb.rejected)
+      const isHangRange = !!(range && last[2] === `제${range[1]}항`)
+      // v0.27.0(리뷰 P1) — 열거형 준용에서 마지막 1건만 남던 것 수정.
+      //   "제10조, 제11조 및 제12조를 준용한다" → 종전 [제12조]로 2건이 무경고 소실됐다.
+      //   "제95조ㆍ제97조를 준용한다"도 마찬가지(v0.26.0이 인접성 whitelist에 ㆍ를 추가한 문형인데
+      //   법령명 귀속만 고치고 추출은 그대로였다). 연결사만으로 이어진 참조는 하나의 대상 집합이다.
+      //   앵커(가장 가까운 참조)에서 뒤로 확장하고 산문이 끼면 중단한다(별개 문장 성분).
+      //   범위형은 위 로직이 대표 1건으로 처리하므로 체인을 만들지 않는다.
+      const chain: RegExpMatchArray[] = [last]
+      if (!joRange && !isHangRange) {
+        for (let i = refs.length - 2; i >= 0; i--) {
+          const cur = refs[i]
+          const head = chain[0]
+          const gap = ctx.slice((cur.index ?? 0) + cur[0].length, head.index ?? 0)
+          if (!ENUM_CONNECTOR_ONLY.test(gap)) break
+          chain.unshift(cur)
         }
-      } else {
-        push(jo, last[2] || undefined, lawName, undefined, lb.rejected, joRange)
+      }
+      for (const ref of chain) {
+        if (out.length >= JUNYONG_TARGET_CAP) { capped = true; break }
+        const jo = ref[1]
+        // v0.25.0(리뷰 EF-3) — 타법 귀속은 인접성 게이트 통과 시만. 비인접은 자기법 처리 + lawHint.
+        const lb = lawBefore(ctx, ref.index ?? 0)
+        const lawName = lb.name
+        // 자기 조문 제외는 '같은 법령'일 때만 — 타법의 동일 조번호는 별개 대상.
+        if (!lawName && jo === selfKey) continue
+        if (isHangRange && range) {
+          const start = Number(range[1]), end = Number(range[2])
+          if (end > start && end - start <= 10) {
+            for (let h = start; h <= end && out.length < JUNYONG_TARGET_CAP; h++) push(jo, `제${h}항`, lawName, undefined, lb.rejected)
+          } else {
+            push(jo, ref[2] || undefined, lawName, undefined, lb.rejected)
+          }
+        } else {
+          push(jo, ref[2] || undefined, lawName, undefined, lb.rejected, joRange)
+        }
       }
     } else {
       // v0.24.0(E1) — 조문 ref 없이 별표만 준용("「X법」 별표3을 준용") — 종전엔 silent skip.
@@ -4281,8 +4440,10 @@ export function extractJunyongTargets(articleText: string, selfJo: string): Juny
         push(undefined, undefined, lb.name, `별표${annexM[1]}`, lb.rejected)
       }
     }
-    if (out.length >= 6) break
+    if (out.length >= JUNYONG_TARGET_CAP) { capped = true; break }
   }
+  // v0.27.0 — 상한 도달을 렌더층에 알린다(무라벨 절단 금지 원칙).
+  if (capped && out.length > 0) out[out.length - 1].capped = true
   return out
 }
 
@@ -4291,7 +4452,11 @@ export function fmtJunyong(t: JunyongTarget): string {
   const ref = `${t.jo || ""}${t.hang || ""}${t.annex || ""}`
   const base = t.lawName ? `「${t.lawName}」${ref}` : ref
   // v0.26.1 — 조-범위 준용은 대표 조 뒤에 범위 명시(마지막 조만 보이는 오해 방지).
-  return t.joRange ? `${base}(범위 준용 ${t.joRange} — 대표 ${t.jo}만 2층 추적)` : base
+  const withRange = t.joRange ? `${base}(범위 준용 ${t.joRange} — 대표 ${t.jo}만 2층 추적)` : base
+  // v0.27.0 — 대상 개수 상한 도달은 반드시 표기(무라벨 절단 금지).
+  return t.capped
+    ? `${withRange} ⚠ 준용 대상 ${JUNYONG_TARGET_CAP}건 상한 도달 — 이후 대상 생략됨. 조문 원문에서 준용 목록 전체를 직접 확인하라.`
+    : withRange
 }
 
 // v0.21.0(#G8) — 순수 함수(네트워크 무관)라 export + 단위테스트 대상. 의미론 보강:
@@ -4481,6 +4646,8 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   const getCrossT = makeCrossResolver(oc)
   const selfCtxT: LawCtx = { xml, units, lawTitle, mst }
   const jBlocks: string[] = []
+  // v0.27.1(리뷰 P2) — 서로 다른 타법 해소를 병렬로. 루프와 동일한 순서로 태워야 상한(2) 선택이 기존과 일치한다.
+  getCrossT.prewarm(junyongTargets.filter((t) => t.jo && !t.annex && t.lawName && lawNameKey(t.lawName) !== lawNameKey(lawTitle)).map((t) => t.lawName))
   for (const t of junyongTargets) {
     // 별표 준용(조문 ref 없음)은 자체 개정 연혁이라 라벨만(E4 미착수).
     if (t.annex || !t.jo) {
@@ -4639,9 +4806,9 @@ export function buildDelegationGuard(body: string, jo: string): string[] {
   // v0.23.0(C) — 종결형('…정한다')도 포착(장관/청장은 '이', 위원회는 '가').
   // v0.25.0(리뷰 O2-7) — 누락 종결형 보강: '…이 고시한다/고시하는'(주체 결합 한정)·'고시로 정하는/정하도록/정하여'.
   //   무주체 '고시한다'는 과발동 위험으로 제외(주체 anchor 유지).
-  const toGosi = /(정하여\s*고시|고시로\s*정(?:한다|하는|하도록|하여)|고시하는\s*바|(?:장관|청장)이\s*(?:정|고시)(?:하여|하는|한다)|위원회가\s*(?:정|고시)(?:하여|하는|한다))/.test(text)
+  const toGosi = /(정하여\s*고시|고시로\s*정(?:한다|하는|하도록|하여)|고시하는\s*바|(?:장관|청장|위원장)이\s*(?:정|고시)(?:하여|하는|한다)|위원회가\s*(?:정|고시)(?:하여|하는|한다))/.test(text)
   // v0.23.0(C) — 조사 '이'('부령이 정하는')도 포착.
-  const toRule = /(총리령|[가-힣]{2,12}부령)(?:으로|에|이)\s*정(?:한다|하는|하도록|하여)/.test(text)
+  const toRule = /(총리령|[가-힣]{2,12}부령)(?:으로|에서|에|이)\s*정(?:한다|하는|하도록|하여)/.test(text)
   if (!toGosi && !toRule) return []
   const out = [`── 하위 위임 감지 ⚠ (${jo}: 상위 조문에서 종료 금지) ──`]
   if (toGosi) {
@@ -4652,7 +4819,7 @@ export function buildDelegationGuard(body: string, jo: string): string[] {
   if (toRule) {
     // v0.23.0(C) — 부령 위임이 서식(신청서·계산서·명세서)뿐이면 과발동 완화(공리⑥: 서식·별지<법령 문언).
     // 위임 직후 24자 안에 서식류 명사만 있으면 서식 위임으로 강등. 하나라도 실체 위임이면 강한 경고 유지.
-    const ruleRefs = [...text.matchAll(/(?:총리령|[가-힣]{2,12}부령)(?:으로|에|이)\s*정(?:한다|하는|하도록|하여)([^.\n]{0,24})/g)]
+    const ruleRefs = [...text.matchAll(/(?:총리령|[가-힣]{2,12}부령)(?:으로|에서|에|이)\s*정(?:한다|하는|하도록|하여)([^.\n]{0,24})/g)]
     const substantive = ruleRefs.length === 0 || ruleRefs.some((m) => !/(서식|신청서|신고서|계산서|명세서|증명서|서류|신청)/.test(m[1] || ""))
     if (substantive) {
       out.push(
@@ -4686,6 +4853,7 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   let mst = mstArg
   let versions: LawVersion[] = []
   let pickNote = ""
+  let nameFallbackNote: string | null = null
   // v0.20.0(#9) — mst 직접 지정 + lawName 동시: 버전목록은 후행개정 가드 전용이고 조문 XML(MST 이미 확정)과 독립 →
   // 여기서 await하지 않고 promise만 만들어 아래 조문 XML fetch와 Promise.all로 병렬화(직렬 1왕복 제거).
   let versionsPromise: Promise<LawVersion[]> | null = null
@@ -4699,6 +4867,7 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   }
   if (!mst) {
     const ownVersions = filterVersionsByName(versions, lawName) // 교차법령 행 배제(일치 0건이면 원본)
+    nameFallbackNote = lawNameFallbackNote(versions, lawName) // v0.27.0 — 폴백 유지 + 무경고 금지
     if (efYd && ownVersions.length) {
       const picked = pickVersionInForce(ownVersions, efYd)
       if (picked) {
@@ -4797,6 +4966,7 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
 
   const lines = [
     "법제처 조문 본문(시점별) — korean-law 연혁/수식 회수 결함 보완",
+    ...(nameFallbackNote ? [nameFallbackNote] : []),
     `출처: ${displayUrl}`,
     `법령: ${lawTitle || "N/A"} (MST ${mst}) / 시행일 ${enforceDate ? formatYmd(enforceDate) : "?"}${pickNote}`,
     `대상 조문: ${jo}`,
@@ -4909,6 +5079,8 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
     versions = []
   }
   // v0.21.0(#G2) — 교차법령(시행령·시행규칙 등) 행 배제. '연말 시행본' 참고표기가 타법 버전으로 오염되는 것 방지.
+  // v0.27.0 — 정확일치 0건 폴백은 유지하되 무경고는 금지(lawNameFallbackNote).
+  const nameFallbackNote = lawNameFallbackNote(versions, lawName || lawTitle)
   versions = filterVersionsByName(versions, lawName || lawTitle)
 
   // 조문 본문 회수(현행 XML 내) + 인벤토리 — 순수 함수 위임(v0.25.0 E3 리팩터, 동작 동일).
@@ -4919,6 +5091,7 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
   const clauseCap = full ? 1500 : 320
   const lines: string[] = [
     "법령 적용 타임테이블 — 신구법령+부칙 통합(귀속연도×조문 매트릭스)",
+    ...(nameFallbackNote ? [nameFallbackNote] : []),
     `출처: ${url}`,
     `법령: ${lawTitle || "N/A"} (MST ${mst}) / 부칙 union MST: ${sourceMsts.join(", ")}`,
     `대상 조문: ${specs.map((s) => s.jo + (s.hang || "")).join(", ")} / 귀속연도: ${years.join("·")} / 최초공제연도: ${firstCreditYear !== undefined ? firstCreditYear : "미지정"}`,
@@ -4974,6 +5147,8 @@ export async function buildApplicationTimetable(args: TimetableArgs): Promise<To
       if (ti.dates.length) lines.push(`개정 인벤토리(준용대상 ${t.jo}${t.hang || ""}): ${ti.dates.join(", ")}`)
     }
     // v0.25.0(E3) — 타법 준용 자동 인출(2층 타임라인). 실패 시 E2 라벨로 강등(오귀속 금지).
+    // v0.27.1(리뷰 P2) — 병렬 prewarm(루프와 동일 순서·동일 대상).
+    getCross.prewarm(crossLawJy.slice(0, 2).map((t) => t.lawName))
     for (const t of crossLawJy.slice(0, 2)) {
       const cr = await getCross(t.lawName!)
       if (!cr.ok) {
@@ -5113,9 +5288,12 @@ export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<To
   const specB = sideSpec(args.yearB, args.efYdB, args.mstB, "B")
 
   let versions: LawVersion[] = []
+  let nameFallbackNote: string | null = null
   if (!specA.mst || !specB.mst) {
     versions = await fetchEflawVersions(oc, lawName, 40)
     // v0.21.0(#G2) — 교차법령 행 배제 후 시점 해소(시행령을 '그 시점 시행본'으로 오판하는 것 방지).
+    // v0.27.0 — 정확일치 0건 폴백은 유지하되 무경고는 금지.
+    nameFallbackNote = lawNameFallbackNote(versions, lawName)
     versions = filterVersionsByName(versions, lawName)
   }
   const resolveSide = (spec: { mst: string; efYd: string }, label: string): { mst: string; pickedEnforce: string } => {
@@ -5212,6 +5390,7 @@ export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<To
 
   const diff = diffArticleTexts(textA, textB)
   const lines = [...header]
+  if (nameFallbackNote) lines.push(nameFallbackNote)
   if (hangNote) lines.push(hangNote)
   lines.push("")
 

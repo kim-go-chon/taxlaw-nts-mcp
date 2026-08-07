@@ -320,3 +320,58 @@ test("v0.9.1: 관련규정 헤더 없는 본문 + 조 번호만 인용 → 본�
   assert.equal(result.classification, "citations_no_dates")
   assert.ok(result.citations.length > 0, "본문 직접 추출 패스가 citations를 수집해야 함")
 })
+
+// ── v0.27.0 리뷰 반영 (P1 3건) ──────────────────────────────────────────
+
+// P1: 최댓값 1건이 구법 인용을 은폐하던 것 차단(혼재 시점).
+test("v0.27.0: 최신 인용 + 구법 인용 혼재 → 분류는 유지하되 구법 인용을 경고로 노출", () => {
+  const r = checkYearApplicability({
+    bodyText: [
+      "관련규정",
+      "소득세법 제1조(2015.1.1. 법률 제12345호로 개정된 것)",
+      "법인세법 제2조(2026.1.1. 법률 제99999호로 개정된 것)",
+    ].join("\n"),
+    targetYear: 2026,
+  })
+  assert.equal(r.citations.length, 2)
+  // 분류 라벨은 기존 계약 유지(doctrine-assess가 값별 분기)
+  assert.ok(["valid_current", "target_or_later"].includes(r.classification), r.classification)
+  // 핵심: 구법 인용이 있으면 더 이상 침묵하지 않는다
+  const mixed = r.warnings.find((w) => w.includes("혼재 시점"))
+  assert.ok(mixed, `혼재 시점 경고 누락: ${JSON.stringify(r.warnings)}`)
+  assert.ok(mixed.includes("2015.01.01"), `구법 일자 미표기: ${mixed}`)
+})
+
+test("v0.27.0: 모든 인용이 targetYear 이후면 혼재 경고 없음(과발동 방지)", () => {
+  const r = checkYearApplicability({
+    bodyText: "관련규정\n법인세법 제2조(2026.1.1. 법률 제99999호로 개정된 것)",
+    targetYear: 2026,
+  })
+  assert.ok(!r.warnings.some((w) => w.includes("혼재 시점")), JSON.stringify(r.warnings))
+})
+
+// P1: 사건일·지급일을 법령 개정일로 오인하던 것 차단(날짜 결박).
+test("v0.27.0: 법령 시점 표지 없는 날짜(지급일)는 법령 시점으로 채택하지 않는다", () => {
+  const r = checkYearApplicability({
+    bodyText: "관련규정\n2026.1.1. 지급한 소득은 소득세법 제12조에 따른다",
+    targetYear: 2026,
+  })
+  assert.equal(r.citations.length, 1)
+  assert.equal(r.citations[0].datesAreLawVintage, false, "지급일이 법령 시점으로 결박됨")
+  assert.equal(r.citations[0].latestDate, null)
+  assert.equal(r.classification, "citations_no_dates", `분류: ${r.classification}`)
+})
+
+test("v0.27.0: 법령번호·개정 표지가 있으면 날짜를 법령 시점으로 결박(회귀)", () => {
+  const c = extractCitations("조세특례제한법(2015. 12. 15. 법률 제13560호로 개정된 것) 제30조의5")
+  assert.equal(c.length, 1)
+  assert.equal(c[0].datesAreLawVintage, true)
+  assert.equal(c[0].latestDate, "2015.12.15")
+})
+
+// 검증 중 발견: 헤더 매치 위치 미반영으로 섹션 본문에 헤더 꼬리가 남던 버그.
+test("v0.27.0: extractRelatedSection이 헤더 꼬리를 남기지 않는다", () => {
+  const sec = extractRelatedSection("질의내용 요약\n\n관련 법령:\n소득세법 제1조")
+  assert.ok(sec, "섹션 추출 실패")
+  assert.ok(sec.startsWith("소득세법"), `헤더 잔재: ${JSON.stringify(sec)}`)
+})

@@ -25,7 +25,10 @@ export interface YearCheckInput {
 export interface CitedLawRef {
   rawSnippet: string
   lawNumber: string | null
-  dates: string[]    // YYYY.MM.DD 모두
+  dates: string[]    // YYYY.MM.DD 모두 (결박 여부와 무관하게 원문 그대로 보존)
+  // v0.27.0 — dates가 '법령 시점'으로 인정됐는지. false면 사건일·지급일 등일 수 있어
+  // earliest/latestDate를 비우고 시점 비교에서 제외한다.
+  datesAreLawVintage: boolean
   earliestDate: string | null
   latestDate: string | null
   hasAmendmentClue: boolean
@@ -102,9 +105,12 @@ export function extractRelatedSection(body: string): string | null {
   if (startIdx < 0) return null
 
   // 헤더 길이만큼 진행해서 본문 시작 위치 찾기
+  // v0.27.0 — headerMatch.index 미반영 버그 수정. RELATED_HEADER_PATTERNS는 선행 개행(?:^|\n)을
+  //   포함해 매치하므로 startIdx가 '\n' 위치를 가리킬 수 있는데, 종전엔 매치 길이만 더해
+  //   헤더 꼬리가 섹션 본문에 남았다("관련 법령:" → 섹션이 "령:\n소득세법…"으로 시작).
   const rest = body.slice(startIdx)
   const headerMatch = rest.match(RELATED_HEADER_INLINE)
-  const bodyStart = startIdx + (headerMatch ? headerMatch[0].length : 0)
+  const bodyStart = startIdx + (headerMatch ? (headerMatch.index ?? 0) + headerMatch[0].length : 0)
   let endIdx = body.length
   for (const re of STOP_HEADER_PATTERNS) {
     const m = body.slice(bodyStart).search(re)
@@ -119,6 +125,16 @@ export function extractRelatedSection(body: string): string | null {
 
 const DATE_PATTERN = /(\d{4})\.\s?(\d{1,2})\.\s?(\d{1,2})\.?/g
 const LAW_NUMBER_PATTERN = /법률\s*제\s*(\d{1,6})\s*호/
+// v0.27.0(리뷰 P1) — 날짜 '결박'(date binding).
+//   종전엔 조문이 든 줄의 모든 YYYY.M.D를 법령 시점으로 채택했다. 그래서
+//   "2026.1.1. 지급한 소득은 소득세법 제12조에 따른다"(targetYear=2026)에서 '지급일'을
+//   법령 개정일로 오인해 valid_current로 분류했다(리뷰 재현). 사건일·거래일·지급일이
+//   법령 시점으로 둔갑하면 사문화 판정 전체가 무의미해진다.
+//   → 같은 chunk에 '법령 시점 표지'가 있을 때만 날짜를 법령 시점으로 인정한다.
+//   표지가 없으면 dates는 투명성을 위해 보존하되 earliest/latestDate를 비워
+//   시점 비교에서 제외한다(= citations_no_dates 경로 = 직접 대조 안내).
+//   '시행'은 '시행령/시행규칙'에 포함돼 과결박을 일으키므로 표지에서 제외했다.
+const LAW_VINTAGE_MARKER = /(?:법률|대통령령|총리령|국무총리령|[가-힣]{2,12}부령)\s*제\s*\d+\s*호|개정|신설|폐지|제정|시행일/
 // v0.9.0 — 조 번호 hint. 시점·법률번호·개정단서가 없어도 "법령명 + 제N조"만 있어도
 // 인용으로 간주하기 위한 신호. citations_no_dates / target_or_later_inferred 분기 활성화용.
 const ARTICLE_HINT_PATTERN = /제\s?\d+\s?조/
@@ -167,12 +183,15 @@ export function extractCitations(text: string): CitedLawRef[] {
     // 이후 신규 라벨(citations_no_dates / target_or_later_inferred) 분기에서 활용.
     if (dates.length === 0 && !lawNum && clues.length === 0 && !ARTICLE_HINT_PATTERN.test(chunk)) continue
     dates.sort()
+    // v0.27.0 — 날짜 결박: 법령 시점 표지가 없으면 이 날짜들은 법령 시점이 아니다(사건일·지급일 등).
+    const datesAreLawVintage = dates.length > 0 && LAW_VINTAGE_MARKER.test(chunk)
     out.push({
       rawSnippet: chunk.slice(0, 400),
       lawNumber: lawNum ? `법률 제${lawNum[1]}호` : null,
       dates,
-      earliestDate: dates[0] || null,
-      latestDate: dates[dates.length - 1] || null,
+      datesAreLawVintage,
+      earliestDate: datesAreLawVintage ? dates[0] : null,
+      latestDate: datesAreLawVintage ? dates[dates.length - 1] : null,
       hasAmendmentClue: clues.length > 0,
       amendmentClues: clues,
       hasSupersessionClue,
@@ -345,6 +364,21 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
         }
       } else {
         classification = anyAmendmentClue ? "target_or_later" : "valid_current"
+        // v0.27.0(리뷰 P1) — 혼재 시점(mixed vintage) 은폐 차단.
+        //   위 maxYear는 '모든 인용 중 가장 늦은 일자' 하나만 targetYear와 비교한다.
+        //   그래서 소득세법 제1조(2015) + 법인세법 제2조(2026), targetYear=2026 이면
+        //   2015년 구법 인용이 있는데도 valid_current + 경고 0건이 나왔다(리뷰 재현).
+        //   분류 라벨은 유지한다(doctrine-assess가 값별로 분기하므로 신규 값 추가는 회귀 위험).
+        //   대신 구법 인용을 명시적으로 드러내 '침묵'만 제거한다.
+        const stale = [...new Set(allLatest.filter((d) => Number(d.slice(0, 4)) < year))].sort()
+        if (stale.length > 0) {
+          warnings.push(
+            `⚠ 혼재 시점 — 인용 ${citations.length}건 중 ${stale.length}건의 시점(${stale.join(", ")})이 targetYear(${year})보다 앞섭니다. 전체 분류는 '가장 늦은 일자' 기준이라 현행으로 보이지만, 구법 기반 인용이 결론의 핵심 근거일 수 있습니다.`,
+          )
+          guidance.push(
+            `구법 시점 인용(${stale.slice(0, 3).join(", ")})이 결론의 근거인지 본문에서 확인하고, 해당 조문은 korean-law-mcp.get_law_text로 ${year}년 시점 문구와 직접 대조하세요.`,
+          )
+        }
       }
     }
 
