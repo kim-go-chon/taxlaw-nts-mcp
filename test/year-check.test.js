@@ -375,3 +375,39 @@ test("v0.27.0: extractRelatedSection이 헤더 꼬리를 남기지 않는다", (
   assert.ok(sec, "섹션 추출 실패")
   assert.ok(sec.startsWith("소득세법"), `헤더 잔재: ${JSON.stringify(sec)}`)
 })
+
+// ── v0.27.3(라이브 검증에서 발견) 구법 경계 오탐 ─────────────────────────
+// 심판례 본문은 '청구법인'이 수십~수백 회 등장한다. 종전 패턴은 교체(|) 사정거리가
+// 첫 대안에만 걸려 '구법'이 substring 매칭되어, 사실상 모든 결정례가 '구법 기반'으로
+// 오분류되고 경고 라벨이 수십 회 반복되어 신호가 무력화됐다.
+test("v0.27.3: '청구법인'을 구법 표기로 오탐하지 않는다", () => {
+  const c = extractCitations("청구법인은 2023사업연도 법인세 신고시 소득세법 제12조를 적용하였다")
+  assert.equal(c.length, 1)
+  assert.ok(!c[0].amendmentClues.includes("구법/구조문 표기"), `오탐: ${JSON.stringify(c[0].amendmentClues)}`)
+})
+
+test("v0.27.3: '연구법인'·'요구법령'·'청구조문'도 오탐하지 않는다", () => {
+  for (const t of ["연구법인 제10조", "요구법령 제10조", "청구조문 제10조"]) {
+    const c = extractCitations(t)
+    assert.ok(!c[0].amendmentClues.includes("구법/구조문 표기"), `오탐(${t}): ${JSON.stringify(c[0].amendmentClues)}`)
+  }
+})
+
+test("v0.27.3: 진짜 구법 표기는 계속 감지(회귀)", () => {
+  for (const t of ["구 조세특례제한법 제6조", "이는 구법 제10조 규정이다", "개정 전 구 조문 제10조"]) {
+    const c = extractCitations(t)
+    assert.ok(c[0].amendmentClues.includes("구법/구조문 표기"), `미감지(${t}): ${JSON.stringify(c[0].amendmentClues)}`)
+  }
+})
+
+test("v0.27.3: 심판례 본문에서 partially_outdated 오분류가 사라진다", () => {
+  const body = [
+    "관련규정",
+    "조세특례제한법 제6조(2023.1.1. 법률 제19199호로 개정된 것)",
+    "청구법인은 이에 불복하여 심판청구를 제기하였다",
+    "청구법인의 대표이사는 동생업체를 승계하였다",
+  ].join("\n")
+  const r = checkYearApplicability({ bodyText: body, targetYear: 2023 })
+  const clues = r.citations.flatMap((c) => c.amendmentClues)
+  assert.ok(!clues.includes("구법/구조문 표기"), `오탐 잔존: ${JSON.stringify(clues)}`)
+})

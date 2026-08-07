@@ -141,7 +141,12 @@ const ARTICLE_HINT_PATTERN = /제\s?\d+\s?조/
 // 약한 단서: 단순 개정/신설 등은 살아있는 조문일 수도 있음.
 const AMENDMENT_CLUE_PATTERNS: Array<{ re: RegExp; label: string; supersession: boolean }> = [
   { re: /개정\s*전|개정되기\s*전/, label: "개정 전 조문 인용", supersession: false },
-  { re: /(?:^|[^가-힣])구\s+[가-힣]+법(?:령|률)?|구법|구\s*조문/, label: "구법/구조문 표기", supersession: false },
+  // v0.27.3(라이브 검증) — 경계 오탐 수정. 종전엔 교체(|)의 사정거리가 첫 대안에만 걸려
+  //   '구법'·'구조문'이 substring으로 매칭됐다: 청'구법'인 / 연'구법'인 / 요'구법'령 / 청'구조문'.
+  //   심판례·판례는 '청구법인'이 수십~수백 회 등장하므로 사실상 모든 결정례가 '구법 기반'으로
+  //   오분류되어 partially_outdated 오판 + 경고 라벨 수십 회 반복(신호 무력화)을 일으켰다.
+  //   → 전체 대안을 그룹으로 묶어 앞 경계(문자열 시작 또는 비한글)를 강제한다.
+  { re: /(?:^|[^가-힣])(?:구\s+[가-힣]+법(?:령|률)?|구법|구\s*조문)/, label: "구법/구조문 표기", supersession: false },
   { re: /삭제\s*\)/, label: "삭제 조문", supersession: true },
   { re: /폐지\s*\)/, label: "폐지 조문", supersession: true },
   { re: /폐지된\s*[「『]?\s*[가-힣]+(?:법|규정|령)/, label: "법령 폐지 표기", supersession: true },
@@ -348,7 +353,7 @@ export function checkYearApplicability(input: YearCheckInput): YearCheckResult {
         } else if (anyAmendmentClue) {
           classification = "partially_outdated"
           warnings.push(
-            `인용 법령에 개정 단서('${citations.flatMap((c) => c.amendmentClues).join(", ")}')가 있고 인용 시점(${allLatest.sort().slice(-1)[0]})이 targetYear(${year})보다 앞섭니다. 결론 중 숫자·요건이 바뀐 부분은 사문화 가능성이 있고, 구조적 결론(예: 분리과세 여부)만 유지될 수 있습니다.`,
+            `인용 법령에 개정 단서('${[...new Set(citations.flatMap((c) => c.amendmentClues))].join(", ")}')가 있고 인용 시점(${allLatest.sort().slice(-1)[0]})이 targetYear(${year})보다 앞섭니다. 결론 중 숫자·요건이 바뀐 부분은 사문화 가능성이 있고, 구조적 결론(예: 분리과세 여부)만 유지될 수 있습니다.`,
           )
           guidance.unshift(
             `korean-law-mcp으로 ${year}년 시점의 동일 법조문 문구를 끌어와 (1) 어떤 부분이 동일하고(예규 유지), (2) 어떤 부분이 달라졌는지(부분 사문화) 줄단위로 분리해 보고하세요.`,
