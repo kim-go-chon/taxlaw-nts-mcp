@@ -39,7 +39,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.27.3"
+const VERSION = "0.27.4"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -2280,7 +2280,12 @@ export function extractNtsCitations(text: string): NtsCitation[] {
   //   꼬리 ",\s*번호"를 흡수해 각 번호를 동일 연도·접두(두/누/구합 등)로 재구성해 개별 court로 push.
   //   합성 raw는 "2021두39998" 형태(원 표기는 ", 39998"). 꼬리 번호는 직후가 court 접두(한글)면 새 인용의 연도이므로
   //   흡수하지 않도록 (?![0-9가-힣])로 경계 고정(예: "…, 2020구합1234"의 2020은 미흡수). 중복·이중플래그는 push의 seen이 흡수.
-  for (const m of src.matchAll(/(\d{4})\s?(두|누|구합|구단|헌바|헌가|헌마)\s?(\d{2,7})((?:\s*,\s*\d{2,7}(?![0-9가-힣]))+)?/g)) {
+  // v0.27.4(라이브 검증) — 구분자 [\s-]? 로 통일. 종전엔 공백만 허용해 '대법원-2006-두-18652',
+  //   '서울행정법원-2018-구합-62461' 같은 하이픈 표기를 침묵 드롭했다. 이 표기는 다름 아닌
+  //   본 MCP search_taxlaw_documents가 '문서번호:'로 출력하는 형식이라, 검색 결과를 그대로
+  //   산출물에 옮기면 인용 게이트가 통과시켜 버리는 라운드트립 구멍이었다(검출 0건=경고 없음).
+  //   조심/국심은 v0.13.x에서 같은 이유로 이미 [\s-]?로 고쳤는데 법원 패턴만 남아 있었다.
+  for (const m of src.matchAll(/(\d{4})[\s-]?(두|누|구합|구단|헌바|헌가|헌마)[\s-]?(\d{2,7})((?:\s*,\s*\d{2,7}(?![0-9가-힣]))+)?/g)) {
     const [, year, prefix, first, tail] = m
     push(`${year}${prefix}${first}`, "court")
     if (tail) for (const t of tail.matchAll(/\d{2,7}/g)) push(`${year}${prefix}${t[0]}`, "court")
@@ -2887,7 +2892,11 @@ async function getTaxlawDocumentText(args: DocumentDetailArgs): Promise<ToolResp
   ], { toolName: "get_taxlaw_document_text" })
 }
 
-function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailData["ASIQTB002PR01"], full: boolean, referer: string, targetYear?: number): string {
+// v0.27.4(라이브 루프) — capOverride 추가. 호출부가 결과를 다시 truncate하면 꼬리의 guardLines가
+//   통째로 잘린다(v0.27.1에서 이 함수 내부만 "경고 우선 예산"으로 고치고 호출부를 놓친 누락).
+//   research_taxlaw_topic이 9,000/20,000자로 재절단해 판단·결론부 확인·요지-결과 정합성·연도검증이
+//   전부 사라지고 있었다(실측 3/3). cap을 내부로 넘겨 budgetedJoin이 경고를 먼저 확보하게 한다.
+function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailData["ASIQTB002PR01"], full: boolean, referer: string, targetYear?: number, capOverride?: number): string {
   const relatedLaws = (detail.dcmRltnStttList || [])
     .map((item) => cleanText(item.ntstTextNm))
     .filter(Boolean)
@@ -3010,7 +3019,7 @@ function formatDocumentDetail(id: string, dcm: TaxlawDcm, detail: TaxlawDetailDa
   }
 
   // v0.27.1 — 경고 우선 예산 배분(budgetedJoin). 안전 경고는 잘리지 않고 본문이 남은 예산으로 잘린다.
-  return budgetedJoin(lines, guardLines, full ? 50000 : 30000)
+  return budgetedJoin(lines, guardLines, capOverride ?? (full ? 50000 : 30000))
 }
 
 async function assessDoctrineValidityTool(args: AssessDoctrineArgs): Promise<ToolResponse> {
@@ -5552,13 +5561,19 @@ export async function researchTaxlawTopic(args: ResearchTopicArgs): Promise<Tool
       const data = await postTaxlawAction<TaxlawDetailData>("ASIQTB002PR01", { dcmDVO: { ntstDcmId: id } }, referer)
       const detail = data.ASIQTB002PR01
       if (!detail.dcmDVO) return `[첨부 실패] ${id} — 상세 응답에 본문 없음. get_taxlaw_document_text로 개별 조회.`
-      const body = truncate(
-        formatDocumentDetail(id, detail.dcmDVO, detail, true, referer, targetYear),
-        args.full === true ? 20000 : 9000,
-      )
+      // v0.27.4 — 재절단 금지. cap을 formatDocumentDetail로 넘겨 내부 budgetedJoin이
+      //   안전 경고(연도검증·구조개편·통칙)를 먼저 확보하게 한다.
+      const body = formatDocumentDetail(id, detail.dcmDVO, detail, true, referer, targetYear, args.full === true ? 20000 : 9000)
+      // v0.27.4 — isFull=true 전제가 깨지는 구간 보정. detectHoldingTruncation은 isFull이면
+      //   '전문이 있으니 절단 경고 불필요'로 침묵하는데, 이 매크로는 그 뒤 cap으로 실제로 자른다.
+      //   실측: 첨부에 주문이 없는데 결론부 경고도 없었다 → 잘린 경우에만 조건부 강경고를 덧붙인다.
+      const cut = /\[truncated to/.test(body)
+      const holdingWarn = cut && (PRECEDENT_CODES.has(code) || QUESTION_CODES.has(code))
+        ? `\n⚠ 이 첨부는 출력 상한으로 잘렸습니다 — ${PRECEDENT_CODES.has(code) ? "주문·판단(결론부)" : "회신 결론부"}이 누락됐을 수 있습니다. 결론·분류를 인용하기 전 get_taxlaw_document_text(id="${id}", full=true)로 개별 재조회하세요(요지만으로 단정 금지 — 요지≠holding).`
+        : ""
       // v0.21.0(#W-1) — targetYear 지정 시 픽별 유효성 자동 채점 1~2줄 첨부(추가 네트워크 0, 이미 회수한 detail 재사용).
       const validity = targetYear !== undefined ? compactValidityLine(id, detail.dcmDVO, detail, targetYear) : ""
-      return validity ? `${body}\n${validity}` : body
+      return (validity ? `${body}\n${validity}` : body) + holdingWarn
     } catch (error) {
       return `[첨부 실패] ${id} — ${error instanceof Error ? error.message : String(error)}. get_taxlaw_document_text로 개별 조회.`
     }

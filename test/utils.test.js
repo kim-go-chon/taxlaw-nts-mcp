@@ -1051,3 +1051,47 @@ test("fitBlocks: 전부 들어가면 생략 0", () => {
   assert.deepEqual(kept, ["a", "b"])
   assert.equal(omitted, 0)
 })
+
+// ── v0.27.4(라이브 검증) 법원 사건번호 하이픈 표기 ─────────────────────
+// search_taxlaw_documents가 '문서번호: 대법원-2006-두-18652'로 출력하는데
+// verify_nts_citations가 그 형식을 추출하지 못해, 검색 결과를 그대로 옮기면
+// 인용 게이트가 검출 0건으로 통과시키던 라운드트립 구멍.
+test("extractNtsCitations(v0.27.4): 법원 문서번호 하이픈 표기 추출", () => {
+  const t = "대법원-2006-두-18652 / 서울행정법원-2018-구합-62461 / 울산지방법원-2019-구합-6417 / 서울고등법원-2018-누-30459"
+  const norm = extractNtsCitations(t).filter((c) => c.kind === "court").map((c) => c.normalized)
+  for (const want of ["2006두18652", "2018구합62461", "2019구합6417", "2018누30459"]) {
+    assert.ok(norm.includes(want), `미추출 ${want}: ${JSON.stringify(norm)}`)
+  }
+})
+
+test("extractNtsCitations(v0.27.4): 기존 표기 회귀 + 병합사건 유지", () => {
+  const norm = extractNtsCitations("2006두18652, 2021두39997, 39998 및 2019헌바73").filter((c) => c.kind === "court").map((c) => c.normalized)
+  for (const want of ["2006두18652", "2021두39997", "2021두39998", "2019헌바73"]) {
+    assert.ok(norm.includes(want), `누락 ${want}: ${JSON.stringify(norm)}`)
+  }
+})
+
+test("extractNtsCitations(v0.27.4): 과발동 방지(일반 문장은 미추출)", () => {
+  const norm = extractNtsCitations("2024년 두 번째 안건, 제2020호 구합의 건").filter((c) => c.kind === "court")
+  assert.equal(norm.length, 0, `오탐: ${JSON.stringify(norm)}`)
+})
+
+// ── v0.27.4(라이브 루프) formatDocumentDetail capOverride ───────────────
+// research_taxlaw_topic이 결과를 다시 truncate해 꼬리의 안전 경고가 통째로 잘리던 것.
+// budgetedJoin에 cap을 넘기면 경고가 먼저 확보된다(호출부 재절단 금지).
+test("budgetedJoin(v0.27.4): capOverride 경로에서도 경고 우선 보존", () => {
+  const head = ["본문 ".repeat(6000)]                 // 약 18,000자
+  const guard = ["── 관련규정 연도 적용여부 검증 ──", "⚠ 구법조문 기반 가능성"]
+  const out = budgetedJoin(head, guard, 9000)          // research 기본 cap
+  for (const g of guard) assert.ok(out.includes(g), `경고 소실: ${g}`)
+  assert.ok(out.includes("[truncated"), "본문 절단 표기 필요")
+  assert.ok(out.length <= 9000 + 300, `상한 초과: ${out.length}`)
+})
+
+test("budgetedJoin(v0.27.4): 종전 방식(재truncate)이었다면 경고가 잘렸음을 대조", () => {
+  const head = ["본문 ".repeat(6000)]
+  const guard = ["⚠ 반드시 보존되어야 하는 결론부 경고"]
+  const oldWay = truncate([...head, ...guard].join("\n"), 9000)
+  assert.ok(!oldWay.includes("반드시 보존"), "전제 확인: 종전 방식은 경고가 잘려야 함")
+  assert.ok(budgetedJoin(head, guard, 9000).includes("반드시 보존"))
+})

@@ -267,13 +267,13 @@ function buildSignals(
     signals.push({
       kind: "citations_no_dates",
       severity: "info",
-      message: `인용 조문 ${yearCheck.citations.length}건 추출됐으나 시점 단서(YYYY.MM.DD)가 없어 자동 시점 비교 불가. korean-law-mcp.get_law_text로 직접 대조.`,
+      message: `인용 블록 ${yearCheck.citations.length}건 추출됐으나 시점 단서(YYYY.MM.DD)가 없어 자동 시점 비교 불가. korean-law-mcp.get_law_text로 직접 대조.`,
     })
   } else if (yearCheck.classification === "target_or_later_inferred") {
     signals.push({
       kind: "recent_doctrine_inferred",
       severity: "ok",
-      message: `최근 심판례·해석례 + 인용 ${yearCheck.citations.length}건 → 현행 적용 가능성 높음. 단, 인용 법령 현행 본문은 직접 대조 권장.`,
+      message: `최근 심판례·해석례 + 인용 블록 ${yearCheck.citations.length}건 → 현행 적용 가능성 높음. 단, 인용 법령 현행 본문은 직접 대조 권장.`,
     })
   }
 
@@ -417,7 +417,10 @@ function buildScorecardLines(
   lines.push(`│ 제목: ${meta.title || "(제목 없음)"}`)
   lines.push(`│ targetYear: ${targetYear ?? "(미지정)"}`)
   lines.push(`│ 자동 검증: ${yearCheck.classification} — ${yearCheck.classificationLabel}`)
-  lines.push(`│ 인용 조문 추출: ${yearCheck.citations.length}건${yearCheck.usedMetadataFallback ? " (메타 fallback)" : ""}`)
+  // v0.27.4(라이브 검증) — 라벨 혼동 제거. yearCheck.citations는 관련규정 섹션의 "인용 블록"(줄 단위 덩어리)이고
+  //   아래 "인용 조문 (자동 추출)"은 extractLawArticleRefs의 "조문 참조" 단위다. 둘 다 "인용 조문"으로 표기해
+  //   "추출 1건"인데 목록엔 15개가 나열되는 모순으로 읽혔다(실측). 개념별로 이름을 분리한다.
+  lines.push(`│ 인용 블록(관련규정 섹션): ${yearCheck.citations.length}건${yearCheck.usedMetadataFallback ? " (메타 fallback)" : ""}`)
   lines.push(`│`)
   lines.push(`│ 신호:`)
   for (const s of signals) {
@@ -502,7 +505,7 @@ export function formatAssessment(a: DoctrineAssessment): string[] {
     lines.push("")
   }
   if (a.citedArticles.length > 0) {
-    lines.push("인용 조문 (자동 추출):")
+    lines.push(`인용 조문 참조 (자동 추출): ${a.citedArticles.length}건${a.citedArticles.length > 20 ? " — 아래 20건만 표시" : ""}`)
     for (const c of a.citedArticles.slice(0, 20)) {
       const parts = [c.lawName, c.article, c.paragraph, c.item].filter(Boolean).join(" ")
       lines.push(`  - ${parts}`)
