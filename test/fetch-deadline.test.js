@@ -105,3 +105,25 @@ test("fetchWithRetryCore: 정상 응답은 body를 읽어 반환", async () => {
     globalThis.fetch = original
   }
 })
+
+// ── v0.27.6(부분장애 검증) verify 헤더가 실제 결과를 반영하는가 ──────────
+// 실측(NTS 다운 중): 3건 전부 조회 실패인데 헤더가 "검출 3건 중 3건 검증"으로 찍혀
+// 상세·요약을 읽지 않으면 인용 게이트 통과로 오독됐다. 헤더는 결과 확정 후 조립해야 한다.
+const { verifyNtsCitations } = await import("../build/index.js")
+
+test("verifyNtsCitations(v0.27.6): 상류 장애 시 헤더가 '전부 조회 실패'를 명시", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = () => Promise.reject(new Error("Connect Timeout Error"))
+  try {
+    const r = await verifyNtsCitations({ text: "조심-2025-중-2511" })
+    const t = r.content.map((c) => c.text).join("\n")
+    assert.ok(!/중 \d+건 검증/.test(t), `장애인데 '검증' 표기 잔존: ${t.split("\n")[1]}`)
+    assert.match(t, /전부 조회 실패/, "헤더에 전부 실패 고지 없음")
+    assert.match(t, /인용 게이트를 통과시키지 마라/, "게이트 통과 금지 문구 없음")
+    assert.match(t, /\? 실패 1/, "요약의 실패 카운트 불일치")
+    // 장애를 '미발견'으로 둔갑시키면 안 된다(v0.21.0 P0 회귀 방지)
+    assert.match(t, /✗ 미발견 0/, "장애가 미발견으로 둔갑")
+  } finally {
+    globalThis.fetch = original
+  }
+})

@@ -40,7 +40,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.27.5"
+const VERSION = "0.27.6"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -2442,7 +2442,10 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
   const hasClaims = Array.isArray(args.claims) && args.claims.length > 0
   const lines = [
     "── NTS 인용 실존 일괄 검증 ──",
-    `검출 ${all.length}건 중 ${cits.length}건 검증${all.length > cap ? ` (초과 ${all.length - cap}건은 maxCitations 확대 후 재호출)` : ""}.`,
+    // v0.27.6(부분장애 검증) — 이 줄은 결과가 나오기 전 조립되므로 cits.length는 '시도 건수'다.
+    //   NTS 장애로 3건 전부 조회 실패인데도 "검출 3건 중 3건 검증"으로 찍혀, 상세·요약을 안 읽으면
+    //   통과로 오독됐다(v0.27.1 '表示 N개' 불일치와 동형). 실제 결과 확정 후 아래에서 이 줄을 교체한다.
+    "__VERIFY_HEADER__",
     "⚠ 실존 확인 ≠ 명제 적합성 — 결론 인용 전 full 본문(주문·판단)으로 그 문서가 명제를 실제 지지하는지 별도 대조하라.",
     hasClaims
       ? "✓ claims 제출됨 → 명제 결박 ACTIVE 검사 수행(주장 핵심어↔본문 매칭률)."
@@ -2591,6 +2594,16 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
   const claimUnmatched = claimOrphans.length
   if (claimUnmatched) {
     lines.push("", `⚠ claims 미대응 ${claimUnmatched}건 — text에서 미추출(오타·미지원 포맷·maxCitations 캡): [${claimOrphans.join(", ")}]. 해당 명제는 미검증.`)
+  }
+  // v0.27.6 — 헤더를 실제 결과로 교체(시도 건수 → 확인/실패 분해). 조회 실패가 섞이면 헤더에서부터 경고.
+  const overflowNote = all.length > cap ? ` (초과 ${all.length - cap}건은 maxCitations 확대 후 재호출)` : ""
+  const headerIdx = lines.indexOf("__VERIFY_HEADER__")
+  if (headerIdx >= 0) {
+    lines[headerIdx] = failed === cits.length && cits.length > 0
+      ? `⚠ 검출 ${all.length}건 — ${failed}건 전부 조회 실패(상류 장애 가능)로 실존 미검증${overflowNote}. 이 결과로 인용 게이트를 통과시키지 마라.`
+      : failed > 0
+        ? `검출 ${all.length}건 중 ${confirmed}건 확인 / ${notFound}건 미발견 / ⚠ ${failed}건 조회 실패(미검증)${overflowNote}.`
+        : `검출 ${all.length}건 중 ${cits.length}건 검증${overflowNote}.`
   }
   lines.push("", `요약: ✓ 확인 ${confirmed} / ✗ 미발견 ${notFound} / ? 실패 ${failed} / 검출 ${all.length}` +
     `${unparsed.length ? ` / ⚠추출실패 ${unparsed.length}` : ""}` +
