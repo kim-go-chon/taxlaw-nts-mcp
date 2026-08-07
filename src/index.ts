@@ -40,7 +40,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.27.6"
+const VERSION = "0.27.7"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -1580,6 +1580,60 @@ function runWithToolBudget<T>(fn: () => Promise<T>): Promise<T> {
 //   끝내지 않으면 도구 호출이 사실상 무한 대기하고, 에이전트가 영구히 막힌다(최악의 실패 모드).
 //   read를 넘기면 body를 타이머 안에서 읽고, 중단 시 abort가 스트림까지 실제로 끊는다.
 //   read=null(세션 초기화처럼 헤더만 쓰는 경로)은 종전 동작 그대로.
+// ── v0.27.7 상류 서킷 브레이커 ────────────────────────────────────────────
+// 계기(실사고 2026-08-07): 대량 검증 루프 중 NTS가 느려지기 시작했는데, 이 코드가 호출마다
+//   최대 4회 재시도(연결 타임아웃 10s×4 + 백오프)를 계속 던져 트래픽을 4배로 증폭했다.
+//   결과: 스로틀링이 IP 차단으로 승격(taxlaw/hometax/www.nts 전부 차단, 남들은 정상 접속).
+//   사용자 입장에서도 호출 1건당 47초를 기다린 뒤 실패를 받았다(실측).
+// 설계:
+//   · 호스트별로 격리 — NTS가 죽어도 법제처 경로는 영향 없음(실측으로 확인된 격리 특성 유지).
+//   · '연결 실패'만 집계 — HTTP 4xx/5xx는 서버가 응답한 것이므로 건강 신호로 취급하지 않는다.
+//   · 1회 실패부터 재시도를 0으로 낮추고(빠른 실패), threshold회 연속 실패면 회로를 연다.
+//   · 쿨다운은 지수 증가(상한 10분). 성공 1회면 즉시 닫힌다(half-open 성공).
+interface CircuitState { fails: number; openUntil: number; cooldownMs: number }
+const circuits = new Map<string, CircuitState>()
+const envNum = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : d }
+const circuitThreshold = () => envNum("TAXLAW_CIRCUIT_THRESHOLD", 3)
+const circuitBaseMs = () => envNum("TAXLAW_CIRCUIT_COOLDOWN_MS", 60000)
+const CIRCUIT_MAX_MS = 10 * 60 * 1000
+
+function hostOf(url: string): string { try { return new URL(url).host } catch { return "unknown" } }
+function circuitOf(host: string): CircuitState {
+  let c = circuits.get(host)
+  if (!c) { c = { fails: 0, openUntil: 0, cooldownMs: circuitBaseMs() }; circuits.set(host, c) }
+  return c
+}
+// 연결 실패(네트워크 도달 불가·타임아웃)만 카운트. HTTP 상태 실패는 제외.
+function isConnectFailure(err: unknown): boolean {
+  const m = err instanceof Error ? `${err.name} ${err.message}${(err as Error & { cause?: Error }).cause?.message ?? ""}` : String(err)
+  return /fetch failed|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|Connect Timeout|AbortError|aborted|socket hang up|network/i.test(m)
+}
+function circuitOpenMs(host: string): number {
+  const c = circuits.get(host)
+  if (!c || !c.openUntil) return 0
+  const left = c.openUntil - Date.now()
+  if (left <= 0) { c.openUntil = 0; return 0 }   // 쿨다운 종료 → half-open(1회 시도 허용)
+  return left
+}
+function circuitRecordFailure(host: string): void {
+  const c = circuitOf(host)
+  c.fails++
+  if (c.fails >= circuitThreshold()) {
+    c.cooldownMs = Math.min(c.openUntil ? c.cooldownMs * 2 : circuitBaseMs(), CIRCUIT_MAX_MS)
+    c.openUntil = Date.now() + c.cooldownMs
+  }
+}
+function circuitRecordSuccess(host: string): void {
+  const c = circuits.get(host)
+  if (c) { c.fails = 0; c.openUntil = 0; c.cooldownMs = circuitBaseMs() }
+}
+/** 테스트·운영 리셋용. */
+export function resetCircuits(): void { circuits.clear() }
+/** 현재 회로 상태(진단용). */
+export function circuitStatus(): Array<{ host: string; fails: number; openForMs: number }> {
+  return [...circuits.entries()].map(([host, c]) => ({ host, fails: c.fails, openForMs: Math.max(0, c.openUntil - Date.now()) }))
+}
+
 export async function fetchWithRetryCore<T>(
   url: string,
   init: RequestInit,
@@ -1587,7 +1641,20 @@ export async function fetchWithRetryCore<T>(
   read: ((r: Response) => Promise<T>) | null,
 ): Promise<{ response: Response; body: T | null }> {
   let lastError: unknown
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  // v0.27.7 — 회로가 열려 있으면 네트워크를 건드리지 않고 즉시 실패한다(상류 회복 여유 + 빠른 실패).
+  const host = hostOf(url)
+  const openMs = circuitOpenMs(host)
+  if (openMs > 0) {
+    throw new TaxlawMcpError(
+      `[UPSTREAM_CIRCUIT_OPEN] ${host} 연결 실패가 연속 ${circuitThreshold()}회 이상이라 ${Math.ceil(openMs / 1000)}초간 호출을 차단했습니다(서킷 오픈). ` +
+      "⚠ '데이터 없음'이 아니라 상류 장애/차단입니다 — 결과를 추측·생성하지 마라. " +
+      "잠시 후 재시도하거나 다른 상류(법제처=korean-law-mcp)로 우회하세요. 반복 호출은 차단을 연장시킵니다.",
+      ErrorCodes.API_ERROR,
+    )
+  }
+  // 이미 연결 실패가 쌓였으면 재시도를 접는다 — 죽은 상류에 4배 부하를 얹지 않기 위해.
+  const effRetries = circuitOf(host).fails > 0 ? 0 : retries
+  for (let attempt = 0; attempt <= effRetries; attempt++) {
     // v0.21.0(#G14) — 매 시도 전 남은 예산 확인. 소진이면 즉시 중단(부분 결과만 유효, 재호출 권장).
     const budget = currentBudget()
     const remaining = remainingBudgetMs(budget?.deadlineAt)
@@ -1602,10 +1669,11 @@ export async function fetchWithRetryCore<T>(
     const timeout = setTimeout(() => controller.abort(), Math.min(fetchTimeoutMs(), remaining))
     try {
       const response = await fetch(url, { ...init, signal: controller.signal })
-      if (response.ok || ![429, 503, 504].includes(response.status) || attempt === retries) {
+      if (response.ok || ![429, 503, 504].includes(response.status) || attempt === effRetries) {
         // ★ body 읽기를 타이머 해제 '전'에 수행 — 본문 스트림 정지도 abort로 끊긴다.
         const body = read ? await read(response) : null
         clearTimeout(timeout)
+        circuitRecordSuccess(host)   // v0.27.7 — 상류가 응답했으므로 회로 복구
         return { response, body }
       }
       // v0.27.0(리뷰 P2) — 재시도 대상 HTTP 응답도 lastError에 기록. 종전엔 catch 경로만 기록해
@@ -1616,7 +1684,7 @@ export async function fetchWithRetryCore<T>(
     } catch (error) {
       clearTimeout(timeout)
       lastError = error
-      if (attempt === retries) break
+      if (attempt === effRetries) break
     }
     // v0.21.0(#G14) — 재시도 백오프도 남은 예산이 백오프보다 적으면 중단(대기 후 다시 소진 확인의 낭비 제거).
     const backoff = 700 * Math.pow(2, attempt)
@@ -1627,6 +1695,8 @@ export async function fetchWithRetryCore<T>(
   const err = lastError instanceof Error ? lastError : new Error(String(lastError))
   const cause = (err as Error & { cause?: unknown }).cause
   const causeText = cause instanceof Error ? `: ${cause.message}` : ""
+  // v0.27.7 — 연결 실패만 회로에 기록(HTTP 상태 실패는 상류가 살아있다는 뜻이므로 제외).
+  if (isConnectFailure(err)) circuitRecordFailure(host)
   throw new TaxlawMcpError(`${err.message}${causeText}`, ErrorCodes.API_ERROR)
 }
 
@@ -3814,7 +3884,21 @@ export function extractArticleBody(joBlock: string): { text: string; imageUrls: 
   const re = /<!\[CDATA\[([\s\S]*?)\]\]>/g
   let m: RegExpExecArray | null
   while ((m = re.exec(joBlock))) chunks.push(m[1])
-  let text = chunks.length > 0 ? chunks.join("") : joBlock
+  // v0.27.7 — 항/호/목 번호 중복 제거. 법제처 XML은 번호를 <항번호>와 <항내용> 양쪽에 담는다:
+  //   <항번호>①</항번호><항내용>① 이 조에서 …</항내용>
+  //   CDATA를 그대로 이어붙이면 "①①", "1.1.", "가.가."가 되어 매 조문 본문에 노이즈가 깔린다
+  //   (법인세법 실측 642/642 항 전부 중복, 본문 175,687자 중 1,912자=1.09%).
+  //   부작용도 있었다: 항 분할 split(/(?=[①②③…])/)이 "①" 단독 조각을 하나 더 만들어냈다.
+  //   순수 번호 청크가 '바로 뒤 청크의 접두'일 때만 생략한다 — 둘이 다르면 보존하므로 정보 손실 없음.
+  const MARKER_ONLY = /^(?:[①-⑳]|\d{1,2}\.|[가-힣]\.)$/
+  const deduped: string[] = []
+  for (let i = 0; i < chunks.length; i++) {
+    const cur = chunks[i].trim()
+    const next = chunks[i + 1]
+    if (cur && cur.length <= 4 && MARKER_ONLY.test(cur) && next && next.trimStart().startsWith(cur)) continue
+    deduped.push(chunks[i])
+  }
+  let text = deduped.length > 0 ? deduped.join("") : joBlock
   text = text
     .replace(/<img[^>]*flSeq=(\d+)[^>]*>/gi, (_s, n) => ` [수식이미지→${MOLEG_BASE}/DRF/flDownload.do?flSeq=${n}] `)
     .replace(/<img\b[^>]*>/gi, " [수식이미지] ")

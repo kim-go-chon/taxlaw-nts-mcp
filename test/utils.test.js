@@ -1095,3 +1095,41 @@ test("budgetedJoin(v0.27.4): 종전 방식(재truncate)이었다면 경고가 �
   assert.ok(!oldWay.includes("반드시 보존"), "전제 확인: 종전 방식은 경고가 잘려야 함")
   assert.ok(budgetedJoin(head, guard, 9000).includes("반드시 보존"))
 })
+
+// ── v0.27.7 항/호/목 번호 중복 제거 ─────────────────────────────────────
+// 법제처 XML은 번호를 <항번호>와 <항내용> 양쪽에 담아, CDATA를 이어붙이면 "①①"이 된다.
+// 실측(법인세법): 642/642 항 전부 중복, 본문 175,687→173,301자(1.36% 절감).
+test("extractArticleBody(v0.27.7): 항 번호 중복(①①) 제거", () => {
+  const blk = "<조문단위><조문내용><![CDATA[제25조(제목)]]></조문내용>" +
+    "<항><항번호><![CDATA[①]]></항번호><항내용><![CDATA[① 첫째 항 내용]]></항내용></항>" +
+    "<항><항번호><![CDATA[②]]></항번호><항내용><![CDATA[② 둘째 항 내용]]></항내용></항></조문단위>"
+  const { text } = extractArticleBody(blk)
+  assert.ok(!/①①/.test(text), `①① 잔존: ${text}`)
+  assert.ok(!/②②/.test(text), `②② 잔존: ${text}`)
+  assert.match(text, /① 첫째 항 내용/)
+  assert.match(text, /② 둘째 항 내용/)
+})
+
+test("extractArticleBody(v0.27.7): 호(1.1.)·목(가.가.) 중복 제거", () => {
+  const blk = "<조문단위><호><호번호><![CDATA[1.]]></호번호><호내용><![CDATA[1. 광업]]></호내용></호>" +
+    "<목><목번호><![CDATA[가.]]></목번호><목내용><![CDATA[가. 비디오물 감상실]]></목내용></목></조문단위>"
+  const { text } = extractArticleBody(blk)
+  assert.ok(!/1\.1\./.test(text), `1.1. 잔존: ${text}`)
+  assert.ok(!/가\.가\./.test(text), `가.가. 잔존: ${text}`)
+  assert.match(text, /1\. 광업/)
+  assert.match(text, /가\. 비디오물 감상실/)
+})
+
+test("extractArticleBody(v0.27.7): 번호와 본문이 다르면 보존(정보 손실 금지)", () => {
+  // 항번호와 항내용 접두가 어긋나는 경우는 둘 다 남겨야 한다.
+  const blk = "<조문단위><항><항번호><![CDATA[①]]></항번호><항내용><![CDATA[② 어긋난 내용]]></항내용></항></조문단위>"
+  const { text } = extractArticleBody(blk)
+  assert.match(text, /①/, "불일치인데 항번호가 사라짐")
+  assert.match(text, /② 어긋난 내용/)
+})
+
+test("extractArticleBody(v0.27.7): 마커 아닌 짧은 청크는 보존", () => {
+  const blk = "<조문단위><조문내용><![CDATA[삭제]]></조문내용><조문참고자료><![CDATA[삭제 <2019.12.31>]]></조문참고자료></조문단위>"
+  const { text } = extractArticleBody(blk)
+  assert.ok(text.startsWith("삭제"), `앞 청크 소실: ${text}`)
+})

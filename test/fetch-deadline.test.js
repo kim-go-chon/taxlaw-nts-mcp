@@ -127,3 +127,89 @@ test("verifyNtsCitations(v0.27.6): 상류 장애 시 헤더가 '전부 조회 �
     globalThis.fetch = original
   }
 })
+
+// ── v0.27.7 상류 서킷 브레이커 ─────────────────────────────────────────────
+// 계기(실사고): 대량 검증 루프 중 NTS가 느려지자 호출마다 4회 재시도를 계속 던져 트래픽을
+// 4배로 증폭 → 스로틀링이 IP 차단으로 승격. 사용자도 호출 1건당 47초를 기다렸다.
+const { resetCircuits, circuitStatus } = await import("../build/index.js")
+const deadFetch = () => Promise.reject(Object.assign(new Error("fetch failed"), { cause: new Error("Connect Timeout Error") }))
+const aliveFetch = () => Promise.resolve({ ok: true, status: 200, statusText: "OK", headers: new Headers(), text: () => Promise.resolve("ok") })
+const tryCall = async (url) => {
+  try { await fetchWithRetryCore(url, {}, 3, (r) => r.text()); return "ok" }
+  catch (e) { return /UPSTREAM_CIRCUIT_OPEN/.test(e.message) ? "open" : "fail" }
+}
+
+test("circuit(v0.27.7): 연속 연결실패 threshold 도달 시 회로가 열려 즉시 차단", async () => {
+  process.env.TAXLAW_CIRCUIT_THRESHOLD = "3"
+  process.env.TAXLAW_CIRCUIT_COOLDOWN_MS = "1500"
+  process.env.TAXLAW_FETCH_TIMEOUT_MS = "100"
+  resetCircuits()
+  const original = globalThis.fetch
+  globalThis.fetch = deadFetch
+  try {
+    const r = []
+    for (let i = 0; i < 5; i++) r.push(await tryCall("https://cb1.example/x"))
+    assert.deepEqual(r.slice(0, 3), ["fail", "fail", "fail"], `앞 3회는 실패여야: ${r}`)
+    assert.deepEqual(r.slice(3), ["open", "open"], `이후는 회로차단이어야: ${r}`)
+    const st = circuitStatus().find((c) => c.host === "cb1.example")
+    assert.ok(st && st.openForMs > 0, "회로가 열려 있지 않음")
+  } finally { globalThis.fetch = original; resetCircuits() }
+})
+
+test("circuit(v0.27.7): 호스트별 격리 — 한 상류가 죽어도 다른 상류는 정상", async () => {
+  process.env.TAXLAW_CIRCUIT_THRESHOLD = "2"
+  resetCircuits()
+  const original = globalThis.fetch
+  try {
+    globalThis.fetch = deadFetch
+    for (let i = 0; i < 3; i++) await tryCall("https://cb2-dead.example/x")
+    assert.equal(await tryCall("https://cb2-dead.example/x"), "open", "죽은 상류 회로가 안 열림")
+    globalThis.fetch = aliveFetch
+    assert.equal(await tryCall("https://cb2-alive.example/y"), "ok", "정상 상류가 오염됨")
+  } finally { globalThis.fetch = original; resetCircuits() }
+})
+
+test("circuit(v0.27.7): 쿨다운 경과 후 상류 회복되면 회로가 닫힌다", async () => {
+  process.env.TAXLAW_CIRCUIT_THRESHOLD = "2"
+  process.env.TAXLAW_CIRCUIT_COOLDOWN_MS = "300"
+  resetCircuits()
+  const original = globalThis.fetch
+  try {
+    globalThis.fetch = deadFetch
+    for (let i = 0; i < 3; i++) await tryCall("https://cb3.example/x")
+    assert.equal(await tryCall("https://cb3.example/x"), "open")
+    await new Promise((r) => setTimeout(r, 400))
+    globalThis.fetch = aliveFetch
+    assert.equal(await tryCall("https://cb3.example/x"), "ok", "쿨다운 후에도 차단됨")
+    const st = circuitStatus().find((c) => c.host === "cb3.example")
+    assert.equal(st?.openForMs, 0, "성공했는데 회로가 안 닫힘")
+  } finally { globalThis.fetch = original; resetCircuits() }
+})
+
+test("circuit(v0.27.7): HTTP 오류(500)는 연결실패가 아니므로 회로를 열지 않는다", async () => {
+  process.env.TAXLAW_CIRCUIT_THRESHOLD = "2"
+  resetCircuits()
+  const original = globalThis.fetch
+  globalThis.fetch = () => Promise.resolve({ ok: false, status: 500, statusText: "ISE", headers: new Headers(), text: () => Promise.resolve("") })
+  try {
+    for (let i = 0; i < 4; i++) await tryCall("https://cb4.example/z")
+    const st = circuitStatus().find((c) => c.host === "cb4.example")
+    assert.ok(!st || st.openForMs === 0, `HTTP 500인데 회로가 열림: ${JSON.stringify(st)}`)
+  } finally { globalThis.fetch = original; resetCircuits() }
+})
+
+test("circuit(v0.27.7): 차단 메시지가 '데이터 없음'과 구별되고 추측을 금지한다", async () => {
+  process.env.TAXLAW_CIRCUIT_THRESHOLD = "1"
+  resetCircuits()
+  const original = globalThis.fetch
+  globalThis.fetch = deadFetch
+  try {
+    await tryCall("https://cb5.example/x")
+    let msg = ""
+    try { await fetchWithRetryCore("https://cb5.example/x", {}, 3, (r) => r.text()) } catch (e) { msg = e.message }
+    assert.match(msg, /UPSTREAM_CIRCUIT_OPEN/)
+    assert.match(msg, /'데이터 없음'이 아니라/, "미존재 오인 방지 문구 없음")
+    assert.match(msg, /추측·생성하지 마라/, "추측 금지 지시 없음")
+    assert.match(msg, /반복 호출은 차단을 연장/, "재호출 억제 안내 없음")
+  } finally { globalThis.fetch = original; resetCircuits(); delete process.env.TAXLAW_CIRCUIT_THRESHOLD }
+})
