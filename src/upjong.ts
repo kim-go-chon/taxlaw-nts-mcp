@@ -97,6 +97,16 @@ export function findByUpjong(code: string): UpjongRecord | null {
   return db.records.find((r) => r.upjong === target) || null
 }
 
+// v0.27.5(라이브 루프) — 업종코드 : KSIC 는 1:N이다(실측 79종). findByUpjong은 .find()로 첫 건만
+//   돌려주고 렌더러도 그것만 표시해, 나머지 매핑이 '있다는 사실조차' 안 알려졌다.
+//   예: 143107(조광권자) → KSIC 7110/7121/7122/7210/7290 5건인데 7110만 노출.
+//   업종코드가 여러 KSIC 세세분류에 걸치면 §7①1호 목 판정이 갈릴 수 있어 조용한 누락은 결론을 바꾼다.
+export function findAllByUpjong(code: string): UpjongRecord[] {
+  const target = String(code || "").replace(/\s+/g, "").trim()
+  if (!/^\d{4,6}$/.test(target)) return []
+  return loadUpjongDb().records.filter((r) => r.upjong === target)
+}
+
 export function findByKsic(code: string): UpjongRecord[] {
   const target = String(code || "").replace(/\s+/g, "").trim()
   const db = loadUpjongDb()

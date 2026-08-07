@@ -13,6 +13,7 @@ import {
   findByKsic,
   findByKsicPrefix,
   findByUpjong,
+  findAllByUpjong,
   formatClassPath,
   resolveClassName,
   searchUpjongByKeyword,
@@ -39,7 +40,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.27.4"
+const VERSION = "0.27.5"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -5954,11 +5955,32 @@ function lookupUpjongCodeTool(args: UpjongLookupArgs): ToolResponse {
     ])
   }
   const info = upjongDbInfo()
+  // v0.27.5(라이브 루프) — 업종코드:KSIC 1:N(실측 79종) 전건 노출. 종전엔 첫 건만 보여주고
+  //   나머지 매핑의 존재조차 알리지 않아, 여러 KSIC 세세분류에 걸친 업종에서 §7①1호 목 판정이
+  //   조용히 한쪽으로 굳어졌다(예: 143107 조광권자 → 7110만 노출, 7121·7122·7210·7290 소실).
+  //   1:N 판정은 '레코드 수'가 아니라 '고유 KSIC 코드 수' 기준이어야 한다. 연계표 원본에 표기 흔들림으로
+  //   같은 업종+같은 KSIC가 2행인 케이스가 있다(630702 지입: 49301이 "일반 화물 자동차 운송업"과
+  //   "일반 화물자동차 운송업" 2행 + 49302 1행 = 3행). 레코드 수로 세면 "KSIC 3건"으로 부풀려진다.
+  const all = findAllByUpjong(code)
+  const _seenK = new Set([r.ksic?.code].filter(Boolean))
+  const siblings = all.filter((x) => {
+    const k = x.ksic?.code
+    if (!k || _seenK.has(k)) return false
+    _seenK.add(k); return true
+  })
+  const uniqKsic = new Set(all.map((x) => x.ksic?.code).filter(Boolean))
   const lines = [
     `업종코드↔KSIC 매핑 조회 결과 (DB 귀속연도: ${info.year ?? "N/A"})`,
     "출처: 국세청 '업종코드-표준산업분류 연계표'",
+    ...(uniqKsic.size > 1
+      ? [`⚠ 이 업종코드는 KSIC ${uniqKsic.size}건에 대응(1:N) — 아래는 대표 1건이며 나머지는 하단 '복수 매핑' 참조. 감면 업종 판정(조특 §6③·§7①1호)이 KSIC별로 갈릴 수 있으니 전건을 확인하라.`]
+      : []),
     "",
     ...formatUpjongRecord(r),
+    ...(siblings.length > 0
+      ? ["", `── 복수 매핑(같은 업종코드의 다른 KSIC ${siblings.length}건) ──`,
+         ...siblings.map((s) => `  KSIC ${s.ksic?.code} — ${s.ksic?.l5Name || s.ksic?.l4Name || "(명칭 없음)"}`)]
+      : []),
     "",
     "주의: 본 결과는 내장 DB(국세청 연계표)에서 직접 인용한 것입니다. 추가 업종코드 변동·신설은 국세청 홈택스 업종코드 조회로 교차확인하세요.",
   ]
