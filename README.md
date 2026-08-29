@@ -33,6 +33,8 @@
 
 이 서버는 국세법령정보시스템 응답에 존재한 항목만 표시하며, 검색 실패나 외부 사이트 오류가 나면 `[NOT_FOUND]`, `[EXTERNAL_API_ERROR]`, `[INVALID_PARAMETER]` 같은 마커와 추측 금지 경고를 반환합니다.
 
+모든 도구 결과는 기존 텍스트·`isError`와 함께 `structuredContent.status`를 제공합니다. 상태값은 `OK`, `NOT_FOUND`, `INVALID_INPUT`, `UPSTREAM_ERROR`, `PARSE_ERROR`, `AUTH_ERROR`, `BUDGET_EXCEEDED`이며, 기존 마커를 파싱하던 클라이언트도 그대로 사용할 수 있습니다. `NOT_FOUND`는 공개 DB에서 해당 조건의 항목을 찾지 못했다는 뜻이지 문서의 법적 부존재를 확정하는 뜻은 아닙니다.
+
 ## 응답 포맷 — 5단 구조 (0.6.0+)
 
 MCP `InitializeResult.instructions`로 LLM에 자동 주입됩니다. 클라이언트(Claude Code 등)는 이를 system-reminder로 노출하여 LLM이 아래 5단 구조를 따르도록 강제합니다. 단순 1~2문장 단답형 질문은 생략 가능.
@@ -63,6 +65,7 @@ MCP `InitializeResult.instructions`로 LLM에 자동 주입됩니다. 클라이�
 | `search_taxlaw_all` | 통합검색 — 별표서식·국세법령·세법해석/질의·판례결정례·발간책자·홈택스 상담사례 |
 | `search_taxlaw_documents` | 세법해석례/질의회신(01–04)과 과세전적부·이의·심사·심판·판례·헌재(05–10) 검색. 세목코드(`taxLawCode`) 지정 권장 |
 | `get_taxlaw_document_text` | 문서 상세 본문. **`targetYear`**로 인용 법조문 시점 검증, **`full`**로 판례·결정례 주문·판단 결론부까지 |
+| `get_taxlaw_document_by_number` | DOC_ID를 거치지 않고 문서번호·회신번호로 직접 조회. 공백·하이픈 정규화 후 완전일치 |
 | `research_taxlaw_topic` | 체인 매크로 — 검색 → 관련 상위 K건 본문(`full`·`targetYear`) 첨부를 1콜로(다턴 왕복 절감). `targetYear` 지정 시 픽별 유효성 1줄 자동 첨부 |
 | `assess_doctrine_validity` | 해석례·심판례·판례 한 건의 **현행 유효성 자동 채점**(6단계 판정 + 권장 후속 호출 큐) |
 | `verify_nts_citations` | 산출물 속 해석례·심판례·판례 번호를 일괄 추출해 **실존 여부 확인**(인용 게이트). `claims`로 인용–명제 적합성까지 검사 |

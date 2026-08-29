@@ -73,7 +73,7 @@ const INSTRUCTIONS = `taxlaw-nts-mcp: 한국 국세법령정보시스템(NTS) �
 
 [적용시기 — 타임테이블 우선] 귀속연도 제시 법령·세액공제 질문은 본문 단정 전 build_application_timetable(다조문×다연도) 또는 trace_article_application(단일 조문)부터. 해석 공리: ①신구 문구 나란히 대조(단일 시점본 단정 금지) ②부칙 "개정규정"=그 개정령이 실제 바꾼 문구 단위만 ③경과조치는 자기 개정령만 사정거리 ④후행·특정 적용례>일반 경과조치 ⑤적극 문언 우선(fallback 창작 금지) ⑥서식·별지<부칙·법령 문언. 적용례 anchor가 '최초공제연도'·'신고시점'형이면 차수(1차/추가공제)·신고시점을 질문(통합고용 §29의8 등 다년 사이클은 귀속연도만으로 판정 불가).
 
-[워크플로] korean-law 조문 1차(search_law+get_law_text) → 본 MCP 해석례·통칙 보완 → 연도 검증 → 5단 응답.
+[워크플로] korean-law 조문 1차(search_law+get_law_text) → 본 MCP 해석례·통칙 보완(문서번호를 알면 get_taxlaw_document_by_number로 직접조회) → 연도 검증 → 5단 응답.
 
 [응답 5단] ①결론(1~2문장) ②매트릭스(케이스별 행마다 결론+근거 법령) ③법령 래퍼(법률/시행령/기본통칙/해석례·심판례·판례 — 문서번호·일자·인용문, 출처별 분리, ★해석례·심판례·판결 각 건에 NTS 원문 링크(검색행 '원문:' URL 그대로, 임의 생성 금지) 필수 병기) ④AI 보충(⚠ 미검증, ①~③과 섞기 금지) ⑤"인용 본문 더 부착?" 1줄. 빈 섹션도 헤더 유지+"검색 결과 없음"(추측·생성 금지). 단답형은 생략 가능.
 
@@ -87,6 +87,21 @@ export const ErrorCodes = {
   API_ERROR: "EXTERNAL_API_ERROR",
   PARSE_ERROR: "PARSE_ERROR",
 } as const
+
+// MCP 호출자가 텍스트를 파싱하지 않고도 결과 상태를 분기할 수 있도록 하는 최소 계약.
+// 기존 오류 마커·isError는 하위 호환을 위해 그대로 유지하고, structuredContent에만 추가한다.
+export type ToolStatus =
+  | "OK"
+  | "NOT_FOUND"
+  | "INVALID_INPUT"
+  | "UPSTREAM_ERROR"
+  | "PARSE_ERROR"
+  | "AUTH_ERROR"
+  | "BUDGET_EXCEEDED"
+
+export interface ToolStructuredContent {
+  status: ToolStatus
+}
 
 const FAILURE_GUARD =
   "⚠️ 이 도구는 신뢰 가능한 세법 데이터를 반환하지 못했습니다. LLM은 세법 정보, 문서, 판례를 추측하거나 생성하지 말고 오류/검색 실패와 재시도 필요성을 사용자에게 명시하세요."
@@ -107,6 +122,7 @@ export class TaxlawMcpError extends Error {
 interface ToolResponse {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  structuredContent?: ToolStructuredContent
 }
 
 interface TaxlawActionResponse<T> {
@@ -146,6 +162,13 @@ interface DocumentDetailArgs {
   full?: boolean
   // 사용자가 적용하려는 연도 (예: 2024). 본문 '관련규정/관련법령' 섹션을 파싱해
   // 인용 법조문의 시점과 비교하고, 구법 기반이면 사문화 가능성 경고를 함께 반환한다.
+  targetYear?: number
+}
+
+interface DocumentNumberArgs {
+  docNo?: string
+  docType?: string
+  full?: boolean
   targetYear?: number
 }
 
@@ -670,6 +693,21 @@ const tools = [
     },
   },
   {
+    name: "get_taxlaw_document_by_number",
+    description: `국세법령정보시스템 문서번호 또는 회신번호로 문서를 직접 조회합니다. 검색 결과의 DOC_ID를 먼저 찾지 않아도 되며, 공백·하이픈 표기는 정규화한 뒤 완전일치로 확인합니다. ${COMPANION_NOTICE} 반환 본문은 get_taxlaw_document_text와 동일하게 full·targetYear를 지원합니다.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        docNo: { type: "string", description: "문서번호 또는 회신번호. 예: 서면-2024-법규부가-4804, 부가-1" },
+        docType: { type: "string", enum: ["all", "interpretations", "disputes", "advance", "reply", "tax_standard", "written", "tax_pre_review", "objection", "review", "tribunal", "precedent", "constitutional", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10"], default: "all", description: "알고 있는 문서유형을 지정하면 검색 범위를 줄일 수 있습니다." },
+        full: { type: "boolean", default: false, description: "true면 HTML 원문 변환 텍스트를 더 길게 포함" },
+        targetYear: { type: "number", minimum: 1990, maximum: 2100, description: "적용하려는 연도. 관련규정의 조문 시점과 비교해 구법 경고를 붙입니다." },
+      },
+      required: ["docNo"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "assess_doctrine_validity",
     description: `세법해석례·심판례·판례 단일 문서의 **현행 유효성**을 자동 채점한다. ${COMPANION_NOTICE}\n호출 한 번으로: (1) 본문/메타데이터에서 인용 법조문 시점 파싱, (2) targetYear 대비 사문화 위험 신호 점수화, (3) 최종 판정(valid_current / needs_current_check / partially_outdated / likely_outdated / superseded_or_repealed / unverified) 한 줄 라벨, (4) 권장 후속 호출 큐(korean-law-mcp.search_law/get_law_text/search_decisions + 본 MCP의 후일자 해석례 검색)를 반환. LLM은 next-action 큐를 순서대로 실행해서 답변의 채점표에 결과를 채우세요.`,
     inputSchema: {
@@ -1173,8 +1211,39 @@ export function redactSecrets(text: string): string {
     .replace(/(["']oc["']\s*:\s*["'])[^"']+/gi, "$1***")
 }
 
-function textResponse(text: string, isError = false): ToolResponse {
-  return { content: [{ type: "text", text: redactSecrets(text) }], ...(isError ? { isError: true } : {}) }
+// 텍스트 응답의 기존 첫 줄 오류 마커를 기계 판독 가능한 상태로 정규화한다.
+// 마커가 없는 정상 응답은 OK로, 마커가 없는 오류 응답은 안전 측으로 UPSTREAM_ERROR로 분류한다.
+export function toolStatusFromText(text: string, isError = false): ToolStatus {
+  const firstLine = String(text || "").trimStart().split(/\r?\n/, 1)[0]
+  const marker = firstLine.match(/^\[([A-Z_]+)\]/)?.[1]
+  switch (marker) {
+    case "NOT_FOUND":
+      return "NOT_FOUND"
+    case "INVALID_PARAMETER":
+    case "INVALID_INPUT":
+      return "INVALID_INPUT"
+    case "EXTERNAL_API_ERROR":
+    case "UPSTREAM_ERROR":
+    case "UPSTREAM_CIRCUIT_OPEN":
+      return "UPSTREAM_ERROR"
+    case "PARSE_ERROR":
+      return "PARSE_ERROR"
+    case "AUTH_ERROR":
+      return "AUTH_ERROR"
+    case "BUDGET_EXCEEDED":
+      return "BUDGET_EXCEEDED"
+    default:
+      return isError ? "UPSTREAM_ERROR" : "OK"
+  }
+}
+
+function textResponse(text: string, isError = false, status?: ToolStatus): ToolResponse {
+  const redacted = redactSecrets(text)
+  return {
+    content: [{ type: "text", text: redacted }],
+    ...(isError ? { isError: true } : {}),
+    structuredContent: { status: status || toolStatusFromText(redacted, isError) },
+  }
 }
 
 function lookupSiteActions(keys: string[]): SiteMenuAction[] {
@@ -1197,6 +1266,7 @@ const NOT_FOUND_ACTION_HINTS: Record<string, string[]> = {
   search_taxlaw_publications: ["publications", "summary_info"],
   search_taxlaw_forms: ["all_forms", "annexes", "legal_forms", "instruction_forms", "favorite_forms"],
   get_taxlaw_document_text: ["moleg_interpretations", "audit_review", "major_supreme_court"],
+  get_taxlaw_document_by_number: ["moleg_interpretations", "audit_review", "major_supreme_court"],
   get_taxlaw_hometax_counsel_text: ["interpretations_all"],
 }
 
@@ -1386,6 +1456,24 @@ export function normalizeDetailId(id: string): string {
   const trimmed = id.trim()
   const prefixed = trimmed.match(/^001_(\d+)$/)
   return prefixed ? prefixed[1] : trimmed
+}
+
+// NTS 문서번호·회신번호는 공백·하이픈·가운뎃점 표기가 섞여 노출될 수 있다.
+// 직접조회는 부분일치가 아니라 정규화 후 완전일치만 허용해 오인 문서 회수를 막는다.
+export function normalizeDocumentNumber(value: unknown): string {
+  return cleanText(value).replace(/[\s\-–—.·]/gu, "").toLowerCase()
+}
+
+export type DocumentNumberMatch = "document" | "reply"
+
+export function matchDocumentNumber(item: Record<string, unknown>, value: unknown): DocumentNumberMatch | null {
+  const wanted = normalizeDocumentNumber(value)
+  if (!wanted) return null
+  const documentNumber = normalizeDocumentNumber(item.NTST_DCM_DSCM_CNTN ?? item.ntstDcmDscmCntn)
+  if (documentNumber && documentNumber === wanted) return "document"
+  const replyNumber = normalizeDocumentNumber(item.NTST_DCM_RPLY_CNTN ?? item.ntstDcmRplyCntn)
+  if (replyNumber && replyNumber === wanted) return "reply"
+  return null
 }
 
 export function normalizeTaxlawPath(value: unknown, fallback = "/index.do"): string {
@@ -2681,7 +2769,11 @@ export async function verifyNtsCitations(args: { text?: string; maxCitations?: n
     `${claimMiss ? ` / ⚠명제미결박 ${claimMiss}` : ""}` +
     `${claimMismatch ? ` / ⚠⚠명제불일치 ${claimMismatch}` : ""}` +
     `${claimUnmatched ? ` / ⚠claims미대응 ${claimUnmatched}` : ""}`)
-  return textResponse(truncate(lines.join("\n"), 20000))
+  return textResponse(
+    truncate(lines.join("\n"), 20000),
+    false,
+    failed === cits.length && cits.length > 0 ? "UPSTREAM_ERROR" : "OK",
+  )
 }
 
 // v0.9.3 — 검색 결과의 query 관련성 판정. NTS 검색 엔진이 query 토큰 중 일부만
@@ -2974,6 +3066,72 @@ async function getTaxlawDocumentText(args: DocumentDetailArgs): Promise<ToolResp
     "search_taxlaw_documents로 DOC_ID를 다시 확인하세요.",
     "docType을 알고 있으면 함께 입력하세요.",
   ], { toolName: "get_taxlaw_document_text" })
+}
+
+async function getTaxlawDocumentByNumber(args: DocumentNumberArgs): Promise<ToolResponse> {
+  const rawDocNo = requireString("docNo", args.docNo)
+  const codes = documentCodes(args.docType, "all")
+  const groups = splitDocumentCodes(codes)
+  if (groups.length === 0) {
+    throw new TaxlawMcpError("No supported document type selected.", ErrorCodes.INVALID_PARAM)
+  }
+
+  const searchArgs: DocumentSearchArgs = {
+    query: rawDocNo,
+    display: 50,
+    page: 1,
+    sort: "date_desc",
+    verbose: false,
+  }
+  const settled = await Promise.allSettled(groups.map((group) => searchDocumentGroup(group, searchArgs)))
+  const results = settled
+    .filter((s): s is PromiseFulfilledResult<{ group: "question" | "precedent"; codes: string[]; result: TaxlawSearchData["ASIPDI002PR01"] }> => s.status === "fulfilled")
+    .map((s) => s.value)
+  const failedGroups = settled.filter((s) => s.status === "rejected")
+
+  if (results.length === 0) {
+    throw failedGroups[0]?.reason ?? new TaxlawMcpError("Taxlaw document-number search failed.", ErrorCodes.API_ERROR)
+  }
+
+  const candidates = results.flatMap((entry) => (entry.result.body || [])
+    .map((row) => row.dcm)
+    .filter((item): item is TaxlawDcm => !!item))
+  const hit = candidates.find((item) => matchDocumentNumber(item as Record<string, unknown>, rawDocNo))
+  if (!hit) {
+    if (failedGroups.length > 0) {
+      throw new TaxlawMcpError(
+        `문서번호 "${rawDocNo}" 직접조회가 일부 검색그룹 실패로 불완전합니다(공개DB 미발견으로 단정하지 않음).`,
+        ErrorCodes.API_ERROR,
+        ["docType을 지정해 검색 범위를 좁혀 재호출하세요.", "잠시 후 다시 시도하거나 korean-law-mcp의 판례·결정례 검색을 병행하세요."],
+      )
+    }
+    return notFoundResponse(
+      `국세법령정보시스템 문서번호·회신번호 "${rawDocNo}"를 찾을 수 없습니다.`,
+      [
+        "공백·하이픈을 제외한 정확한 문서번호를 확인하세요.",
+        "docType을 알고 있으면 함께 입력해 검색 범위를 좁혀 재시도하세요.",
+      ],
+      { toolName: "get_taxlaw_document_by_number" },
+    )
+  }
+
+  const id = cleanText(hit.DOC_ID || hit.DOCID || hit.ntstDcmId)
+  if (!id) {
+    throw new TaxlawMcpError(
+      `문서번호 "${rawDocNo}" 검색 결과에 상세조회용 DOC_ID가 없습니다.`,
+      ErrorCodes.PARSE_ERROR,
+    )
+  }
+
+  const codeRaw = cleanText(hit.NTST_DCM_CL_CD || hit.ntstDcmClCd).replace(/^001_/, "")
+  const code = codeRaw.padStart(2, "0")
+  const detailType = DOC_TYPE_LABELS[code] ? code : args.docType
+  return getTaxlawDocumentText({
+    id,
+    docType: detailType,
+    full: args.full,
+    targetYear: args.targetYear,
+  })
 }
 
 // v0.27.4(라이브 루프) — capOverride 추가. 호출부가 결과를 다시 truncate하면 꼬리의 guardLines가
@@ -3463,7 +3621,7 @@ async function getExecutionStandard(args: ExecStdArgs): Promise<ToolResponse> {
       return textResponse([...header,
         `✗ 번호 "${numberArg}" 미발견 — 이 판본(${ed.rgtYr}) 목차에 없습니다(오기 또는 다른 판본 가능). 실존 확인 실패.`,
         `전체 목차는 number 없이 재호출(또는 다른 year). PDF: ${pdfUrl}`,
-      ].join("\n"))
+      ].join("\n"), false, "NOT_FOUND")
     }
     const body = hits.slice(0, 20).map((h) => `✔ ${h.no}  ${h.title}  (수록 p.${pageEnd(h.srtOrdr)})`)
     return textResponse([...header,
@@ -3476,7 +3634,7 @@ async function getExecutionStandard(args: ExecStdArgs): Promise<ToolResponse> {
   if (queryArg) {
     const hits = toc.filter((t) => t.title.includes(queryArg))
     if (!hits.length) {
-      return textResponse([...header, `✗ 제목에 "${queryArg}" 포함 항목 없음(판본 ${ed.rgtYr}). PDF: ${pdfUrl}`].join("\n"))
+      return textResponse([...header, `✗ 제목에 "${queryArg}" 포함 항목 없음(판본 ${ed.rgtYr}). PDF: ${pdfUrl}`].join("\n"), false, "NOT_FOUND")
     }
     const body = hits.slice(0, 30).map((h) => `· ${h.no}  ${h.title}  (p.${pageEnd(h.srtOrdr)})`)
     return textResponse([...header,
@@ -3687,6 +3845,43 @@ async function fetchEflawVersions(oc: string, lawName: string, limit: number): P
 // 분할시행(예: 제36127호 2.27 공포본의 7.1 시행 행)은 시행일이 늦어도 '그 공포 시점의 텍스트'라
 // 후행 공포본(예: 5.22 자구개정)을 반영하지 못한다. 시행일 ≤ efYd 후보 중 공포일이 가장 늦은
 // 공포본(=후행 개정 누적 통합본)을 선택해야 그 시점 실제 문구에 가깝다.
+// v0.27.8 — efYd 형식 검증. pickVersionInForce는 문자열 사전순 비교라 형식이 깨지면 조용히 틀린다:
+//   "2023-12-31"은 '-'(0x2D) < '0'(0x30) 이라 "20230101"보다 작게 비교돼 한 판본 뒤(2022 시행본)를 고르고,
+//   출력에는 "efYd 2023-12-31 시점 시행본"이라 라벨된다 — ISO 표기는 흔한 오타라 실제로 밟힌다(실측 확인).
+//   구분자 형태는 의도가 명확하므로 정규화하고, 그 외는 거부한다(조용히 현행본으로 흘리지 않는다).
+export function normalizeEfYd(raw: unknown, paramName = "efYd"): { efYd: string; note?: string } {
+  const s = String(raw ?? "").trim()
+  if (!s) return { efYd: "" }
+  const sep = s.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/)
+  const digits = sep ? `${sep[1]}${sep[2].padStart(2, "0")}${sep[3].padStart(2, "0")}` : s
+  if (!/^\d{8}$/.test(digits)) {
+    throw new TaxlawMcpError(
+      `${paramName}는 YYYYMMDD 8자리여야 합니다(받은 값: "${s}"). 연도만 지정하려면 ${paramName === "efYd" ? "year" : paramName.replace("efYd", "year")}=YYYY를 사용하세요.`,
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  const y = Number(digits.slice(0, 4)), m = Number(digits.slice(4, 6)), d = Number(digits.slice(6, 8))
+  if (y < 1948 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) {
+    throw new TaxlawMcpError(`${paramName} 날짜 범위 오류: "${s}" (1948~2100년, 월 1~12, 일 1~31).`, ErrorCodes.INVALID_PARAM)
+  }
+  return { efYd: digits, note: sep ? ` (${paramName} "${s}" → ${digits} 정규화)` : undefined }
+}
+
+// v0.27.8 — 연도 파라미터도 같은 이유로 조용히 틀린다. 스키마는 number지만 클라이언트가 "2023"
+//   문자열을 보내면 `typeof === "number"` 게이트에 걸려 시점 지정이 통째로 무시되고 현행본이 나온다
+//   (요청 시점본을 받았다고 오독). 숫자 문자열은 받아주고, 그 외/범위 밖은 거부한다.
+export function normalizeYear(raw: unknown, paramName = "year"): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined
+  const n = typeof raw === "number" ? raw : /^\s*\d{4}\s*$/.test(String(raw)) ? Number(String(raw).trim()) : NaN
+  if (!Number.isInteger(n) || n < 1948 || n > 2100) {
+    throw new TaxlawMcpError(
+      `${paramName} 형식/범위 오류: ${JSON.stringify(raw)} — 1948~2100 사이의 연도(YYYY)여야 합니다.`,
+      ErrorCodes.INVALID_PARAM,
+    )
+  }
+  return n
+}
+
 export function pickVersionInForce(versions: LawVersion[], efYd: string): LawVersion | null {
   const cands = versions
     .filter((v) => v.enforceDate && v.enforceDate <= efYd)
@@ -3891,11 +4086,24 @@ export function extractArticleBody(joBlock: string): { text: string; imageUrls: 
   //   부작용도 있었다: 항 분할 split(/(?=[①②③…])/)이 "①" 단독 조각을 하나 더 만들어냈다.
   //   순수 번호 청크가 '바로 뒤 청크의 접두'일 때만 생략한다 — 둘이 다르면 보존하므로 정보 손실 없음.
   const MARKER_ONLY = /^(?:[①-⑳]|\d{1,2}\.|[가-힣]\.)$/
+  // v0.27.8 — 조문 메타 CDATA(<조문제목>·<조문제개정일자문자열>)도 같은 이유로 본문 앞에 붙는다:
+  //   <조문제목>정의</조문제목><조문제개정일자문자열>2013.1.1, …</조문제개정일자문자열>
+  //   <조문내용>제2조(정의) … <개정 2013.1.1, …></조문내용>
+  //   → "정의2013.1.1, 2018.12.24, 2022.12.31제2조(정의)…" 로 조문이 날짜로 시작하는 것처럼 보인다.
+  //   법인세법 실측: 255개 조문단위 중 206개(81%)가 이 군더더기로 시작(≈3,320자).
+  //   v0.27.7과 동일 원칙 — '뒤 청크에 그대로 남아 있을 때만' 생략하므로 정보 손실이 없다.
+  const metaVals = new Set<string>()
+  for (const tag of ["조문제목", "조문제개정일자문자열", "조문시행일자문자열"]) {
+    const mm = joBlock.match(new RegExp(`<${tag}>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>`))
+    const v = mm?.[1].trim()
+    if (v) metaVals.add(v)
+  }
   const deduped: string[] = []
   for (let i = 0; i < chunks.length; i++) {
     const cur = chunks[i].trim()
     const next = chunks[i + 1]
     if (cur && cur.length <= 4 && MARKER_ONLY.test(cur) && next && next.trimStart().startsWith(cur)) continue
+    if (cur && metaVals.has(cur) && chunks.slice(i + 1).join("").includes(cur)) continue
     deduped.push(chunks[i])
   }
   let text = deduped.length > 0 ? deduped.join("") : joBlock
@@ -4351,10 +4559,31 @@ export function classifyApplicationClause(clause: string): string {
   const f = clause.replace(/\s/g, "")
   if (/개정규정에도불구하고[\s\S]*?종전의?규정에따른다/.test(f)) return "경과조치(종전규정)"
   if (/최초공제연도/.test(f)) return "최초공제연도기준"
-  if (/이후개시하는과세연도/.test(f) || /이후개시하는사업연도/.test(f)) return "과세연도개시기준"
+  if (/이후개시하는(과세연도|사업연도|과세기간)/.test(f)) return "과세연도개시기준"
   if (/시행이후[\s\S]*?신고하는경우/.test(f) || /과세표준(및세액을)?신고/.test(f) || /과세표준을신고/.test(f)) return "신고시점기준"
   if (/시행이후[\s\S]*?(취득|지급|양도|증여|계약|출자|투자|복직|전환|해지|가입|발생|공급|취업|상장|합병)/.test(f)) return "행위시점기준"
-  if (/이후[\s\S]*?발생하는소득/.test(f) || /속하는과세(연도|기간)/.test(f)) return "소득·기간기준"
+  if (/이후[\s\S]*?발생하는소득/.test(f) || /속하는(과세연도|과세기간|사업연도)/.test(f)) return "소득·기간기준"
+
+  // ── v0.27.8 후순위 구제 규칙 ──
+  // 위 규칙에 안 걸린 것만 받는다(앞 규칙의 순서·정규식은 손대지 않아 기존 분류는 그대로).
+  // 계기: 4개 세법 부칙 적용례 979문장 중 436건(44.5%)이 유형미상 → targetYearApplicationNote가
+  //   빈 문자열을 반환해 '귀속 판단' 줄이 통째로 사라졌다(무라벨 누락). 구멍은 구조적이었다:
+  //   ① 시점 anchor를 '시행이후'로만 봄 → "이 법 시행 후", "이 법 시행일 이후", "2026년 1월 1일 이후" 누락
+  //   ② 행위 동사 화이트리스트 방식 → 창업·출연·기부·신청·인증·행사·납입 등 열거 밖은 전부 미상
+  //   ③ 경과조치를 "개정규정에도 불구하고…종전의 규정에 따른다" 한 형태로만 봄
+  // 동사 열거를 늘리는 대신, '시점 anchor + …부터 적용한다' 구조로 판정한다(열거는 계속 새는 방식).
+  if (/종전의?규정을?(적용한다|따른다|의한다)|종전의?규정에(따른다|의한다)|종전의예에따른다/.test(f)) {
+    return "경과조치(종전규정)"
+  }
+  // anchor는 "이 법 시행"만이 아니다 — "부칙 제1조에 따른 시행일 이후", "같은 개정규정 시행 이후"처럼
+  //   시행일을 다른 조항으로 지시하는 형태가 다수(남은 미상의 대부분이 이 형태였다). 앞 규칙이 이미
+  //   구체 유형을 다 걸러낸 뒤이므로 여기서는 시점 문언을 넓게 받아도 오분류 위험이 낮다.
+  const anchored = /시행(일)?(이후|후|부터)|\d{4}년\d{1,2}월\d{1,2}일(이후|부터)|시행일이속하는/.test(f)
+  if (anchored && /부터적용한다/.test(f)) {
+    if (/(발생하는|받는|지급받는)(소득|배당소득|이자소득|수입|금액)|소득분?부터/.test(f)) return "소득·기간기준"
+    if (/연말정산|확정신고하는|신고하는분/.test(f)) return "신고시점기준"
+    return "행위시점기준"
+  }
   return "유형미상"
 }
 
@@ -4624,7 +4853,10 @@ export function targetYearApplicationNote(
   if (type === "행위시점기준" || type === "소득·기간기준") {
     return `행위·소득 발생시점 기준. ${targetYear} 중 해당 행위/소득이 시행일(${enforceDate || "?"}) 이후면 개정규정.`
   }
-  return ""
+  // v0.27.8 — 유형 미분류라고 침묵하면 '판단노트 없음'이 '적용례 없음'으로 오독된다(무라벨 누락).
+  //   분류기를 넓혀도 미상은 남으므로, 미상임을 밝히고 원문 anchor 확인을 지시한다.
+  //   길게 쓰면 미상 비율만큼 토큰이 불어나므로 한 줄로 짧게(상세 설명은 헤더에 1회).
+  return `⚠ 적용례 유형 미분류 — 자동 판단 없음. 원문의 기준시점(anchor)을 직접 읽고 ${targetYear} 귀속 해당 여부를 판단하라.`
 }
 
 // v0.25.0(리뷰 TK-1) — 준용 체인 블록 공유상한(순수): E3 cross 승격(full=true 타법당 최대 ~36,794자)이
@@ -4831,6 +5063,13 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
   if ((selfTypes.has("신고시점기준") || junyongTypes.has("신고시점기준")) && targetYear === undefined) {
     lines.push("⚠ 신고시점 기준 적용례 존재 — targetYear·filingMonth를 지정해 재호출하면 연도별 소급 판단노트가 생성된다.", "")
   }
+  if (selfTypes.has("유형미상") || junyongTypes.has("유형미상")) {
+    lines.push(
+      "⚠ [유형미상] 라벨이 붙은 적용례 있음 — 자동 분류가 기준시점(anchor)을 특정하지 못한 것이지 '적용례 없음'이 아니다.",
+      "   해당 적용례는 원문 문구를 직접 읽고 anchor(시행일·특정일자·과세연도 개시·신고시점·행위시점·소득 발생)를 판정하라. 미분류를 근거로 결론을 내리지 마라.",
+      "",
+    )
+  }
   lines.push("조문 적용시점 추적", `출처: ${url}`, `법령: ${lawTitle || "N/A"} (MST ${mst}) / 대상 조문: ${jo}${hang ? " " + hang : ""}`)
   lines.push(`부칙 union 출처 MST: ${sourceMsts.join(", ")} (통합본 consolidation lag 보정)`)
   if (supplementedNos.length > 0) {
@@ -4952,7 +5191,10 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   }
   const mstArg = String(args.mst ?? "").trim()
   const lawName = String(args.lawName ?? "").trim()
-  const efYd = String(args.efYd ?? "").trim() || (typeof args.year === "number" ? `${args.year}1231` : "")
+  const year = normalizeYear(args.year)
+  const { efYd, note: efYdNote } = normalizeEfYd(
+    String(args.efYd ?? "").trim() || (year !== undefined ? `${year}1231` : ""),
+  )
   if (!mstArg && !lawName) {
     throw new TaxlawMcpError("mst 또는 lawName 중 하나는 필수입니다.", ErrorCodes.INVALID_PARAM)
   }
@@ -4979,7 +5221,7 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
       const picked = pickVersionInForce(ownVersions, efYd)
       if (picked) {
         mst = picked.mst
-        pickNote = ` (efYd ${efYd} 시점 시행본: 시행 ${formatYmd(picked.enforceDate)})`
+        pickNote = ` (efYd ${efYd}${efYdNote ?? ""} 시점 시행본: 시행 ${formatYmd(picked.enforceDate)})`
       } else {
         // v0.11.0 — 최근 40행 윈도우에 efYd 이전 시행본이 없으면 현행본 fallback을 침묵시키지 않는다
         // (무경고 fallback이 '요청 시점본을 받았다'로 오독되는 역방향 누락 — 리뷰 실증).
@@ -5382,7 +5624,11 @@ export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<To
   const lawName = String(args.lawName ?? "").trim()
   const sideSpec = (yearRaw: unknown, efYdRaw: unknown, mstRaw: unknown, label: string) => {
     const mst = String(mstRaw ?? "").trim()
-    const efYd = String(efYdRaw ?? "").trim() || (typeof yearRaw === "number" ? `${yearRaw}1231` : "")
+    const year = normalizeYear(yearRaw, `year${label}`)
+    const { efYd } = normalizeEfYd(
+      String(efYdRaw ?? "").trim() || (year !== undefined ? `${year}1231` : ""),
+      `efYd${label}`,
+    )
     if (!mst && !efYd) {
       throw new TaxlawMcpError(`${label}측 시점 지정 필요: mst${label} 또는 year${label}/efYd${label}.`, ErrorCodes.INVALID_PARAM)
     }
@@ -6364,6 +6610,9 @@ export async function handleToolCall(name: string, args: unknown): Promise<ToolR
     if (name === "get_taxlaw_document_text") {
       return await getTaxlawDocumentText(input as DocumentDetailArgs)
     }
+    if (name === "get_taxlaw_document_by_number") {
+      return await getTaxlawDocumentByNumber(input as DocumentNumberArgs)
+    }
     if (name === "assess_doctrine_validity") {
       return await assessDoctrineValidityTool(input as AssessDoctrineArgs)
     }
@@ -6469,6 +6718,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return {
     content: result.content,
     isError: result.isError,
+    structuredContent: result.structuredContent,
   }
 })
 

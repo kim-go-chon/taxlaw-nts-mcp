@@ -58,6 +58,18 @@ Key arguments: `id`, `docType`, `full`, **`targetYear`**.
 
 ⚠️ 이 검증은 본문 휴리스틱 파싱이며, 최종 적용가능성은 반드시 `korean-law-mcp`로 직접 대조 후 보고하세요.
 
+## `get_taxlaw_document_by_number`
+
+Retrieve a document detail directly by its NTS 문서번호 or 회신번호, without first copying a `DOC_ID` from a search result. The input number is normalized by removing whitespace, hyphens, dashes, periods, and middle dots, then matched exactly against the NTS document/reply number fields; partial matches are rejected to prevent a wrong document from being opened.
+
+Key arguments: `docNo` (required), `docType` (optional; defaults to `all`), `full`, and `targetYear`.
+
+The tool reuses the existing NTS document search/detail path. If one document group fails, an absent match is returned as an upstream error rather than a false `NOT_FOUND`. A successful `NOT_FOUND` means only that the public NTS DB did not return a matching row; it is not a legal finding that the document does not exist.
+
+## Machine-readable result status
+
+Every tool result keeps its existing text and `isError` fields and additionally includes `structuredContent: { status }`. Status values are `OK`, `NOT_FOUND`, `INVALID_INPUT`, `UPSTREAM_ERROR`, `PARSE_ERROR`, `AUTH_ERROR`, and `BUDGET_EXCEEDED`. Existing clients that only inspect the first-line error marker remain compatible.
+
 ## 업종코드 ↔ KSIC DB 도구
 
 본 MCP는 국세청 '업종코드-표준산업분류 연계표' CSV를 빌드 시 JSON으로 변환해 내장합니다 (`build/data/upjong-ksic.json`, 약 1,784건, 귀속연도는 `upjong_db_info`로 확인).

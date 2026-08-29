@@ -33,6 +33,8 @@ When both MCPs return the same precedent, decision, or interpretation, consolida
 
 This server only displays items returned by the NTS Tax Law Information System. Empty results or external failures return markers such as `[NOT_FOUND]`, `[EXTERNAL_API_ERROR]`, and `[INVALID_PARAMETER]` plus a no-fabrication warning.
 
+Every tool result also includes `structuredContent: { status }` while preserving the existing text and `isError` fields. Statuses are `OK`, `NOT_FOUND`, `INVALID_INPUT`, `UPSTREAM_ERROR`, `PARSE_ERROR`, `AUTH_ERROR`, and `BUDGET_EXCEEDED`; `NOT_FOUND` means no matching public-DB row was returned, not that the document legally does not exist.
+
 ## Tools
 
 Tools split into those exposed directly in `tools/list` and low-frequency tools called through the `call_taxlaw_extra(name, args)` gateway (to cut fixed session tokens). Set `TAXLAW_EXPOSE_ALL=1` to expose all of them directly.
@@ -43,6 +45,7 @@ Tools split into those exposed directly in `tools/list` and low-frequency tools 
 | `search_taxlaw_all` | Integrated search across annexes/forms, tax statutes, interpretations/Q&A, cases, publications, and Hometax counseling |
 | `search_taxlaw_documents` | Search interpretations/Q&A (01–04) and pre-assessment/objection/review/tribunal/court/constitutional documents (05–10); `taxLawCode` recommended |
 | `get_taxlaw_document_text` | Document detail body. **`targetYear`** verifies cited statute dates; **`full`** includes the ruling/holding of cases and decisions |
+| `get_taxlaw_document_by_number` | Retrieve directly by NTS document/reply number; whitespace and hyphens are normalized and only exact matches are accepted |
 | `research_taxlaw_topic` | Chain macro — search → attach the top-K bodies (`full`·`targetYear`) in one call. With `targetYear`, a one-line validity note is auto-attached per pick |
 | `assess_doctrine_validity` | Auto-score the **current validity** of a single interpretation/tribunal/court decision (6-level verdict + recommended next-action queue) |
 | `verify_nts_citations` | Extract ruling/decision/case numbers from your draft and **check they exist** in the public DB (citation gate); `claims` also checks citation-to-proposition fit |

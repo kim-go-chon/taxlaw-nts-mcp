@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `get_taxlaw_document_by_number`: DOC_ID를 먼저 복사하지 않고 NTS 문서번호·회신번호를 정규화한 완전일치로 조회한 뒤 기존 상세·연도검증 경로를 재사용.
+- 모든 MCP 도구 결과에 하위 호환 `structuredContent.status` 추가(`OK`, `NOT_FOUND`, `INVALID_INPUT`, `UPSTREAM_ERROR`, `PARSE_ERROR`, `AUTH_ERROR`, `BUDGET_EXCEEDED`). 기존 텍스트 오류 마커와 `isError`는 유지.
+- 데이터 소스 경계·상태 계약을 `docs/DATA_SOURCES.md`에 문서화.
+
+### Fixed
+- `get_execution_standard`의 번호·제목 미조회 경로가 성공 응답처럼 보이던 문제를 `NOT_FOUND` 상태로 명시.
+
 ## [0.27.7] - 2026-08-08
 
 **실사고 대응 릴리스.** 대량 검증 루프를 돌리다 NTS(국세청)에 IP 차단을 당했다. 원인을 추적해 보니 제품 쪽에 **재시도 증폭(retry amplification)** 구조가 있었다 — 상류가 죽어갈수록 트래픽을 4배로 늘려 스로틀링을 차단으로 승격시키는 구조다. 서킷 브레이커로 막았다. 함께 조문 본문의 번호 중복도 제거했다.

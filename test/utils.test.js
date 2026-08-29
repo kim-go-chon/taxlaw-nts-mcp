@@ -12,6 +12,11 @@ const {
   cleanText,
   normalizeDate,
   normalizeDetailId,
+  normalizeDocumentNumber,
+  matchDocumentNumber,
+  toolStatusFromText,
+  visibleTools,
+  handleToolCall,
   refererForDoc,
   normalizeTaxlawPath,
   documentDateValue,
@@ -41,6 +46,7 @@ const {
   parseLawAddenda,
   extractCdataText,
   classifyApplicationClause,
+  targetYearApplicationNote,
   extractJoClauses,
   extractEnforceDate,
   mergeAddendaUnits,
@@ -48,6 +54,7 @@ const {
   parseLawRevisionText,
   pickVersionByPromulgation,
   pickVersionInForce,
+  normalizeEfYd,
   extractArticleBody,
   pruneEmpty,
   remainingBudgetMs,
@@ -198,6 +205,36 @@ test("normalizeDetailId: passes through unprefixed", () => {
 
 test("normalizeDetailId: trims whitespace", () => {
   assert.equal(normalizeDetailId("  001_123  "), "123")
+})
+
+test("normalizeDocumentNumber: 표기 구분자를 정규화", () => {
+  assert.equal(normalizeDocumentNumber(" 서면-2024-법규부가-4804 "), "서면2024법규부가4804")
+  assert.equal(normalizeDocumentNumber("조심 2023 서 9465"), "조심2023서9465")
+})
+
+test("matchDocumentNumber: 문서번호·회신번호 완전일치만 허용", () => {
+  assert.equal(matchDocumentNumber({ NTST_DCM_DSCM_CNTN: "조심-2023-서-9465" }, "조심 2023 서 9465"), "document")
+  assert.equal(matchDocumentNumber({ ntstDcmRplyCntn: "부가-1" }, "부가1"), "reply")
+  assert.equal(matchDocumentNumber({ NTST_DCM_DSCM_CNTN: "조심-2023-서-9465" }, "조심-2023-서-94650"), null)
+  assert.equal(matchDocumentNumber({ NTST_DCM_DSCM_CNTN: "조심-2023-서-9465" }, ""), null)
+})
+
+test("toolStatusFromText: 기존 마커를 기계 판독 상태로 변환", () => {
+  assert.equal(toolStatusFromText("[NOT_FOUND] 없음", true), "NOT_FOUND")
+  assert.equal(toolStatusFromText("[INVALID_PARAMETER] 잘못된 값", true), "INVALID_INPUT")
+  assert.equal(toolStatusFromText("[EXTERNAL_API_ERROR] upstream", true), "UPSTREAM_ERROR")
+  assert.equal(toolStatusFromText("[BUDGET_EXCEEDED] timeout", true), "BUDGET_EXCEEDED")
+  assert.equal(toolStatusFromText("정상 응답"), "OK")
+  assert.equal(toolStatusFromText("오류", true), "UPSTREAM_ERROR")
+})
+
+test("get_taxlaw_document_by_number: 공개 도구 스키마와 invalid 입력 상태", async () => {
+  const tool = visibleTools().find((entry) => entry.name === "get_taxlaw_document_by_number")
+  assert.ok(tool)
+  assert.deepEqual(tool.inputSchema.required, ["docNo"])
+  const result = await handleToolCall("get_taxlaw_document_by_number", { docNo: "" })
+  assert.equal(result.isError, true)
+  assert.deepEqual(result.structuredContent, { status: "INVALID_INPUT" })
 })
 
 test("normalizeTaxlawPath: accepts /path", () => {
@@ -1132,4 +1169,127 @@ test("extractArticleBody(v0.27.7): 마커 아닌 짧은 청크는 보존", () =>
   const blk = "<조문단위><조문내용><![CDATA[삭제]]></조문내용><조문참고자료><![CDATA[삭제 <2019.12.31>]]></조문참고자료></조문단위>"
   const { text } = extractArticleBody(blk)
   assert.ok(text.startsWith("삭제"), `앞 청크 소실: ${text}`)
+})
+
+// v0.27.8 — 적용례 유형 분류 커버리지. 실측 계기: 4개 세법 부칙 979문장 중 436건(44.5%)이
+//   유형미상 → targetYearApplicationNote가 ""를 반환해 '귀속 판단' 줄이 통째로 사라졌다.
+test("classifyApplicationClause(v0.27.8): 기존 분류 결과 불변(회귀 방지)", () => {
+  // 후순위 규칙을 '뒤에만' 덧붙였으므로 기존에 분류되던 문장은 그대로여야 한다.
+  assert.equal(classifyApplicationClause("제26조의8제6항의 개정규정은 이 영 시행 이후 신고하는 경우부터 적용한다."), "신고시점기준")
+  assert.equal(classifyApplicationClause("제11조의2제8항의 개정규정은 2026년 1월 1일 이후 개시하는 과세연도부터 적용한다."), "과세연도개시기준")
+  assert.equal(classifyApplicationClause("제26조의8의 개정규정에도 불구하고 종전의 규정에 따른다."), "경과조치(종전규정)")
+  assert.equal(classifyApplicationClause("제26조의8제6항의 개정규정은 2025년 1월 1일 이후 개시하는 과세연도를 최초 공제연도로 하여 신청하는 경우부터 적용한다."), "최초공제연도기준")
+  assert.equal(classifyApplicationClause("제27조의6의 개정규정은 이 영 시행 이후 증여받는 경우부터 적용한다."), "행위시점기준")
+})
+
+test("classifyApplicationClause(v0.27.8): '시행 후'·'시행일 이후'·날짜 anchor", () => {
+  // 종전에는 anchor를 '시행이후' 한 형태로만 봐서, 동사가 목록에 있어도(합병) 미상이었다.
+  assert.equal(classifyApplicationClause("제12조의3의 개정규정은 이 법 시행 후 합병하는 분부터 적용한다."), "행위시점기준")
+  assert.equal(classifyApplicationClause("제88조의2제1항의 개정규정은 이 법 시행일 이후 가입하는 분부터 적용한다."), "행위시점기준")
+  assert.equal(classifyApplicationClause("제71조의2제1항의 개정규정은 2025년 11월 28일 이후 주택을 취득하는 경우부터 적용한다."), "행위시점기준")
+  // 시행일을 부칙 다른 조로 지시하는 형태
+  assert.equal(classifyApplicationClause("이 법 중 양도소득세에 관한 개정규정은 부칙 제1조에 따른 각 해당 개정규정의 시행일 이후 양도하는 경우부터 적용한다."), "행위시점기준")
+})
+
+test("classifyApplicationClause(v0.27.8): 동사 열거 밖 행위·과세기간·연말정산·사업연도", () => {
+  // 동사 화이트리스트(취득·지급·양도…)에 없던 행위들 — 구조(anchor + 부터 적용한다)로 판정한다.
+  assert.equal(classifyApplicationClause("제6조제1항의 개정규정은 이 법 시행 이후 창업하는 경우부터 적용한다."), "행위시점기준")
+  assert.equal(classifyApplicationClause("제8조의3제5항의 개정규정은 이 법 시행 이후 무역보험기금에 출연하는 경우부터 적용한다."), "행위시점기준")
+  assert.equal(classifyApplicationClause("제58조제1항의 개정규정은 이 법 시행 이후 기부하는 경우부터 적용한다."), "행위시점기준")
+  // 부가세 부칙은 '과세연도'가 아니라 '과세기간' — 통째로 빠져 있었다.
+  assert.equal(classifyApplicationClause("제108조제2항의 개정규정은 2026년 7월 1일 이후 개시하는 과세기간부터 적용한다."), "과세연도개시기준")
+  // 연말정산·확정신고 형태
+  assert.equal(classifyApplicationClause("제132조의2제1항제7호의2의 개정규정은 이 법 시행 이후 근로소득세액의 연말정산 또는 종합소득과세표준을 확정신고하는 분부터 적용한다."), "신고시점기준")
+  // '…일이 속하는 사업연도'
+  assert.equal(classifyApplicationClause("제51조의2제2항제1호 단서의 개정규정은 2023년 12월 31일이 속하는 사업연도부터 적용한다."), "소득·기간기준")
+})
+
+test("classifyApplicationClause(v0.27.8): 경과조치 문구 변형('종전의 규정을 적용한다')", () => {
+  assert.equal(classifyApplicationClause("이 법 시행 당시 종전의 제6조의 규정을 적용받던 중소기업에 대하여는 종전의 규정을 적용한다."), "경과조치(종전규정)")
+  assert.equal(classifyApplicationClause("이 법 시행 전에 발생한 소득에 대해서는 종전의 예에 따른다."), "경과조치(종전규정)")
+})
+
+test("targetYearApplicationNote(v0.27.8): 유형미상도 침묵하지 않는다", () => {
+  // 미상이면 ""를 반환해 호출부가 '귀속 판단' 줄을 아예 안 찍었다 → '적용례 없음'으로 오독된다.
+  const note = targetYearApplicationNote("유형미상", "무언가 알 수 없는 적용례 문구", 2025, "2025.1.1", 3)
+  assert.notEqual(note, "", "미상일 때 빈 문자열 반환 — 판단노트가 무언 누락된다")
+  assert.match(note, /미분류/)
+  assert.match(note, /2025/)
+  // 분류된 유형은 종전 동작 유지
+  assert.match(targetYearApplicationNote("신고시점기준", "…신고하는 경우부터", 2024, "2025.1.1", 3), /소급 적용/)
+})
+
+// v0.27.8 — efYd 형식 검증. 실측 계기: efYd="2023-12-31"(ISO 오타)이 2022 시행본(MST 238037)을
+//   반환하면서 "2023-12-31 시점 시행본"이라고 라벨됐다. 사전순 비교라 '-'(0x2D) < '0'(0x30)이기 때문.
+test("normalizeEfYd(v0.27.8): 정상 8자리는 그대로", () => {
+  assert.deepEqual(normalizeEfYd("20231231"), { efYd: "20231231", note: undefined })
+  assert.deepEqual(normalizeEfYd(""), { efYd: "" })
+  assert.deepEqual(normalizeEfYd(undefined), { efYd: "" })
+})
+
+test("normalizeEfYd(v0.27.8): 구분자 형태는 정규화 + 노트", () => {
+  const a = normalizeEfYd("2023-12-31")
+  assert.equal(a.efYd, "20231231")
+  assert.match(a.note, /정규화/)
+  assert.equal(normalizeEfYd("2023.12.31").efYd, "20231231")
+  assert.equal(normalizeEfYd("2023/1/5").efYd, "20230105")
+})
+
+test("normalizeEfYd(v0.27.8): 형식·범위 위반은 조용히 넘기지 않고 거부", () => {
+  for (const bad of ["2023", "202312", "not-a-date", "20231232", "20231301", "19001231", "21011231"]) {
+    assert.throws(() => normalizeEfYd(bad), /INVALID|8자리|범위/, `"${bad}"가 통과됨 — 현행본이 요청 시점본으로 둔갑한다`)
+  }
+})
+
+test("normalizeEfYd(v0.27.8): 사전순 비교가 왜 위험한지(회귀 근거)", () => {
+  // 검증이 없다면 pickVersionInForce는 이 비교로 한 판본 뒤를 고른다.
+  assert.ok("2023-12-31" < "20230101", "전제 붕괴: '-'가 숫자보다 크게 비교됨")
+  const versions = [
+    { enforceDate: "20220101", promDate: "20211221", mst: "238037" },
+    { enforceDate: "20230101", promDate: "20221231", mst: "247463" },
+  ]
+  assert.equal(pickVersionInForce(versions, "20231231").mst, "247463")
+  assert.equal(pickVersionInForce(versions, "2023-12-31")?.mst, "238037", "검증 없이 통과하면 2022본이 선택된다")
+})
+
+// v0.27.8 — 조문 메타 CDATA가 본문 앞에 붙던 문제.
+//   법인세법 실측: 255개 조문단위 중 206개(81%)가 "정의2013.1.1, …제2조(정의)"처럼 시작했다.
+test("extractArticleBody(v0.27.8): 제목·제개정일자 메타가 본문 앞에 붙지 않는다", () => {
+  const blk = [
+    "<조문단위>",
+    "<조문제목><![CDATA[정의]]></조문제목>",
+    "<조문제개정일자문자열><![CDATA[2013.1.1, 2018.12.24]]></조문제개정일자문자열>",
+    "<조문내용><![CDATA[제2조(정의) 이 법에서 사용하는 용어의 뜻은 다음과 같다. <개정 2013.1.1, 2018.12.24>]]></조문내용>",
+    "</조문단위>",
+  ].join("")
+  const { text } = extractArticleBody(blk)
+  assert.ok(text.startsWith("제2조(정의)"), `본문이 조문 표기로 시작하지 않음: ${JSON.stringify(text.slice(0, 40))}`)
+  // 생략한 값은 본문에 그대로 남아 있어야 한다(정보 손실 0).
+  assert.match(text, /정의/)
+  assert.match(text, /2013\.1\.1, 2018\.12\.24/)
+})
+
+test("extractArticleBody(v0.27.8): 뒤에 안 남는 메타는 생략하지 않는다", () => {
+  // 제목이 본문에 없으면(예: 표기 불일치) 지우면 정보가 사라지므로 보존해야 한다.
+  const blk = [
+    "<조문단위>",
+    "<조문제목><![CDATA[전혀다른제목]]></조문제목>",
+    "<조문내용><![CDATA[제9조(과세표준) 내용만 있다.]]></조문내용>",
+    "</조문단위>",
+  ].join("")
+  const { text } = extractArticleBody(blk)
+  assert.match(text, /전혀다른제목/, "본문에 없는 제목까지 지워버렸다 — 정보 손실")
+})
+
+test("extractArticleBody(v0.27.8): v0.27.7 항번호 중복 제거와 함께 동작", () => {
+  const blk = [
+    "<조문단위>",
+    "<조문제목><![CDATA[납세의무자]]></조문제목>",
+    "<조문내용><![CDATA[제3조(납세의무자)]]></조문내용>",
+    "<항><항번호><![CDATA[①]]></항번호><항내용><![CDATA[① 다음 각 호의 법인은 납부할 의무가 있다.]]></항내용></항>",
+    "</조문단위>",
+  ].join("")
+  const { text } = extractArticleBody(blk)
+  assert.ok(text.startsWith("제3조(납세의무자)"), `앞머리 군더더기: ${JSON.stringify(text.slice(0, 30))}`)
+  assert.equal((text.match(/①/g) || []).length, 1, "항번호가 중복됨")
 })
