@@ -7,7 +7,7 @@ import { strict as assert } from "node:assert"
 // 맞춰 CDATA 조문("제N조(")·부칙 문형을 정확히 재현.
 process.env.TAXLAW_MCP_TEST_MODE = "1"
 
-const { traceArticleApplication, buildApplicationTimetable, getLawArticle } = await import("../build/index.js")
+const { traceArticleApplication, buildApplicationTimetable, getLawArticle, getLawAddenda, diffArticleVersionsTool } = await import("../build/index.js")
 
 // ── 픽스처 빌더 ──
 const lawXml = ({ title, articles = [], addenda = [] }) =>
@@ -24,6 +24,7 @@ const TRANSITIONAL = (jo) => `제3조(경과조치) ${jo}의 개정규정에도 
 
 // ── 전역 라우터 + 픽스처 레지스트리(모듈 로드 시 1회 설치) ──
 const LAWS = {}       // MST -> lawService XML
+const SEARCH = {}
 const EFLAW = {}      // 법령명(raw) -> eflaw XML
 const fetchLog = []
 globalThis.fetch = async (url) => {
@@ -35,6 +36,7 @@ globalThis.fetch = async (url) => {
   let body = "<LawSearch></LawSearch>"
   if (u.pathname.includes("lawService.do") && mst) body = LAWS[mst] || "<법령></법령>"
   else if (target === "eflaw") body = EFLAW[query] || "<LawSearch></LawSearch>"
+  else if (target === "law") body = SEARCH[query] || "<LawSearch></LawSearch>"
   return { ok: true, status: 200, text: async () => body }
 }
 const textOf = (res) => res.content.map((c) => c.text).join("\n")
@@ -168,4 +170,70 @@ test("C8(O2-2): 본문 6000자 초과 시 절단 능동 노트", async () => {
   const text = textOf(await getLawArticle({ jo: "제3조", mst: "8010", oc: "OCO2" }))
   assert.ok(text.includes("표시(절단)"), "절단 능동 노트(수정 전엔 마커만·능동 안내 없음)")
   assert.ok(text.includes("full=true"), "재조회 안내")
+})
+
+for (const [suffix, searchTitle, sourceTitle, bare] of [
+  ["wrong", "국세회귀법 시행령", "국세회귀법 시행령", false],
+  ["missing", "", "국세회귀법", false],
+  ["bare", "국세회귀법", "국세회귀법", true],
+  ["bodywrong", "국세회귀법", "국세회귀법 시행령", false],
+  ["bodymissing", "국세회귀법", "", false],
+  ["valid", "국세회귀법", "국세회귀법", false],
+]) {
+  test(`addenda identity: ${suffix}`, async () => {
+    const title = `국세회귀법${suffix}`
+    LAWS["99101"] = lawXml({ title, addenda: [{ date: "20200101", no: "111", text: "PRIMARY_ADDENDUM" }] })
+    LAWS["99102"] = lawXml({ title: sourceTitle.replace("국세회귀법", title), addenda: [{ date: "20240101", no: "222", text: "SUPPLEMENT_ADDENDUM" }] })
+    EFLAW[title] = bare ? "<LawSearch><법령일련번호>99102</법령일련번호></LawSearch>" : eflawXml([{ mst: "99102", name: searchTitle.replace("국세회귀법", title), enf: "20240101", prom: "20240101" }])
+    const primaryMst = `9910${suffix.length}${suffix.charCodeAt(0)}`
+    const supplementMst = `9920${suffix.length}${suffix.charCodeAt(0)}`
+    LAWS[primaryMst] = LAWS["99101"]
+    LAWS[supplementMst] = LAWS["99102"]
+    EFLAW[title] = EFLAW[title].replaceAll("99102", supplementMst)
+    if (suffix.startsWith("body")) {
+      await assert.rejects(getLawAddenda({ mst: primaryMst, lawName: title, oc: `identity-${suffix}` }), /제명 불일치/)
+      return
+    }
+    const output = textOf(await getLawAddenda({ mst: primaryMst, lawName: title, oc: `identity-${suffix}` }))
+    if (suffix === "valid") assert.match(output, /SUPPLEMENT_ADDENDUM/)
+    else assert.doesNotMatch(output, /SUPPLEMENT_ADDENDUM/)
+    if (suffix.startsWith("body")) assert.match(output, /제명 불일치/)
+    else assert.match(output, /PRIMARY_ADDENDUM/)
+  })
+}
+
+test("historical empty exact candidates: fallback remains explicitly labelled", async () => {
+  EFLAW["역사후보없음법"] = eflawXml([{ mst: "99601", name: "역사후보없음법 시행령", enf: "20200101", prom: "20200101" }])
+  SEARCH["역사후보없음법"] = eflawXml([{ mst: "99602", name: "역사후보없음법", enf: "20250101", prom: "20250101" }])
+  LAWS["99602"] = lawXml({ title: "역사후보없음법", articles: ["제1조(목적) 현행 내용."] })
+  fetchLog.length = 0
+  const output = textOf(await getLawArticle({ lawName: "역사후보없음법", jo: "제1조", efYd: "20210101", oc: "empty-historical" }))
+  assert.match(output, /요청 시점 텍스트 아님/)
+  assert.ok(!fetchLog.some(u => u.includes("MST=99601")))
+})
+
+test("lawSearch resolver rejects wrong title and skips wrong first hit", async () => {
+  SEARCH["해소검증법"] = eflawXml([{ mst: "99701", name: "해소검증법 시행령" }])
+  await assert.rejects(getLawAddenda({ lawName: "해소검증법", oc: "resolver-wrong" }), /MST를 찾지 못했습니다/)
+  SEARCH["해소정상법"] = eflawXml([{ mst: "99701", name: "해소정상법 시행령" }, { mst: "99702", name: "해소정상법" }])
+  LAWS["99702"] = lawXml({ title: "해소정상법", addenda: [{ date: "20200101", no: "11", text: "CORRECT_RESOLVED" }] })
+  assert.match(textOf(await getLawAddenda({ lawName: "해소정상법", oc: "resolver-valid" })), /CORRECT_RESOLVED/)
+})
+
+test("primary XML identity: explicit MST with conflicting title is rejected", async () => {
+  LAWS["99801"] = lawXml({ title: "본문다른법", articles: ["제1조(목적) WRONG_PRIMARY"], addenda: [{ date: "20200101", no: "11", text: "WRONG_PRIMARY" }] })
+  await assert.rejects(getLawAddenda({ mst: "99801", lawName: "본문요청법", oc: "primary-addenda" }), /제명 검증 실패/)
+  await assert.rejects(getLawArticle({ mst: "99801", lawName: "본문요청법", jo: "제1조", oc: "primary-article" }), /제명 검증 실패/)
+})
+
+test("identical endpoint texts do not establish an unchanged interval or unrelated addenda", async () => {
+  LAWS["99901"] = lawXml({ title: "동일문구법", articles: ["제1조(목적) 같은 문구."] })
+  LAWS["99902"] = LAWS["99901"]
+  const output = textOf(await diffArticleVersionsTool({ jo: "제1조", mstA: "99901", mstB: "99902", oc: "diff-identical" }))
+  assert.match(output, /두 조회 본문/)
+  assert.match(output, /별도 확인/)
+  assert.doesNotMatch(output, /문구 개정 없음|무관하다는 적극 신호/)
+  const same = textOf(await diffArticleVersionsTool({ jo: "제1조", mstA: "99901", mstB: "99901", oc: "diff-same" }))
+  assert.match(same, /확정할 수 없으므로/)
+  assert.doesNotMatch(same, /시행본 교체 없음/)
 })

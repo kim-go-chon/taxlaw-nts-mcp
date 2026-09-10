@@ -40,7 +40,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.27.8"
+const VERSION = "0.27.9"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -869,7 +869,7 @@ const tools = [
   {
     name: "diff_article_versions",
     description:
-      "두 시점 시행본의 같은 조문을 단어단위로 기계 대조(diff)해 변경 hunk만 반환한다 — 타임테이블 해석 공리 ①(신구 문구 나란히 대조)·②(개정규정=실제 바뀐 문구 단위)의 기계화 도구. 각 hunk는 【삭제】【신설】 마커+앞뒤 문맥으로 표시하고 실질변경/자구정비/번호이동을 결정적 휴리스틱으로 분류한다(LLM 추정 아님). 용법: build_application_timetable의 개정 인벤토리에서 개정일 2개를 고른 뒤 이 도구로 '그 사이 실제 바뀐 문구'를 확정하고, get_law_revision_text(개정문 '…를 …로 한다')와 교차검증. '변경 없음' 응답은 그 구간 해당 조문 무개정의 적극 신호로 그 자체가 근거가 된다. ⚠ 변경 문구의 개정령 귀속은 개정문·부칙으로 확정 후 단정.",
+      "두 시점 시행본의 같은 조문을 단어단위로 기계 대조(diff)해 변경 hunk만 반환한다 — 타임테이블 해석 공리 ①(신구 문구 나란히 대조)·②(개정규정=실제 바뀐 문구 단위)의 기계화 도구. 각 hunk는 【삭제】【신설】 마커+앞뒤 문맥으로 표시하고 실질변경/자구정비/번호이동을 결정적 휴리스틱으로 분류한다(LLM 추정 아님). 용법: build_application_timetable의 개정 인벤토리에서 개정일 2개를 고른 뒤 이 도구로 '그 사이 실제 바뀐 문구'를 확정하고, get_law_revision_text(개정문 '…를 …로 한다')와 교차검증. '변경 없음'은 두 조회 본문의 문구 동일만 뜻하며, 중간 개정·부칙 적용 여부는 별도 원문 검증이 필요하다. ⚠ 변경 문구의 개정령 귀속은 개정문·부칙으로 확정 후 단정.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3734,7 +3734,11 @@ async function fetchMolegXml(url: string, label: string): Promise<string> {
 async function resolveLawMst(oc: string, lawName: string): Promise<string> {
   const url = `${MOLEG_BASE}/DRF/lawSearch.do?OC=${encodeURIComponent(oc)}&target=law&type=XML&display=5&query=${encodeURIComponent(lawName)}`
   const xml = await fetchMolegXml(url, "법령 검색")
-  const mst = (xml.match(/<법령일련번호>([\s\S]*?)<\/법령일련번호>/)?.[1] || "").trim()
+  const row = [...xml.matchAll(/<law(?:\s[^>]*)?>([\s\S]*?)<\/law>/g)].find((match) => {
+    const name = (match[1].match(/<법령명한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명한글>/)?.[1] || "").trim()
+    return !!lawNameKey(lawName) && lawNameKey(name) === lawNameKey(lawName)
+  })
+  const mst = (row?.[1].match(/<법령일련번호>(\d+)<\/법령일련번호>/)?.[1] || "").trim()
   if (!mst) {
     throw new TaxlawMcpError(
       `'${lawName}' 법령의 MST를 찾지 못했습니다. korean-law-mcp의 search_law로 정확한 mst를 확보해 전달하세요.`,
@@ -3753,7 +3757,7 @@ async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promi
   const xml = await fetchMolegXml(url, "시행일 법령 검색")
   // v0.21.0(#G2) — eflaw lawSearch(query=법령명)는 이름이 '포함'된 타법(시행령·시행규칙 등)까지 반환하므로,
   //   행(law 요소) 단위로 파싱해 법령명 키가 일치하는 행만 남긴다(fetchEflawVersions의 lawNameKey 방식과 동일).
-  //   일치 0건이면 기존 동작(전체 행)으로 폴백(filterVersionsByName과 동일 semantics) — addenda 보강 누락 방지.
+  //   일치 0건이나 행 래퍼가 없으면 보강하지 않는다.
   const key = lawNameKey(lawName)
   const rows: Array<{ mst: string; match: boolean }> = []
   for (const row of xml.matchAll(/<law(?:\s[^>]*)?>([\s\S]*?)<\/law>/g)) {
@@ -3763,23 +3767,10 @@ async function fetchEflawMsts(oc: string, lawName: string, limit: number): Promi
     const name = (block.match(/<법령명한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명한글>/)?.[1] || "").trim()
     rows.push({ mst, match: !!key && lawNameKey(name) === key })
   }
-  // <law> 래퍼가 없어 행 파싱이 0건이면 종전 bare-regex 추출로 폴백(기존 동작 보존).
-  if (rows.length === 0) {
-    const out: string[] = []
-    const seen = new Set<string>()
-    for (const m of xml.matchAll(/<법령일련번호>(\d+)<\/법령일련번호>/g)) {
-      if (seen.has(m[1])) continue
-      seen.add(m[1])
-      out.push(m[1])
-      if (out.length >= limit) break
-    }
-    return out
-  }
-  const anyMatch = rows.some((r) => r.match)
   const out: string[] = []
   const seen = new Set<string>()
   for (const r of rows) {
-    if (anyMatch && !r.match) continue // 일치 행이 존재하면 타법 행 배제
+    if (!r.match) continue // 정확 제명을 확인하지 못한 행은 보강하지 않는다
     if (seen.has(r.mst)) continue
     seen.add(r.mst)
     out.push(r.mst)
@@ -3801,28 +3792,19 @@ export function displayLawServiceUrl(mst: string): string {
   return `${MOLEG_BASE}/DRF/lawService.do?target=law&MST=${encodeURIComponent(mst)}&type=XML`
 }
 
-// eflaw 검색 결과에서 lawName과 정확히 일치하는 행만(공백 무시). 일치 0건이면 원본 그대로(기존 동작 보존).
-// v0.11.0 — eflaw lawSearch(query=법령명)는 이름이 '포함'된 모든 법령(시행령·시행규칙 등)을 반환하므로,
-// 이력이 적은 법령은 타법 행이 섞여 '현행본' 오판(교차법령 대조)을 일으킨다(리뷰 실증: 가상자산법 ↔ 시행령).
+// 정확 제명이 확인된 시행본만 채택한다. 미일치·제명 미상 후보는 제외한다.
 export function filterVersionsByName(versions: LawVersion[], lawName: string): LawVersion[] {
-  const key = lawNameKey(lawName)
-  if (!key) return versions
-  const hit = versions.filter((v) => v.lawName && lawNameKey(v.lawName) === key)
-  return hit.length ? hit : versions
+  return filterVersionsByNameStrict(versions, lawName)
 }
 
-// v0.27.0(리뷰 P1) — 위 폴백('일치 0건이면 원본')은 가용성을 위해 유지하되 '무경고'만 없앤다.
-//   실측 문제: "요청법"을 검색해 "요청법 시행령" 행만 잡히면 그 시행령이 그대로 채택되고,
-//   이후 본문·부칙·후행개정 가드가 전부 엉뚱한 법령을 대상으로 '일관되게' 돌아 오류 신호가 하나도 안 뜬다.
-//   폴백 자체를 막지 않는 이유: 제명 변경·표기 흔들림(구법명 등)에서 정상 회수를 실패시키면 더 나쁘다.
-//   타법(cross-law) 경로는 오귀속 비용이 더 커서 filterVersionsByNameStrict(0건=안전 강등)를 계속 쓴다.
+// 제외된 후보의 제명을 사용자에게 알려 재검색을 돕는다.
 export function lawNameFallbackNote(versions: LawVersion[], lawName: string): string | null {
   const key = lawNameKey(lawName)
   if (!key || versions.length === 0) return null
   if (versions.some((v) => v.lawName && lawNameKey(v.lawName) === key)) return null
   const names = [...new Set(versions.map((v) => v.lawName).filter(Boolean))].slice(0, 3)
   if (names.length === 0) return null
-  return `⚠ 제명 정확일치 0건 — 요청 "${lawName}"과 검색 결과 제명(${names.join(", ")})이 다릅니다. 아래 시점본·부칙·개정 판정이 '다른 법령'을 대상으로 수행됐을 수 있습니다. 정확한 제명으로 다시 지정하거나, korean-law-mcp search_law로 MST를 확보해 mst로 직접 전달하세요.`
+  return `⚠ 제명 정확일치 0건 — 요청 "${lawName}"과 검색 결과 제명(${names.join(", ")})이 다릅니다. 해당 후보를 시점본·부칙·개정 판정에서 제외했습니다. 정확한 제명으로 다시 지정하거나, korean-law-mcp search_law로 MST를 확보해 mst로 직접 전달하세요.`
 }
 
 // eflaw 검색으로 (mst, 시행일자, 공포일자, 법령명)을 시행일 내림차순으로. 시점별 조문 회수용.
@@ -4006,7 +3988,7 @@ export function buildLaterRevisionGuard(opts: {
         )
       } else if (verdict === "same") {
         lines.push(
-          `${jo}는 현행본(MST ${current.mst})과 문구 동일(자동 대조 — 변경 없음의 적극 신호). 단, 적용 시기는 부칙이 정한다.${opts.hasFormulaImages ? " 수식 이미지 내용은 대조 범위 밖(이미지 직접 확인 필요)." : ""}`,
+          `${jo}는 현행본(MST ${current.mst})과 문구 동일(자동 대조). 중간 개정 여부와 적용 시기는 개정문·부칙으로 별도 확인한다.${opts.hasFormulaImages ? " 수식 이미지 내용은 대조 범위 밖(이미지 직접 확인 필요)." : ""}`,
         )
       } else {
         lines.push(
@@ -4193,7 +4175,10 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
   const lawServiceUrl = (m: string) => `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(m)}&type=XML`
   const primaryXml = await fetchMolegXml(lawServiceUrl(primaryMst), "법령 조회")
   const lawTitle = (primaryXml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
-  const lawName = lawNameArg || lawTitle
+  if (!lawNameKey(lawTitle) || (lawNameArg && lawNameKey(lawNameArg) !== lawNameKey(lawTitle))) {
+    throw new Error("법령 제명 검증 실패 — 요청 제명과 MST 본문의 제명을 확인하세요.")
+  }
+  const lawName = lawTitle
 
   let recent: string[] = []
   if (lawName && depth > 1) {
@@ -4205,6 +4190,10 @@ async function prepareMergedAddenda(oc: string, mstArg: string, lawNameArg: stri
   // 순서·dedup은 mergeAddendaUnits가 promDate 기준이라 무관하고, primaryMst 조회(3405)는 mst로 하므로 배열 순서 보존이면 충분.
   const sources: AddendaSource[] = await Promise.all(msts.map(async (m) => {
     const xml = m === primaryMst ? primaryXml : await fetchMolegXml(lawServiceUrl(m), "법령 조회")
+    const sourceTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+    if (lawNameKey(sourceTitle) !== lawNameKey(lawTitle)) {
+      throw new Error("부칙 보강 법령 제명 불일치 — 다른 법령의 부칙은 병합하지 않습니다.")
+    }
     // 그 통합본 자체의 공포일자(기본정보 첫 등장) — dedup 시 최신 통합본 우선 판정 기준
     const promDate = (xml.match(/<공포일자>(\d{8})<\/공포일자>/)?.[1] || "").trim()
     return { mst: m, units: parseLawAddenda(xml), promDate }
@@ -4245,7 +4234,7 @@ export function articleInfoFromXml(
 }
 
 // #G2 filterVersionsByName의 strict 변형: 정확 제명 일치만, 0건 시 폴백 없이 빈 배열.
-// (cross-law 해소에서 폴백 행 채택 = resolveLawMst 첫행채택급 오해소 → 폴백 제거. self-law 경로는 기존 함수 무변경.)
+// self-law 및 cross-law 공통으로 미일치 후보는 제외한다.
 export function filterVersionsByNameStrict(versions: LawVersion[], lawName: string): LawVersion[] {
   const key = lawNameKey(lawName)
   if (!key) return []
@@ -4554,11 +4543,32 @@ function formatYmd(ymd: string): string {
 
 // 부칙단위 본문의 제1조(시행일)에서 시행일을 뽑는다. "공포한 날부터 시행"이면 공포일.
 export function extractEnforceDate(addendaText: string, promulgationYmd?: string): string {
+  // 조문별 예외를 하나의 확정 시행일로 출력하지 않는다. 상대기간 계산도 여기서는 하지 않는다.
   const f = addendaText.replace(/\s/g, "")
-  const m = f.match(/이영은(\d{4})년(\d{1,2})월(\d{1,2})일부터시행/)
-  if (m) return `${m[1]}.${Number(m[2])}.${Number(m[3])}`
-  if (/공포한날부터시행/.test(f)) return promulgationYmd ? `${formatYmd(promulgationYmd)}(공포일)` : "공포일"
-  return promulgationYmd ? formatYmd(promulgationYmd) : ""
+  if ((f.match(/시행(?:한다|하고|한다는)/g) || []).length > 1) return ""
+  const sections = addendaText.split(/\r?\n/.test(addendaText)
+    ? /(?=^[ \t]*제\d+조(?:의\d+)?[ \t]*\()/m : /(?=제\d+조(?:의\d+)?\s*\()/)
+  const section = (sections.find((s) => /^제1조\(시행일\)/.test(s.replace(/\s/g, ""))) || addendaText).replace(/\s/g, "")
+  if (/다만|각호/.test(section)) return ""
+  const start = section.match(/제1조\(시행일\)/)
+  const body = start ? section.slice(start.index! + start[0].length) : section
+  const sentence = body.match(/^이(?:법|영|규칙)은([^.]*?시행한다)/)?.[1]
+  if (!sentence) return ""
+  const m = sentence.match(/^(\d{4})년(\d{1,2})월(\d{1,2})일부터시행한다$/)
+  if (m) {
+    const [y, mo, d] = m.slice(1).map(Number)
+    const date = new Date(Date.UTC(y, mo - 1, d))
+    if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return ""
+    return `${y}.${mo}.${d}`
+  }
+  if (/^공포한날(?:부터|로부터)시행한다$/.test(sentence) && /^\d{8}$/.test(promulgationYmd || "")) {
+    const ymd = promulgationYmd!
+    const [y, mo, d] = [Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)), Number(ymd.slice(6, 8))]
+    const date = new Date(Date.UTC(y, mo - 1, d))
+    if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return ""
+    return `${formatYmd(ymd)}(공포일)`
+  }
+  return ""
 }
 
 // 적용례/경과조치 한 조항을 유형 분류. 순서 중요(경과조치·최초공제·과세연도개시 먼저 검사).
@@ -4612,7 +4622,8 @@ export function extractJoClauses(addendaText: string, jo: string, hang?: string)
   const hangKey = (hang || "").replace(/\s/g, "")
   const out: Array<{ title: string; clause: string }> = []
   // 부칙은 제N조(제목) 단위로 구성 → 조 블록으로 분해
-  const blocks = addendaText.split(/(?=제\d+조(?:의\d+)?\s*\()/).filter((b) => b.trim())
+  const lineBoundary = /(?=^[ \t]*제\d+조(?:의\d+)?[ \t]*\()/m
+  const blocks = addendaText.split(/\r?\n/.test(addendaText) && lineBoundary.test(addendaText) ? lineBoundary : /(?=제\d+조(?:의\d+)?\s*\()/).map((b) => b.trim()).filter(Boolean)
   for (const b of blocks) {
     if (!joMentioned(b.replace(/\s/g, ""), joKey)) continue
     const title = (b.match(/^제\d+조(?:의\d+)?\s*\([^)]*\)/) || [""])[0].trim()
@@ -4814,6 +4825,10 @@ export function targetYearApplicationNote(
   filingMonth: number,
 ): string {
   const f = clause.replace(/\s/g, "")
+  if (!enforceDate && (["신고시점기준", "행위시점기준", "소득·기간기준"].includes(type) ||
+      (type === "과세연도개시기준" && !/\d{4}년(?:\d{1,2}월)?(?:\d{1,2}일)?이후개시/.test(f)))) {
+    return "⚠ 시행일 미확정 — 단서·조별 시행일 및 적용례 원문 확인 전 귀속연도 판정 유보."
+  }
   if (type === "신고시점기준") {
     const filing = `${targetYear + 1}.${filingMonth}월(말)`
     const ed = enforceDate || "?"
@@ -5059,7 +5074,7 @@ export async function traceArticleApplication(args: TraceArticleArgs): Promise<T
     }
   }
 
-  const lines: string[] = [TRACE_GUARD, ""]
+  const lines: string[] = [TRACE_GUARD, "⚠ 구조 추출 결과이며 법적 적용 확정이 아닙니다. 조문별 시행일·적용례·경과조치를 원문으로 확인하세요.", ""]
   if (selfTypes.has("최초공제연도기준") || junyongTypes.has("최초공제연도기준")) {
     lines.push(
       "⚠⚠ [차수 확인 필수] 적용례에 '최초공제연도' 기준 검출 — 귀속연도만으로 판정 불가.",
@@ -5222,9 +5237,9 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
     }
   }
   if (!mst) {
-    const ownVersions = filterVersionsByName(versions, lawName) // 교차법령 행 배제(일치 0건이면 원본)
+    const ownVersions = filterVersionsByName(versions, lawName) // 정확 제명 확인된 행만 채택
     nameFallbackNote = lawNameFallbackNote(versions, lawName) // v0.27.0 — 폴백 유지 + 무경고 금지
-    if (efYd && ownVersions.length) {
+    if (efYd) {
       const picked = pickVersionInForce(ownVersions, efYd)
       if (picked) {
         mst = picked.mst
@@ -5252,6 +5267,9 @@ export async function getLawArticle(args: LawArticleArgs): Promise<ToolResponse>
   ])
   versions = versionsResolved
   const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+  if (lawName && lawNameKey(lawTitle) !== lawNameKey(lawName)) {
+    throw new TaxlawMcpError("법령 제명 검증 실패 — 요청 제명과 MST 본문의 제명을 확인하세요.", ErrorCodes.NOT_FOUND)
+  }
   const enforceDate = (xml.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
 
   // v0.11.0 — 부칙 CDATA 오매칭 배제(<조문내용> 앵커) + 삭제 조문 적극 보고.
@@ -5673,7 +5691,7 @@ export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<To
   if (sideA.mst === sideB.mst) {
     return textResponse([
       "신구 조문 단어단위 기계 diff",
-      `두 시점이 같은 시행본(MST ${sideA.mst})으로 해소되었습니다 — 그 사이 ${jo} 시행본 교체 없음.`,
+      `두 시점이 같은 시행본(MST ${sideA.mst})으로 해소되었습니다. 중간 개정 여부와 부칙 적용은 이 결과로 확정할 수 없으므로 원문을 별도 확인하세요.`,
       "다른 개정 구간을 보려면 yearA/yearB(또는 efYd, mst)를 더 벌려 지정하세요. 시행본 목록은 get_law_article(full=true)의 '최근 시행본' 참조.",
     ].join("\n"))
   }
@@ -5760,7 +5778,7 @@ export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<To
   }
 
   if (diff.identical) {
-    lines.push(`✅ 변경 없음 — 이 두 시행본 사이에 ${jo}${hang ? ` ${hang}` : ""} 문구 개정 없음. (이 구간 개정 부칙은 이 문구와 무관하다는 적극 신호)`)
+    lines.push(`✅ 변경 없음 — 두 조회 본문의 ${jo}${hang ? ` ${hang}` : ""} 문구가 동일합니다. 중간 개정 여부나 부칙의 적용·기간 확장을 뜻하지 않으므로 개정문·부칙 원문을 별도 확인하세요.`)
     return textResponse(lines.join("\n"))
   }
 

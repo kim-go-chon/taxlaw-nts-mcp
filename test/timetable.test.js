@@ -4,6 +4,7 @@ import { strict as assert } from "node:assert"
 process.env.TAXLAW_MCP_TEST_MODE = "1"
 
 const {
+  extractEnforceDate,
   hangToSymbol,
   sliceHangBlock,
   parseJoSpec,
@@ -260,7 +261,7 @@ test("filterVersionsByNameStrict(E3): 정확 제명만(공백무관), 0건 시 �
   // strict: 미일치면 빈 배열(오해소 방지)
   assert.deepEqual(filterVersionsByNameStrict(versions, "없는법"), [])
   // 대조: 기존 #G2 필터는 0건 시 원본 폴백(self-law용, cross엔 부적합)
-  assert.equal(filterVersionsByName(versions, "없는법").length, 3)
+  assert.equal(filterVersionsByName(versions, "없는법").length, 0)
 })
 
 // ── extractJoClauses: "같은 조 제N항" 표기 회수(부칙 제36127호 제11조① 패턴) ──
@@ -318,7 +319,7 @@ test("targetYearApplicationNote(#G8): 연도 미파싱 + enforceDate fallback(1.
   const mid = targetYearApplicationNote("과세연도개시기준", clause, 2026, "2025.7.1", 3)
   assert.match(mid, /⚠ 연중 시행\(7\.1, 시행일 fallback\)/)
   const none = targetYearApplicationNote("과세연도개시기준", clause, 2026, "", 3)
-  assert.match(none, /기준 과세연도 미파싱/)
+  assert.match(none, /시행일 미확정.*판정 유보/)
 })
 
 test("targetYearApplicationNote(#G8): 경과조치 범위 문언은 정확일치 대신 ⚠ 강등, 순수 연도는 기존 동작", () => {
@@ -331,7 +332,7 @@ test("targetYearApplicationNote(#G8): 경과조치 범위 문언은 정확일치
 })
 
 // v0.27.0(리뷰 P1) — 제명 정확일치 0건 폴백의 '무경고' 제거.
-// filterVersionsByName은 가용성을 위해 원본을 그대로 돌려주지만(기존 동작 유지),
+// filterVersionsByName은 미일치 후보를 제외하며,
 // 그 사실을 호출부가 사용자에게 알릴 수 있어야 한다.
 test("lawNameFallbackNote: 정확일치 0건이면 경고 문자열 반환", () => {
   const rows = [{ mst: "111", lawName: "요청법 시행령", enforceDate: "20250101", promDate: "20241231" }]
@@ -339,8 +340,8 @@ test("lawNameFallbackNote: 정확일치 0건이면 경고 문자열 반환", () 
   assert.ok(note, "정확일치 0건인데 경고가 없음")
   assert.match(note, /제명 정확일치 0건/)
   assert.match(note, /요청법 시행령/, "실제 검색된 제명을 보여줘야 함")
-  // 폴백 자체는 그대로 유지(회귀 금지)
-  assert.equal(filterVersionsByName(rows, "요청법").length, 1)
+  // 미일치 후보는 제외한다.
+  assert.equal(filterVersionsByName(rows, "요청법").length, 0)
 })
 
 test("lawNameFallbackNote: 정확일치가 있으면 침묵", () => {
@@ -394,4 +395,44 @@ test("extractJunyongTargets(v0.27.0): 상한 초과 시 마지막 대상에 capp
   assert.equal(r.length, 6, `상한 6건 초과: ${JSON.stringify(r)}`)
   assert.equal(r[r.length - 1].capped, true, "상한 도달이 무라벨로 절단됨")
   assert.match(fmtJunyong(r[r.length - 1]), /상한 도달/)
+})
+
+test("addenda article boundary preserves parenthetical body references", () => {
+  const text = "제1조(시행일) 이 법은 2026년 1월 1일부터 시행한다.\n제2조(적용례) 제76조(종전 제7항을 삭제하는 부분에 한정한다)의 개정규정은 시행 이후부터 적용한다.\n제3조(경과조치) 제80조에 관하여 종전의 규정에 따른다."
+  const rows = extractJoClauses(text, "제76조")
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].title, "제2조(적용례)")
+  assert.match(rows[0].clause, /종전 제7항/)
+})
+
+test("enforcement dates: explicit law/decree/rule only, uncertain dates stay unknown", () => {
+  for (const kind of ["법", "영", "규칙"]) {
+    assert.equal(extractEnforceDate(`제1조(시행일) 이 ${kind}은 2026년 1월 1일부터 시행한다.`, "20251231"), "2026.1.1")
+    assert.equal(extractEnforceDate(`제1조(시행일) 이 ${kind}은 공포한 날부터 시행한다.`, "20251231"), "2025.12.31(공포일)")
+  }
+  for (const text of [
+    "제1조(시행일) 이 법은 공포 후 6개월이 경과한 날부터 시행한다.",
+    "제1조(시행일) 이 법은 2026년 1월 1일부터 시행한다. 다만, 제76조는 2027년 1월 1일부터 시행한다.",
+    "제1조(시행일) 이 법은 2026년 1월 1일부터 시행한다.\n제2조(다른 시행일) 제76조는 2027년 1월 1일부터 시행한다.",
+    "제2조(적용례) 제76조는 2026년부터 적용한다.",
+    "제1조(시행일) 이 법은 2026년 1월 1일부터 시행하고, 제76조는 2027년 1월 1일부터 시행한다.",
+  ]) assert.equal(extractEnforceDate(text, "20251231"), "")
+  for (const type of ["신고시점기준", "행위시점기준", "소득·기간기준", "과세연도개시기준"]) {
+    assert.match(targetYearApplicationNote(type, "이 법 시행 이후 개시하는 과세연도부터 적용한다.", 2026, "", 3), /판정 유보/)
+  }
+  assert.match(targetYearApplicationNote("과세연도개시기준", "2026년 1월 1일 이후 개시하는 과세연도부터 적용한다.", 2026, "", 3), /개정규정 적용/)
+})
+
+test("single-line addenda retains separate article titles", () => {
+  const text = "제1조(시행일) 이 영은 공포한 날부터 시행한다. 제2조(적용례) 제76조의 개정규정은 이후부터 적용한다. 제3조(경과조치) 제80조에 관하여 종전의 규정에 따른다."
+  assert.equal(extractJoClauses(text, "제76조")[0].title, "제2조(적용례)")
+  assert.equal(extractJoClauses(text, "제80조")[0].title, "제3조(경과조치)")
+})
+
+test("enforcement date rejects impossible dates and malformed publication dates", () => {
+  assert.equal(extractEnforceDate("제1조(시행일) 이 법은 2027년 2월 30일부터 시행한다.", "20261231"), "")
+  assert.equal(extractEnforceDate("제1조(시행일) 이 법은 2028년 2월 29일부터 시행한다."), "2028.2.29")
+  for (const ymd of ["20270230", "20271301", "2027011", "not-a-date"]) {
+    assert.equal(extractEnforceDate("제1조(시행일) 이 법은 공포한 날부터 시행한다.", ymd), "")
+  }
 })

@@ -599,7 +599,7 @@ test("buildLaterRevisionGuard: missing(삭제·이동)/deleted(날짜 명시)/sa
   const deleted = buildLaterRevisionGuard({ ...base, currentArticleVerdict: "missing", currentDeletedDate: "2019.12.31" })
   assert.ok(deleted.some((l) => l.includes("삭제됨") && l.includes("2019.12.31")))
   const same = buildLaterRevisionGuard({ ...base, currentArticleVerdict: "same", hasFormulaImages: true })
-  assert.ok(same.some((l) => l.includes("문구 동일") && l.includes("적극 신호") && l.includes("수식 이미지 내용은 대조 범위 밖")))
+  assert.ok(same.some((l) => l.includes("문구 동일") && l.includes("별도 확인") && l.includes("수식 이미지 내용은 대조 범위 밖")))
   // verdict 미전달(대조 실패) → 직접 확인 지시
   assert.ok(buildLaterRevisionGuard(base).some((l) => l.includes("대조에 실패") && l.includes("diff_article_versions")))
 })
@@ -646,7 +646,7 @@ test("buildLaterRevisionGuard: 시행예정본을 의도 조회 → '구버전' 
   assert.ok(!out.some((l) => l.includes("현행본이 아니다") || l.includes("단정하지 마라")))
 })
 
-test("lawNameKey/filterVersionsByName: 교차법령(시행령) 행 배제, 일치 0건이면 원본 보존(리뷰 검출)", () => {
+test("lawNameKey/filterVersionsByName: 교차법령(시행령) 행 배제, 일치 0건이면 후보 제외", () => {
   const vs = [
     { mst: "1", enforceDate: "20250423", promDate: "20250422", lawName: "가상자산 이용자 보호 등에 관한 법률 시행령" },
     { mst: "2", enforceDate: "20240719", promDate: "20230718", lawName: "가상자산 이용자 보호 등에 관한 법률" },
@@ -654,7 +654,7 @@ test("lawNameKey/filterVersionsByName: 교차법령(시행령) 행 배제, 일�
   const own = filterVersionsByName(vs, "가상자산 이용자 보호 등에 관한 법률")
   assert.equal(own.length, 1)
   assert.equal(own[0].mst, "2") // 시행령 행 배제 — 시행령을 '현행본'으로 오판하던 결함
-  assert.equal(filterVersionsByName(vs, "전혀 다른 법").length, 2) // 일치 0건 → 원본(기존 동작 보존)
+  assert.equal(filterVersionsByName(vs, "전혀 다른 법").length, 0) // 정확 제명 미확인 후보 제외
   assert.equal(lawNameKey("조세특례제한법  시행령"), "조세특례제한법시행령")
 })
 
