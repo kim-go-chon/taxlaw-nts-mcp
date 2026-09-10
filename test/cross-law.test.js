@@ -226,6 +226,16 @@ test("primary XML identity: explicit MST with conflicting title is rejected", as
   await assert.rejects(getLawArticle({ mst: "99801", lawName: "본문요청법", jo: "제1조", oc: "primary-article" }), /제명 검증 실패/)
 })
 
+test("diff XML identity: both bodies must match the requested law", async () => {
+  EFLAW["대조요청법"] = eflawXml([
+    { mst: "99811", name: "대조요청법", enf: "20200101", prom: "20200101" },
+    { mst: "99812", name: "대조요청법", enf: "20210101", prom: "20210101" },
+  ])
+  LAWS["99811"] = lawXml({ title: "대조다른법", articles: ["제1조(목적) 이전 문구."] })
+  LAWS["99812"] = lawXml({ title: "대조다른법", articles: ["제1조(목적) 이후 문구."] })
+  await assert.rejects(diffArticleVersionsTool({ lawName: "대조요청법", jo: "제1조", yearA: 2020, yearB: 2021, oc: "diff-identity" }), /제명 검증 실패/)
+})
+
 test("identical endpoint texts do not establish an unchanged interval or unrelated addenda", async () => {
   LAWS["99901"] = lawXml({ title: "동일문구법", articles: ["제1조(목적) 같은 문구."] })
   LAWS["99902"] = LAWS["99901"]

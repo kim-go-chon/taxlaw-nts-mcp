@@ -40,7 +40,7 @@ import { diffArticleTexts, type ChangeKind } from "./text-diff.js"
 const TAXLAW_BASE = "https://taxlaw.nts.go.kr"
 // 법제처 국가법령정보 Open API(DRF). 부칙(시행일·적용례·경과조치)은 NTS DB에 노출되지 않아 이쪽에서 보완 조회한다.
 const MOLEG_BASE = "https://www.law.go.kr"
-const VERSION = "0.27.9"
+const VERSION = "0.27.10"
 
 // v0.9.11 — 도구 description마다 ~210자 반복하던 동반 호출 안내를 축약(~50자).
 // 전체 워크플로는 INSTRUCTIONS 첫 단락 "korean-law-mcp(법제처 Open API)와 항상 짝으로 호출"에서 1회 안내.
@@ -4825,6 +4825,9 @@ export function targetYearApplicationNote(
   filingMonth: number,
 ): string {
   const f = clause.replace(/\s/g, "")
+  if (["신고시점기준", "행위시점기준", "소득·기간기준"].includes(type) && /\d{4}년/.test(f)) {
+    return `⚠ 적용례 명시 기준시점 존재 — 일반 시행일로 대체하지 않고 원문 대조 전 ${targetYear} 귀속 판정 유보.`
+  }
   if (!enforceDate && (["신고시점기준", "행위시점기준", "소득·기간기준"].includes(type) ||
       (type === "과세연도개시기준" && !/\d{4}년(?:\d{1,2}월)?(?:\d{1,2}일)?이후개시/.test(f)))) {
     return "⚠ 시행일 미확정 — 단서·조별 시행일 및 적용례 원문 확인 전 귀속연도 판정 유보."
@@ -4862,7 +4865,7 @@ export function targetYearApplicationNote(
   }
   if (type === "경과조치(종전규정)") {
     const yrs = [...f.matchAll(/(\d{4})년/g)].map((m) => Number(m[1]))
-    const hasRange = /\d{4}년(?:이전|이후|부터|까지)/.test(f)
+    const hasRange = /\d{4}년(?:\d{1,2}월)?(?:\d{1,2}일)?(?:이전|이후|부터|까지)/.test(f)
     if (hasRange) {
       return `경과조치 명시연도 ${yrs.join("·") || "?"}. ⚠ 범위 문언(이전/이후/부터/까지) 포함 — 정확일치 판정 불가, targetYear ${targetYear}가 범위에 드는지 원문 대조 필요.`
     }
@@ -5700,6 +5703,9 @@ export async function diffArticleVersionsTool(args: ArticleDiffArgs): Promise<To
     const url = `${MOLEG_BASE}/DRF/lawService.do?OC=${encodeURIComponent(oc)}&target=law&MST=${encodeURIComponent(mst)}&type=XML`
     const xml = await fetchMolegXml(url, "법령 조회")
     const lawTitle = (xml.match(/<법령명_한글>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/법령명_한글>/)?.[1] || "").trim()
+    if (lawName && lawNameKey(lawTitle) !== lawNameKey(lawName)) {
+      throw new TaxlawMcpError("법령 제명 검증 실패 — 요청 제명과 MST 본문의 제명을 확인하세요.", ErrorCodes.NOT_FOUND)
+    }
     const enforceDate = (xml.match(/<시행일자>(\d+)<\/시행일자>/)?.[1] || "").trim()
     const idx = xml.indexOf(`<![CDATA[${jo}(`)
     if (idx === -1) return { lawTitle, enforceDate, text: null as string | null }

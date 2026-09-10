@@ -436,3 +436,17 @@ test("enforcement date rejects impossible dates and malformed publication dates"
     assert.equal(extractEnforceDate("제1조(시행일) 이 법은 공포한 날부터 시행한다.", ymd), "")
   }
 })
+
+test("explicit application date is not replaced by general enforcement date", () => {
+  for (const type of ["행위시점기준", "소득·기간기준", "신고시점기준"]) {
+    const note = targetYearApplicationNote(type, "제76조의 개정규정은 2027년 1월 1일 이후 취득하는 분부터 적용한다.", 2026, "2026.1.1", 3)
+    assert.match(note, /명시 기준시점.*원문.*유보/)
+    assert.doesNotMatch(note, /이후면 개정규정|소급 적용/)
+  }
+})
+
+test("dated transitional range does not exclude an earlier target year", () => {
+  const note = targetYearApplicationNote("경과조치(종전규정)", "제76조의 개정규정에도 불구하고 2025년 12월 31일까지 취득한 자산에는 종전의 규정에 따른다.", 2024, "2026.1.1", 3)
+  assert.match(note, /범위 문언.*원문 대조/)
+  assert.doesNotMatch(note, /미포함|포함 →/)
+})
