@@ -103,7 +103,7 @@ flowchart TD
 ### R1. 현행 조문 본문 — 단답형
 
 ```
-korean-law search_law → get_law_text → 끝
+korean-law search_law → get_law_text(mst/lawId, jo) → 끝
 ```
 동반 호출 불필요. **단, 결론·산출물에 인용으로 들어가면 R2로 승격.**
 

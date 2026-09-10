@@ -139,6 +139,18 @@ const tryCall = async (url) => {
   catch (e) { return /UPSTREAM_CIRCUIT_OPEN/.test(e.message) ? "open" : "fail" }
 }
 
+test("connection failure: first call makes one attempt even with retries=3", async () => {
+  resetCircuits()
+  const original = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = () => { attempts++; return deadFetch() }
+  try {
+    assert.equal(await tryCall("https://first-failure.example/x"), "fail")
+    assert.equal(attempts, 1, "connection failure must not amplify requests fourfold")
+    assert.equal(circuitStatus().find((c) => c.host === "first-failure.example")?.fails, 1)
+  } finally { globalThis.fetch = original; resetCircuits() }
+})
+
 test("circuit(v0.27.7): 연속 연결실패 threshold 도달 시 회로가 열려 즉시 차단", async () => {
   process.env.TAXLAW_CIRCUIT_THRESHOLD = "3"
   process.env.TAXLAW_CIRCUIT_COOLDOWN_MS = "1500"
